@@ -154,6 +154,10 @@ export const INSTALL_LIBS_TOOL_NAME =
 // 跑 Python 脚本 (内联审批, 只有 allow_once / deny — 脚本内容每次都不同)
 export const RUN_SCRIPT_TOOL_NAME =
   "mcp__pentaloom_env__run_python_script";
+// 改 .pdf / .pptx 文件 (内联审批, 支持 allow_session — 同 path 本会话内只问一次).
+// autofix=False 时后端 can_use_tool 直放, 不会走到这里.
+export const FILE_VERIFY_TOOL_NAME =
+  "mcp__pentaloom_files__file_verify";
 
 export const BASH_TOOL_NAME = "Bash";
 
@@ -164,6 +168,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   BASH_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
+  FILE_VERIFY_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -171,6 +176,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
 export const ALLOW_SESSION_TOOLS: readonly string[] = [
   BASH_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
+  FILE_VERIFY_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {

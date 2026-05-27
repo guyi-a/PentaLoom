@@ -27,6 +27,7 @@ import type { Frame } from "@/lib/types";
 import {
   ALLOW_SESSION_TOOLS,
   BASH_TOOL_NAME,
+  FILE_VERIFY_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   TOOLS_NEEDING_APPROVAL,
@@ -426,6 +427,9 @@ function InlineApprovalBar({
       const libs = input.libs;
       return Array.isArray(libs) && libs.some((x) => String(x).trim());
     }
+    if (toolName === FILE_VERIFY_TOOL_NAME) {
+      return !!String(input.path ?? "").trim();
+    }
     return false;
   })();
 
@@ -434,7 +438,9 @@ function InlineApprovalBar({
       ? "Allow same command (session)"
       : toolName === INSTALL_LIBS_TOOL_NAME
         ? "Allow same libs (session)"
-        : "Allow (session)";
+        : toolName === FILE_VERIFY_TOOL_NAME
+          ? "Allow same file (session)"
+          : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -483,7 +489,9 @@ function InlineApprovalBar({
               ? "本会话内同组合免审"
               : toolName === BASH_TOOL_NAME
                 ? "命令为空, 无法加入白名单"
-                : "libs 为空, 无法加入白名单"
+                : toolName === FILE_VERIFY_TOOL_NAME
+                  ? "path 为空, 无法加入白名单"
+                  : "libs 为空, 无法加入白名单"
           }
           className={cn(
             "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",
