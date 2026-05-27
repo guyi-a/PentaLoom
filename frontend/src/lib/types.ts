@@ -217,3 +217,15 @@ export interface BrowseResponse {
   entries: FsEntry[];
   truncated: boolean;
 }
+
+// POST /fs/open 的回执. 失败走 throw, 200 时只回实际打开的规范化路径.
+export interface OpenFileResp {
+  opened: string;
+}
+
+// PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.
+export interface PatchMountsBody {
+  dirs?: string[];
+  add?: string[];
+  remove?: string[];
+}
