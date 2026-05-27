@@ -1,12 +1,26 @@
 """PentaLoom 自定义 MCP 工具 + 权限审批中枢."""
 
+from pentaloom.tools.files import (
+    FILE_READ_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
+    FILES_MCP_SERVER,
+    FILES_MCP_SERVER_NAME,
+)
+from pentaloom.tools.python_env import (
+    INSTALL_LIBS_FULL_NAME,
+    PYTHON_ENV_MCP_SERVER_NAME,
+    RUN_SCRIPT_FULL_NAME,
+)
 from pentaloom.tools.workspace import (
+    ALLOW_SESSION_TOOLS,
     BASH_TOOL_NAME,
     FULL_TOOL_NAME as REQUEST_WORKSPACE_DIR_TOOL_NAME,
     HITL_TOOL_NAMES,
+    PYTHON_ENV_MCP_SERVER,
     REGISTRY as PERMISSION_REGISTRY,
     WORKSPACE_MCP_SERVER,
     WORKSPACE_MCP_SERVER_NAME,
+    allowlist_key,
     build_hitl_hooks,
     make_can_use_tool,
 )
@@ -15,13 +29,23 @@ from pentaloom.tools.workspace import (
 WORKSPACE_REGISTRY = PERMISSION_REGISTRY
 
 __all__ = [
+    "ALLOW_SESSION_TOOLS",
     "BASH_TOOL_NAME",
+    "FILE_READ_FULL_NAME",
+    "FILE_VERIFY_FULL_NAME",
+    "FILES_MCP_SERVER",
+    "FILES_MCP_SERVER_NAME",
     "HITL_TOOL_NAMES",
+    "INSTALL_LIBS_FULL_NAME",
     "PERMISSION_REGISTRY",
+    "PYTHON_ENV_MCP_SERVER",
+    "PYTHON_ENV_MCP_SERVER_NAME",
     "REQUEST_WORKSPACE_DIR_TOOL_NAME",
+    "RUN_SCRIPT_FULL_NAME",
     "WORKSPACE_MCP_SERVER",
     "WORKSPACE_MCP_SERVER_NAME",
     "WORKSPACE_REGISTRY",
+    "allowlist_key",
     "build_hitl_hooks",
     "make_can_use_tool",
 ]

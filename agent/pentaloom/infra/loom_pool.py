@@ -35,6 +35,7 @@ from loguru import logger
 
 from pentaloom.app import PentaLoom
 from pentaloom.config import get_settings
+from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import PERMISSION_REGISTRY, make_can_use_tool
 
 
@@ -54,10 +55,11 @@ def _validate_sid(session_id: str) -> None:
 class _Entry:
     pl: PentaLoom
     mounted_dirs: list[str]  # 当前 client 起的时候用的挂载列表, 跟 db 比对决定要不要重建
-    # Bash HITL 会话级白名单: cmd 字符串集合. make_can_use_tool 闭包持的就是这个
-    # set, router 在 allow_session 时通过 LoomPool.add_bash_allowed 往里加, 引用
-    # 共享, 不需要 rebuild client. Entry evict 时随 dataclass 一起 gc, 不持久化.
-    bash_allowlist: set[str] = field(default_factory=set)
+    # HITL 会话级免审表: tool_name → set(免审 key). make_can_use_tool 闭包持的就是
+    # 这个 dict, router 在 allow_session 时通过 LoomPool.add_hitl_allowed 往里加,
+    # 引用共享, 不需要 rebuild client. Entry evict 时随 dataclass 一起 gc, 不持久化.
+    # 例: {"Bash": {"ls -al"}, "mcp__pentaloom_env__install_python_libs": {"numpy\nopenpyxl"}}
+    hitl_allowlists: dict[str, set[str]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = field(default_factory=time.monotonic)
 
@@ -96,11 +98,12 @@ class LoomPool:
                     f"LoomPool rebuild session={session_id} mounts {entry.mounted_dirs} -> {mounted_dirs}"
                 )
                 await entry.pl.__aexit__(None, None, None)
-                # rebuild 时保留 bash_allowlist — 重建动机是挂载目录变了, 跟用户对
-                # bash 命令的信任无关, 没必要让他再点一遍同样的 cmd.
-                old_allowlist = entry.bash_allowlist
+                # rebuild 时保留 hitl_allowlists — 重建动机是挂载目录变了, 跟用户对
+                # 工具调用的信任无关, 没必要让他再点一遍同样的命令/包.
+                old_allowlists = entry.hitl_allowlists
                 entry = await self._build(
-                    session_id, mounted_dirs, resume=True, bash_allowlist=old_allowlist
+                    session_id, mounted_dirs, resume=True,
+                    hitl_allowlists=old_allowlists,
                 )
                 self._registry[session_id] = entry
             else:
@@ -113,20 +116,20 @@ class LoomPool:
         mounted_dirs: list[str],
         *,
         resume: bool,
-        bash_allowlist: set[str] | None = None,
+        hitl_allowlists: dict[str, set[str]] | None = None,
     ) -> _Entry:
         sandbox = self._settings.sandbox_dir_for(session_id)
         sandbox.mkdir(parents=True, exist_ok=True)
-        # set 必须先建好再传给 make_can_use_tool, 让 closure 跟 _Entry 持同一引用 —
-        # 之后 router add_bash_allowed 改 set 才能立刻被 can_use_tool 读到.
-        allowlist = bash_allowlist if bash_allowlist is not None else set()
+        # dict 必须先建好再传给 make_can_use_tool, 让 closure 跟 _Entry 持同一引用 —
+        # 之后 router add_hitl_allowed 改 dict 才能立刻被 can_use_tool 读到.
+        allowlists = hitl_allowlists if hitl_allowlists is not None else {}
         pl = PentaLoom(
             agents=self._agents,
             session_id=None if resume else session_id,
             resume=session_id if resume else None,
             cwd=sandbox,
             add_dirs=list(mounted_dirs),
-            can_use_tool=make_can_use_tool(session_id, bash_allowlist=allowlist),
+            can_use_tool=make_can_use_tool(session_id, allowlists=allowlists),
         )
         await pl.__aenter__()
         # rebuild 时 sid 已在 _registry, size 应取 len(); 首次 build 时 caller 还没插
@@ -136,10 +139,15 @@ class LoomPool:
             f"LoomPool built session={session_id} sandbox={sandbox} "
             f"mounts={mounted_dirs} resume={resume} (size={projected_size})"
         )
-        return _Entry(pl=pl, mounted_dirs=list(mounted_dirs), bash_allowlist=allowlist)
+        return _Entry(
+            pl=pl, mounted_dirs=list(mounted_dirs), hitl_allowlists=allowlists
+        )
 
-    def add_bash_allowed(self, session_id: str, cmd: str) -> bool:
-        """会话 Bash 白名单加一条 cmd. 给 chat_permission router 走 allow_session 时调.
+    def add_hitl_allowed(self, session_id: str, tool_name: str, key: str) -> bool:
+        """会话级 HITL 免审表加一条. 给 chat_permission router 走 allow_session 时调.
+
+        key 由 tools.workspace.allowlist_key 算出, 调用方负责. 这里不感知工具语义,
+        只做 dict[tool_name].add(key).
 
         返回 True 表示新加, False 表示 session 不存在 (一般是 evict 后才会出现 —
         理论上不可能, 因为 pending future 是 evict 时被 deny 的).
@@ -147,7 +155,7 @@ class LoomPool:
         entry = self._registry.get(session_id)
         if entry is None:
             return False
-        entry.bash_allowlist.add(cmd)
+        entry.hitl_allowlists.setdefault(tool_name, set()).add(key)
         return True
 
     async def evict(self, session_id: str) -> None:
@@ -157,6 +165,9 @@ class LoomPool:
         # 先清掉该 session 所有 pending 授权 (set Future as deny),
         # 防止 can_use_tool 协程永远 await; 再关 client.
         PERMISSION_REGISTRY.cleanup_session(session_id)
+        # StreamBuffer 也清掉 — 子进程没了, 后台 task 跑的 pl.query 会拿到管道
+        # 异常, 不 cancel 反而会卡; 顺便释放订阅者.
+        stream_buffers.remove(session_id)
         await entry.pl.__aexit__(None, None, None)
         logger.info(f"LoomPool evicted session={session_id}")
 

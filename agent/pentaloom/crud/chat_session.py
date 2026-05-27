@@ -17,9 +17,12 @@ from pentaloom.models.session import ChatSession
 
 
 async def create_chat_session(
-    db: AsyncSession, *, session_id: str, mounted_dirs: list[str]
+    db: AsyncSession, *, session_id: str, mounted_dirs: list[str],
+    title: str | None = None,
 ) -> ChatSession:
-    row = ChatSession(session_id=session_id, mounted_dirs=list(mounted_dirs))
+    row = ChatSession(
+        session_id=session_id, mounted_dirs=list(mounted_dirs), title=title,
+    )
     db.add(row)
     await db.commit()
     await db.refresh(row)

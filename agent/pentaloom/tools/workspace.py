@@ -27,6 +27,19 @@ from claude_agent_sdk import (
 )
 from loguru import logger
 
+from pentaloom.tools.files import (
+    FILE_READ_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
+    FILES_MCP_SERVER,
+    FILES_MCP_SERVER_NAME,
+)
+from pentaloom.tools.python_env import (
+    INSTALL_LIBS_FULL_NAME,
+    PYTHON_ENV_MCP_SERVER_NAME,
+    PYTHON_ENV_TOOLS,
+    RUN_SCRIPT_FULL_NAME,
+)
+
 WORKSPACE_MCP_SERVER_NAME = "pentaloom"
 REQUEST_TOOL_NAME = "request_workspace_dir"
 FULL_TOOL_NAME = f"mcp__{WORKSPACE_MCP_SERVER_NAME}__{REQUEST_TOOL_NAME}"
@@ -34,9 +47,25 @@ FULL_TOOL_NAME = f"mcp__{WORKSPACE_MCP_SERVER_NAME}__{REQUEST_TOOL_NAME}"
 # Bash 在 app.py 的 allowed_tools 里被剔除 → 每次调用都会触发 can_use_tool.
 BASH_TOOL_NAME = "Bash"
 
-# 这两个名字以外的工具都自动放行. 列在这里方便前端用相同集合判断"哪些 tool_use 帧
+# 这些名字以外的工具都自动放行. 列在这里方便前端用相同集合判断"哪些 tool_use 帧
 # 该渲染审批按钮". 若新增需要 HITL 的工具, 改这里 + 前端 TOOLS_NEEDING_APPROVAL.
-HITL_TOOL_NAMES: frozenset[str] = frozenset({FULL_TOOL_NAME, BASH_TOOL_NAME})
+# file_verify 也在这里, 但 can_use_tool 内会按 input.autofix 判断: True 才审, False 直放.
+HITL_TOOL_NAMES: frozenset[str] = frozenset({
+    FULL_TOOL_NAME,
+    BASH_TOOL_NAME,
+    INSTALL_LIBS_FULL_NAME,
+    RUN_SCRIPT_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
+})
+
+# 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
+# run_python_script 脚本内容每次都变, 给"会话级免审"没意义 — 这两个 allow_session
+# 退化为 allow_once. 其余 (Bash / install_libs / file_verify) 才真正走会话级缓存.
+ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
+    BASH_TOOL_NAME,
+    INSTALL_LIBS_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
+})
 
 
 @dataclass
@@ -137,6 +166,13 @@ WORKSPACE_MCP_SERVER = create_sdk_mcp_server(
     tools=[_request_workspace_dir],
 )
 
+# Python 环境工具自己一个 server, 跟 workspace 解耦 (职责清晰; 多一个 in-process
+# server 几乎零成本). 完整工具名是 mcp__pentaloom_env__<tool>.
+PYTHON_ENV_MCP_SERVER = create_sdk_mcp_server(
+    name=PYTHON_ENV_MCP_SERVER_NAME,
+    tools=list(PYTHON_ENV_TOOLS),
+)
+
 
 def _normalize_bash_command(tool_input: dict[str, Any]) -> str:
     """allow_session 命中的判定 key. 用户的"同一条命令"=完全相同的 command 字符串
@@ -145,11 +181,42 @@ def _normalize_bash_command(tool_input: dict[str, Any]) -> str:
     return str(tool_input.get("command", "")).strip()
 
 
-def make_can_use_tool(sid: str, *, bash_allowlist: set[str]):
-    """生成闭包 sid + bash_allowlist 的 can_use_tool callback.
+def _normalize_install_libs(tool_input: dict[str, Any]) -> str:
+    """install_libs 的免审 key = sorted(libs) joined by '\n'. 一字不差的同组合才命中.
 
-    bash_allowlist 是引用传递 — LoomPool 持着同一个 set, router 在 allow_session
-    时往里加 cmd, 这里读到的就是最新的. set 跟 _Entry 共生命周期.
+    不做 subset 匹配 — 那会让 LLM 拿之前授权的"numpy pandas openpyxl"反复绕,
+    任何含子集的新请求都免审, 用户根本不知道又装了啥. 严匹配丑但安全.
+    """
+    libs = sorted(str(x).strip() for x in (tool_input.get("libs") or []) if str(x).strip())
+    return "\n".join(libs)
+
+
+def _normalize_file_verify(tool_input: dict[str, Any]) -> str:
+    """file_verify 的免审 key = path. 同一文件本会话只问一次, 跟用户期望对齐
+    (改 PPT/PDF 流程会多次跑 verify 验证, 一审一辈子审太烦)."""
+    return str(tool_input.get("path", "")).strip()
+
+
+def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
+    """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
+    if tool_name == BASH_TOOL_NAME:
+        cmd = _normalize_bash_command(tool_input)
+        return cmd or None
+    if tool_name == INSTALL_LIBS_FULL_NAME:
+        key = _normalize_install_libs(tool_input)
+        return key or None
+    if tool_name == FILE_VERIFY_FULL_NAME:
+        key = _normalize_file_verify(tool_input)
+        return key or None
+    return None
+
+
+def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
+    """生成闭包 sid + allowlists 的 can_use_tool callback.
+
+    allowlists: dict[tool_name, set[免审 key]]. 引用传递 — LoomPool 持着同一个 dict,
+    router 在 allow_session 时往里加 entry, 这里读到的就是最新的. dict + 每个 set
+    都跟 _Entry 共生命周期, evict 时清空.
     """
 
     async def can_use_tool(
@@ -157,26 +224,47 @@ def make_can_use_tool(sid: str, *, bash_allowlist: set[str]):
         tool_input: dict[str, Any],
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
-        # 不在 HITL 名单的工具一律放行 (Read/Write/Edit/... 现在不审).
+        # 不在 HITL 名单的工具一律放行 (Read/Write/Edit/file_read/... 现在不审).
         if tool_name not in HITL_TOOL_NAMES:
+            return PermissionResultAllow()
+
+        # file_verify 仅当 autofix=True 才审 (会改文件); autofix=False 是 read-only.
+        if tool_name == FILE_VERIFY_FULL_NAME and not bool(tool_input.get("autofix", True)):
             return PermissionResultAllow()
 
         tool_use_id = context.tool_use_id or ""
         if not tool_use_id:
             return PermissionResultDeny(message="missing tool_use_id from SDK")
 
-        # Bash 快路径: 命中本会话白名单直接 allow, 不打扰用户.
-        if tool_name == BASH_TOOL_NAME:
-            cmd = _normalize_bash_command(tool_input)
-            if cmd and cmd in bash_allowlist:
-                logger.info(
-                    f"bash auto-allowed (session allowlist) sid={sid} "
-                    f"tool_use_id={tool_use_id} cmd={cmd!r}"
-                )
-                return PermissionResultAllow()
+        # 快路径: 命中本会话 allowlist 直接 allow, 不打扰用户.
+        key = allowlist_key(tool_name, tool_input)
+        if key is not None and key in allowlists.get(tool_name, set()):
+            logger.info(
+                f"{tool_name} auto-allowed (session allowlist) sid={sid} "
+                f"tool_use_id={tool_use_id} key={key!r}"
+            )
+            return PermissionResultAllow()
 
         # workspace 的 path 是必填; 缺了直接 deny, 不浪费 UI 一次确认.
         if tool_name == FULL_TOOL_NAME:
+            path = str(tool_input.get("path", "")).strip()
+            if not path:
+                return PermissionResultDeny(message="path 不能为空")
+
+        # install_libs 必须给非空 libs.
+        if tool_name == INSTALL_LIBS_FULL_NAME:
+            libs = [x for x in (tool_input.get("libs") or []) if str(x).strip()]
+            if not libs:
+                return PermissionResultDeny(message="libs 不能为空")
+
+        # run_python_script 必须给 script_path.
+        if tool_name == RUN_SCRIPT_FULL_NAME:
+            script_path = str(tool_input.get("script_path", "")).strip()
+            if not script_path:
+                return PermissionResultDeny(message="script_path 不能为空")
+
+        # file_verify 必须给 path (autofix=True 才到这里, 已在前面 early return).
+        if tool_name == FILE_VERIFY_FULL_NAME:
             path = str(tool_input.get("path", "")).strip()
             if not path:
                 return PermissionResultDeny(message="path 不能为空")

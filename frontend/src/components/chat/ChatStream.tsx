@@ -1,27 +1,22 @@
-// 聊天主区: 历史 + 流式帧 + 输入框 + workspace 授权弹窗.
+// 聊天主区: 历史 + 流式帧 + 输入框. 全部 HITL 工具都走内联审批 (在 FrameBlock
+// 的 ToolUseBlock 卡片底部展开按钮条), 不再有任何模态弹窗 — 视觉上不打断对话流.
 //
 // 数据流:
 // - historyMessages: 进入页面时一次性加载, 静态.
 // - streamedFrames: 当前正在进行的 turn, 由父组件 (ChatPage / EmptyPage) 推过来.
-// - 当 streamedFrames 里出现 mcp__pentaloom__request_workspace_dir 的 tool_use 帧, 弹窗显示.
-//   弹窗的"允许 / 拒绝"会 POST /chat/permission/:tool_use_id, 后端 resolve future,
-//   agent 继续推进, tool_result 帧会自然到达, 弹窗收起.
+// - 任何 HITL 工具 (Bash / install_libs / run_script / workspace) 的 tool_use 帧
+//   出现且没对应 tool_result → 算 pending, 把 id 收集到 pendingApprovalIds, 透给
+//   FrameBlock 让对应 ToolUseBlock 在卡片底部展开审批条. 用户点选 → POST
+//   /chat/permission/... → 后端 resolve future → agent 继续推进 → tool_result
+//   帧到达 → pending 消失 → 审批条收起.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FrameBlock } from "./FrameBlock";
 import { UserBubble } from "./UserBubble";
-import { WorkspacePermissionDialog } from "@/components/permission/WorkspacePermissionDialog";
 import { PromptInput } from "./PromptInput";
-import type {
-  Frame,
-  HistoryMessage,
-  ToolUseFrame,
-} from "@/lib/types";
-import {
-  BASH_TOOL_NAME,
-  WORKSPACE_PERMISSION_TOOL_NAME,
-} from "@/lib/types";
+import type { Frame, HistoryMessage } from "@/lib/types";
+import { TOOLS_NEEDING_APPROVAL } from "@/lib/types";
 
 interface Props {
   sessionId: string;
@@ -35,12 +30,6 @@ interface Props {
   inputDisabled?: boolean;
 }
 
-interface PendingPermission {
-  toolUseId: string;
-  path: string;
-  reason: string;
-}
-
 export function ChatStream({
   sessionId,
   historyMessages,
@@ -51,39 +40,35 @@ export function ChatStream({
 }: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
-  // ── 检测 workspace 授权请求 ─────────────────────────────────
-  // 规则: 在 streamedFrames 里找最后一个 tool_use(name=mcp__pentaloom__request_workspace_dir),
-  // 如果它后面没有对应的 tool_result, 就是 pending — 弹窗.
-  const pending = useMemo<PendingPermission | null>(() => {
-    let lastRequest: ToolUseFrame | null = null;
-    const resolvedIds = new Set<string>();
-    for (const f of streamedFrames) {
-      if (
-        f.type === "tool_use" &&
-        f.name === WORKSPACE_PERMISSION_TOOL_NAME
-      ) {
-        lastRequest = f;
-      } else if (f.type === "tool_result") {
-        resolvedIds.add(f.tool_use_id);
-      }
-    }
-    if (!lastRequest || resolvedIds.has(lastRequest.id)) return null;
-    return {
-      toolUseId: lastRequest.id,
-      path: String(lastRequest.input.path ?? ""),
-      reason: String(lastRequest.input.reason ?? ""),
-    };
-  }, [streamedFrames]);
+  // ── 跨源去重: liveFrames 里 msg_uuid 已经出现在历史里的, 不要再渲染一遍 ──
+  // 触发场景: turn 跑到一半 → ModelMessageComplete → SDK flush 进 JSONL → SWR
+  // 重新 fetch /messages → 但 buffer.chunks 还没清 → liveFrames 里也有同 message.
+  // 不去重就会上下双份. msg_uuid 用的是 anthropic message.id (msg_xxxx), 历史
+  // 接口给的 message_id 同源, 直接 set 过滤即可.
+  const visibleStreamed = useMemo(() => {
+    if (historyMessages.length === 0) return streamedFrames;
+    const historyMsgIds = new Set(
+      historyMessages
+        .map((m) => m.message_id)
+        .filter((x): x is string => !!x),
+    );
+    if (historyMsgIds.size === 0) return streamedFrames;
+    return streamedFrames.filter((f) => {
+      const uuid = (f as { msg_uuid?: string | null }).msg_uuid;
+      return !uuid || !historyMsgIds.has(uuid);
+    });
+  }, [historyMessages, streamedFrames]);
 
-  // ── 检测 Bash 内联审批 ──────────────────────────────────────
-  // 跟 workspace 一样: tool_use(Bash) 没对应 tool_result 就算 pending. 但 Bash
-  // 不是模态, 不需要"最后一个", 而是把所有 pending id 收集成 set, 让 FrameBlock
-  // 按 id 自查. 一轮 turn 内 agent 可以连发多条 Bash, 互不挡住别的.
-  const pendingBashIds = useMemo<Set<string>>(() => {
+  // ── 收集所有 pending 的 HITL tool_use id ─────────────────────
+  // 规则: tool_use(name ∈ TOOLS_NEEDING_APPROVAL) 之后没对应 tool_result 就算
+  // pending. 把所有 pending id 收集成 set, 透给 FrameBlock 让对应 ToolUseBlock
+  // 在卡片底部展开审批条. 一轮 turn 内 agent 可能连发多条审批 (e.g. 多个 Bash),
+  // 互不挡住, 全部内联展示, 不再弹模态.
+  const pendingApprovalIds = useMemo<Set<string>>(() => {
     const open = new Set<string>();
     const resolved = new Set<string>();
-    for (const f of streamedFrames) {
-      if (f.type === "tool_use" && f.name === BASH_TOOL_NAME) {
+    for (const f of visibleStreamed) {
+      if (f.type === "tool_use" && TOOLS_NEEDING_APPROVAL.includes(f.name)) {
         open.add(f.id);
       } else if (f.type === "tool_result") {
         resolved.add(f.tool_use_id);
@@ -91,7 +76,7 @@ export function ChatStream({
     }
     for (const id of resolved) open.delete(id);
     return open;
-  }, [streamedFrames]);
+  }, [visibleStreamed]);
 
   // ── 自动滚到底 (除非用户手动往上滚了) ────────────────────────
   const [autoScroll, setAutoScroll] = useState(true);
@@ -100,7 +85,7 @@ export function ChatStream({
     const el = scrollerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [historyMessages, streamedFrames, localUserPrompt, autoScroll]);
+  }, [historyMessages, visibleStreamed, localUserPrompt, autoScroll]);
 
   function onScroll() {
     const el = scrollerRef.current;
@@ -131,16 +116,16 @@ export function ChatStream({
             </div>
           )}
 
-          {/* 现场流帧 */}
-          {streamedFrames.length > 0 && (
+          {/* 现场流帧 (跨源去重后) */}
+          {visibleStreamed.length > 0 && (
             <div className="space-y-3">
-              {streamedFrames.map((f, i) => (
+              {visibleStreamed.map((f, i) => (
                 <FrameBlock
-                  key={i}
+                  key={frameKey(f, i)}
                   frame={f}
                   sessionId={sessionId}
                   pendingApproval={
-                    f.type === "tool_use" && pendingBashIds.has(f.id)
+                    f.type === "tool_use" && pendingApprovalIds.has(f.id)
                   }
                 />
               ))}
@@ -148,7 +133,7 @@ export function ChatStream({
           )}
 
           {/* 本轮 user prompt 已发出, 但后端首帧还没到 — 给个占位, 别让用户对着空白等 */}
-          {localUserPrompt && streamedFrames.length === 0 && (
+          {localUserPrompt && visibleStreamed.length === 0 && (
             <div className="flex items-center gap-2 px-1 py-2 text-[12px] text-[color:var(--color-ink)]">
               <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--color-accent)]" />
               <span>Working on it…</span>
@@ -167,16 +152,6 @@ export function ChatStream({
             : "Ask anything (Shift+Enter for new line)"
         }
       />
-
-      {/* 授权弹窗 — pending 时一定显示, 用户必须做选择 */}
-      {pending && (
-        <WorkspacePermissionDialog
-          sessionId={sessionId}
-          toolUseId={pending.toolUseId}
-          path={pending.path}
-          reason={pending.reason}
-        />
-      )}
     </div>
   );
 }
@@ -196,8 +171,23 @@ function MessageGroup({ message }: { message: HistoryMessage }) {
   return (
     <div className="space-y-3">
       {message.frames.map((f, i) => (
-        <FrameBlock key={i} frame={f} />
+        <FrameBlock key={frameKey(f, i)} frame={f} />
       ))}
     </div>
   );
+}
+
+// React key 优先用 frame 自带的稳定 id, 否则 fallback index. 重放幂等后
+// 同一 frame 在 liveFrames / historyMessages 之间被覆盖时, key 不变 → React 复用
+// 节点, 不闪动.
+function frameKey(f: Frame, fallback: number): string {
+  if (f.type === "tool_use") return `tool_use:${f.id}`;
+  if (f.type === "tool_result") return `tool_result:${f.tool_use_id}`;
+  if (f.type === "task_started" || f.type === "task_progress" || f.type === "task_done") {
+    return `${f.type}:${f.task_id}`;
+  }
+  if ((f.type === "text" || f.type === "thinking") && f.msg_uuid !== undefined) {
+    return `${f.type}:${f.msg_uuid}:${f.index ?? 0}`;
+  }
+  return `${f.type}:${fallback}`;
 }

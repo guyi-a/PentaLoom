@@ -104,6 +104,43 @@ export async function chatStream(args: {
   };
 }
 
+// 重连当前 turn 的 SSE 流.
+// 后端 stream_all 重放时把 delta 折叠成完整 text/thinking frame (streaming=true),
+// 续订阅段才是 raw delta. 前端 reducer 按 (msg_uuid, index) 幂等 merge, ChatStream
+// 按 history msg_uuid 跨源去重. 多次切走再回来 / 多 tab 都安全, 没有重复.
+// 没活跃 buffer (没跑过 / 跑完已被覆盖) → 返 null.
+export interface ResumeHandle {
+  frames: AsyncIterable<Frame>;
+  abort: () => void;
+}
+
+export async function resumeChat(args: {
+  sessionId: string;
+  signal?: AbortSignal;
+}): Promise<ResumeHandle | null> {
+  const controller = new AbortController();
+  const signal = args.signal
+    ? mergeSignals(controller.signal, args.signal)
+    : controller.signal;
+
+  const res = await fetch(`${BASE}/chat/${args.sessionId}/resume`, {
+    method: "GET",
+    signal,
+  });
+
+  if (res.status === 204) return null;
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`resume ${res.status} ${res.statusText} ${text}`);
+  }
+
+  const frames = parseSSE(res.body);
+  return {
+    frames,
+    abort: () => controller.abort(),
+  };
+}
+
 async function* parseSSE(stream: ReadableStream<Uint8Array>): AsyncIterable<Frame> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");

@@ -26,8 +26,16 @@ from claude_agent_sdk import (
 from pentaloom.config import get_settings
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.tools import (
+    FILE_READ_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
+    FILES_MCP_SERVER,
+    FILES_MCP_SERVER_NAME,
     HITL_TOOL_NAMES,
+    INSTALL_LIBS_FULL_NAME,
+    PYTHON_ENV_MCP_SERVER,
+    PYTHON_ENV_MCP_SERVER_NAME,
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
+    RUN_SCRIPT_FULL_NAME,
     WORKSPACE_MCP_SERVER,
     WORKSPACE_MCP_SERVER_NAME,
     build_hitl_hooks,
@@ -35,8 +43,8 @@ from pentaloom.tools import (
 
 # 主 agent 的工具全集. subagent 的 tools 只能从这里挑.
 # Task 必带 — 派 subagent 全靠它.
-# REQUEST_WORKSPACE_DIR_TOOL_NAME 是 in-process MCP 工具, 名字格式
-# mcp__<server>__<tool>, 必须显式列在 tools 里, SDK 才会暴露给 LLM.
+# mcp__<server>__<tool> 是 in-process MCP 工具的完整名, 必须显式列在 tools 里,
+# SDK 才会暴露给 LLM.
 DEFAULT_TOOLS: list[str] = [
     "Task",
     "Bash",
@@ -47,6 +55,10 @@ DEFAULT_TOOLS: list[str] = [
     "Grep",
     "TodoWrite",
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
+    INSTALL_LIBS_FULL_NAME,
+    RUN_SCRIPT_FULL_NAME,
+    FILE_READ_FULL_NAME,
+    FILE_VERIFY_FULL_NAME,
 ]
 
 # 不需要 prompt 的工具 (auto-approve). HITL 工具 (Bash + request_workspace_dir)
@@ -55,7 +67,14 @@ DEFAULT_ALLOWED_TOOLS: list[str] = [t for t in DEFAULT_TOOLS if t not in HITL_TO
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是 PentaLoom 桌面助手. 根据用户请求, 选择合适的工具或 subagent 完成任务. "
-    "简洁回答."
+    "简洁回答.\n\n"
+    "文件读写约定:\n"
+    "- 读 .docx / .pptx / .xlsx 用 mcp__pentaloom_files__file_read, "
+    "不要自己写 Python 脚本提取二进制 (会丢格式 / 漏内容 / 慢).\n"
+    "- 读 .pdf / .txt / .md / .py / 图片 / .ipynb 走 Read 工具 (SDK 内置, 多模态自动处理).\n"
+    "- 生成或修改 .pdf / .pptx 后, 必须调一次 "
+    "mcp__pentaloom_files__file_verify(path, autofix=True) 自检质量, "
+    "直到 blocking_count=0 才能向用户报告交付完成."
 )
 
 
@@ -118,7 +137,11 @@ class PentaLoom:
             resume=resume,
             cwd=cwd,
             add_dirs=list(add_dirs) if add_dirs else [],
-            mcp_servers={WORKSPACE_MCP_SERVER_NAME: WORKSPACE_MCP_SERVER},
+            mcp_servers={
+                WORKSPACE_MCP_SERVER_NAME: WORKSPACE_MCP_SERVER,
+                PYTHON_ENV_MCP_SERVER_NAME: PYTHON_ENV_MCP_SERVER,
+                FILES_MCP_SERVER_NAME: FILES_MCP_SERVER,
+            },
             can_use_tool=can_use_tool,
             # PreToolUse hook 把 Bash 标成 "ask" 路由到 can_use_tool. SDK 文档里
             # can_use_tool "not invoked for tool calls already permitted by
@@ -132,6 +155,9 @@ class PentaLoom:
             # 开 token 级 partial 帧 — 没这个, SDK 只在整条 message 成型后推
             # 一次, 前端虽走 SSE 但看起来是"刷一段刷一段", 完全没有打字机效果.
             include_partial_messages=True,
+            # Opus 4.7+ 默认 display="omitted" — thinking 字段只有 signature, 没明文.
+            # 要展示给用户看, 显式开 summarized (SDK types.py:1555-1557 注释).
+            thinking={"type": "adaptive", "display": "summarized"},
         )
 
     async def __aenter__(self) -> "PentaLoom":

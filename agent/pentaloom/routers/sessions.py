@@ -25,6 +25,7 @@ from pentaloom.config import get_settings
 from pentaloom.crud import chat_session as crud_chat
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.infra.db import AsyncSessionLocal
+from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.models.session import (
     ChatSession,
     SessionEntry,
@@ -47,12 +48,14 @@ class SessionMeta(BaseModel):
 
     @classmethod
     def from_row(cls, row: ChatSession) -> "SessionMeta":
+        # SQLite `func.now()` 写的是 UTC naive datetime, isoformat 不带时区 ->
+        # JS new Date(iso) 会当成本地时间解析, 北京时区下差 8h. 补 "Z" 显式标 UTC.
         return cls(
             session_id=row.session_id,
             title=row.title,
             mounted_dirs=list(row.mounted_dirs),
-            created_at=row.created_at.isoformat(),
-            last_active_at=row.last_active_at.isoformat(),
+            created_at=row.created_at.isoformat() + "Z",
+            last_active_at=row.last_active_at.isoformat() + "Z",
         )
 
 
@@ -60,27 +63,44 @@ class SessionPatch(BaseModel):
     title: str | None = None
 
 
-def _content_blocks_to_frames(content: Any) -> list[dict]:
-    """Anthropic API content (str | list[block]) → 跟 /chat SSE 一致的 frame 列表."""
+def _content_blocks_to_frames(content: Any, msg_uuid: str | None) -> list[dict]:
+    """Anthropic API content (str | list[block]) → 跟 /chat SSE 一致的 frame 列表.
+
+    给每个 frame 带上 (msg_uuid, index) — 跟 streaming 端的 text_delta /
+    thinking_delta / tool_use / tool_result 一一对齐, 方便前端 ChatStream
+    跨源去重 (历史 ∩ liveFrames) + reducer 幂等 merge.
+    """
     if isinstance(content, str):
-        return [{"type": "text", "text": content}]
+        return [{"type": "text", "text": content, "msg_uuid": msg_uuid, "index": 0}]
     if not isinstance(content, list):
         return []
     out: list[dict] = []
-    for b in content:
+    for i, b in enumerate(content):
         if not isinstance(b, dict):
             continue
         t = b.get("type")
         if t == "text":
-            out.append({"type": "text", "text": b.get("text", "")})
+            out.append({
+                "type": "text",
+                "text": b.get("text", ""),
+                "msg_uuid": msg_uuid,
+                "index": i,
+            })
         elif t == "thinking":
-            out.append({"type": "thinking", "text": b.get("thinking", "")})
+            out.append({
+                "type": "thinking",
+                "text": b.get("thinking", ""),
+                "msg_uuid": msg_uuid,
+                "index": i,
+            })
         elif t == "tool_use":
             out.append({
                 "type": "tool_use",
                 "id": b.get("id"),
                 "name": b.get("name"),
                 "input": b.get("input"),
+                "msg_uuid": msg_uuid,
+                "index": i,
             })
         elif t == "tool_result":
             out.append({
@@ -88,17 +108,25 @@ def _content_blocks_to_frames(content: Any) -> list[dict]:
                 "tool_use_id": b.get("tool_use_id"),
                 "content": b.get("content"),
                 "is_error": bool(b.get("is_error", False)),
+                "msg_uuid": msg_uuid,
+                "index": i,
             })
         # 其他 type 暂忽略 (image / document 之类后面再说)
     return out
 
 
-def _session_message_to_frames(sm: SessionMessage) -> list[dict]:
-    """SessionMessage → frame 列表. role=user 的 tool_result 也会被解出来."""
+def _session_message_to_frames(sm: SessionMessage) -> tuple[str | None, list[dict]]:
+    """SessionMessage → (anthropic message.id, frames).
+
+    msg_uuid 用 anthropic message.id (msg_xxxx), 跟 /chat SSE 端的 thinking/text
+    delta + AssistantMessage tool_use 同源 — 前端跨源去重 + 幂等 merge 才对得齐.
+    user role 没 message.id (client 端构造), 返 None.
+    """
     msg = sm.message or {}
     if not isinstance(msg, dict):
-        return []
-    return _content_blocks_to_frames(msg.get("content"))
+        return None, []
+    message_id = msg.get("id") if isinstance(msg.get("id"), str) else None
+    return message_id, _content_blocks_to_frames(msg.get("content"), message_id)
 
 
 @router.get("", summary="所有 ChatSession (按最近活跃倒序)")
@@ -142,13 +170,18 @@ async def get_session_messages(
         raise HTTPException(500, str(e)) from e
 
     return [
-        {
-            "role": m.type,
-            "uuid": m.uuid,
-            "frames": _session_message_to_frames(m),
-        }
-        for m in msgs
+        _build_message_entry(m) for m in msgs
     ]
+
+
+def _build_message_entry(m: SessionMessage) -> dict:
+    message_id, frames = _session_message_to_frames(m)
+    return {
+        "role": m.type,
+        "uuid": m.uuid,                # envelope uuid - 用作 React key
+        "message_id": message_id,      # anthropic message.id - 用作跨源去重
+        "frames": frames,
+    }
 
 
 @router.patch("/{sid}", summary="改 session 元数据 (目前只支持 title)")
@@ -184,6 +217,10 @@ async def delete_session(sid: str, request: Request) -> dict:
         except Exception:
             logger.exception(f"pool evict failed for {sid}")
             deleted["pool"] = False
+
+    # 1.5 兜底 buffer 清理 — pool.evict 在 entry 命中时已经清过, 但当前 session
+    # 没在 pool (如从未跑过 / 已 LRU 出局) 时不会清, 这里补一刀.
+    stream_buffers.remove(sid)
 
     # 2. db: chat_sessions + 三张镜像表
     async with AsyncSessionLocal() as db:
