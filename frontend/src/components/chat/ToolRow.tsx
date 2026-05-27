@@ -96,6 +96,7 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
       className={cn(
         "rounded-[5px] border-l-2 bg-[color:var(--color-bg-soft)] py-1.5 pl-3 pr-3 transition-colors",
         status === "hitl-pending" && "ring-1 ring-[color:var(--color-warn)]/30",
+        status === "success" && "bg-[color:var(--color-success)]/5",
         status === "failed" && "bg-[color:var(--color-error)]/5",
       )}
       style={{ borderLeftColor: threadColor }}
@@ -189,7 +190,7 @@ function StatusBadge({ status }: { status: ToolStatus }) {
   return (
     <Check
       size={13}
-      className="text-[color:var(--color-accent)]"
+      className="text-[color:var(--color-success)]"
       aria-label="done"
     />
   );
