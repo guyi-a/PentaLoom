@@ -72,12 +72,23 @@ class Settings(BaseSettings):
         """
         return self.data_dir / "sandboxes"
 
+    @computed_field
+    @property
+    def python_env_dir(self) -> Path:
+        """共享 uv project 目录, 给 install_python_libs / run_python_script 用.
+
+        策略: 所有 session 共享同一个 venv (起步方案, 见 docs/file-capability.md §4.3).
+        启动时 lifespan 异步预热: uv venv + uv add 预装一批高频包.
+        """
+        return self.data_dir / "python-env"
+
     def sandbox_dir_for(self, session_id: str) -> Path:
         return self.sandboxes_root / session_id
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.sandboxes_root.mkdir(parents=True, exist_ok=True)
+        self.python_env_dir.mkdir(parents=True, exist_ok=True)
 
 
 def get_settings() -> Settings:

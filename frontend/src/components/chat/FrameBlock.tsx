@@ -10,12 +10,28 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronRight, Wrench, Brain, AlertCircle, CheckCircle2 } from "lucide-react";
+import {
+  ChevronRight,
+  Wrench,
+  Brain,
+  AlertCircle,
+  CheckCircle2,
+  Package,
+  FileTerminal,
+  Folder,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
 import type { Frame } from "@/lib/types";
-import { BASH_TOOL_NAME } from "@/lib/types";
+import {
+  ALLOW_SESSION_TOOLS,
+  BASH_TOOL_NAME,
+  INSTALL_LIBS_TOOL_NAME,
+  RUN_SCRIPT_TOOL_NAME,
+  TOOLS_NEEDING_APPROVAL,
+  WORKSPACE_PERMISSION_TOOL_NAME,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -120,10 +136,12 @@ function TextBlock({ text, streaming }: { text: string; streaming?: boolean }) {
   );
 }
 
-// ──── thinking — 内心独白, 默认折叠 ──────────────────────────
+// ──── thinking — 内心独白, 默认展开 ──────────────────────────
 function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
-  // streaming 中默认展开, 让用户能看到字一个个出来; 完成后折叠 (但保留打开状态)
-  const [open, setOpen] = useState(!!streaming);
+  // 默认展开 — 既然出现了 thinking 块就该让用户能直接看到内容. streaming 中字
+  // 一个个流出来; 刷新 / 切走再回 / 历史回放也保持展开 (用户嫌长可手动收起).
+  // 历史里 thinking 是上下文不是噪音, 内容也已经是模型 summarized, 不会过长.
+  const [open, setOpen] = useState(true);
   return (
     <div className="rounded-[5px] border-l-2 border-[color:var(--color-line-strong)] bg-[color:var(--color-bg-soft)] py-2 pl-3 pr-3">
       <button
@@ -143,7 +161,11 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean 
       </button>
       {open && (
         <div className="mt-2 whitespace-pre-wrap text-[14px] leading-relaxed text-[color:var(--color-paper-dim)]">
-          {text}
+          {text || (
+            <span className="text-[12px] italic text-[color:var(--color-ink)]">
+              (thinking redacted by upstream model provider)
+            </span>
+          )}
           {streaming && (
             <span
               aria-hidden
@@ -170,12 +192,13 @@ function ToolUseBlock({
   pendingApproval?: boolean;
   sessionId?: string;
 }) {
-  // Bash 待审批时展开输入, 让用户能看到完整命令; 其它情况默认折叠.
-  const [open, setOpen] = useState(!!pendingApproval && name === BASH_TOOL_NAME);
+  // 任何 HITL 工具待审批时, 默认展开把"要做什么"清楚摆出来; 其它情况折叠.
+  const showApproval =
+    !!pendingApproval && TOOLS_NEEDING_APPROVAL.includes(name) && !!sessionId;
+  const [open, setOpen] = useState(showApproval);
   const display = friendlyToolName(name);
   const threadColor = threadColorForTool(name);
   const oneLine = oneLineSummary(name, input);
-  const showApproval = !!pendingApproval && name === BASH_TOOL_NAME && !!sessionId;
 
   return (
     <div
@@ -213,34 +236,205 @@ function ToolUseBlock({
         />
       </button>
       {open && (
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
-          {JSON.stringify(input, null, 2)}
-        </pre>
+        // 审批中: 富信息块 (packages / script / path) 比 JSON 直观, 便于用户决策.
+        // 非审批 / 历史回放: 仍用 JSON pre, 信息无损.
+        showApproval ? (
+          <ApprovalInfo name={name} input={input} />
+        ) : (
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
+            {JSON.stringify(input, null, 2)}
+          </pre>
+        )
       )}
       {showApproval && (
-        <BashApprovalBar
+        <InlineApprovalBar
+          toolName={name}
           sessionId={sessionId!}
           toolUseId={toolUseId}
-          command={String(input.command ?? "").trim()}
+          input={input}
         />
       )}
     </div>
   );
 }
 
-// 内联三按钮 — Bash HITL 专用. workspace 走 dialog, 不来这里.
-function BashApprovalBar({
+// 审批中的富信息块. 按 toolName 切渲染, 优先把用户拍板要看的字段亮出来.
+function ApprovalInfo({
+  name,
+  input,
+}: {
+  name: string;
+  input: Record<string, unknown>;
+}) {
+  if (name === BASH_TOOL_NAME) {
+    const cmd = String(input.command ?? "").trim();
+    const desc = String(input.description ?? "").trim();
+    return (
+      <div className="mt-2 space-y-2">
+        <FieldBlock label="Command">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper)]">
+            {cmd || "(empty)"}
+          </pre>
+        </FieldBlock>
+        {desc && <FieldBlock label="What it does">{desc}</FieldBlock>}
+      </div>
+    );
+  }
+
+  if (name === INSTALL_LIBS_TOOL_NAME) {
+    const rawLibs = input.libs;
+    const libs = Array.isArray(rawLibs)
+      ? rawLibs.map((x) => String(x)).filter((x) => x.trim())
+      : [];
+    const reason = String(input.reason ?? "").trim();
+    return (
+      <div className="mt-2 space-y-2">
+        <FieldBlock label={`Packages (${libs.length})`} icon={Package}>
+          <div className="flex flex-wrap gap-1.5">
+            {libs.length === 0 ? (
+              <span className="text-[11px] text-[color:var(--color-ink)]">
+                (no packages requested)
+              </span>
+            ) : (
+              libs.map((lib) => (
+                <span
+                  key={lib}
+                  className="rounded-[3px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-0.5 font-mono text-[12px] text-[color:var(--color-paper)]"
+                >
+                  {lib}
+                </span>
+              ))
+            )}
+          </div>
+        </FieldBlock>
+        {reason && <FieldBlock label="Reason">{reason}</FieldBlock>}
+      </div>
+    );
+  }
+
+  if (name === RUN_SCRIPT_TOOL_NAME) {
+    const scriptPath = String(input.script_path ?? "");
+    const rawArgs = input.args;
+    const args = Array.isArray(rawArgs) ? rawArgs.map((x) => String(x)) : [];
+    const desc = String(input.description ?? "").trim();
+    return (
+      <div className="mt-2 space-y-2">
+        <FieldBlock label="Script" icon={FileTerminal}>
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]" title={scriptPath}>
+            {scriptPath}
+          </span>
+        </FieldBlock>
+        {args.length > 0 && (
+          <FieldBlock label="Args">
+            <div className="flex flex-wrap gap-1.5">
+              {args.map((a, i) => (
+                <span
+                  key={i}
+                  className="rounded-[3px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-0.5 font-mono text-[12px] text-[color:var(--color-paper)]"
+                >
+                  {a}
+                </span>
+              ))}
+            </div>
+          </FieldBlock>
+        )}
+        {desc && <FieldBlock label="What it does">{desc}</FieldBlock>}
+      </div>
+    );
+  }
+
+  if (name === WORKSPACE_PERMISSION_TOOL_NAME) {
+    const path = String(input.path ?? "");
+    const reason = String(input.reason ?? "").trim();
+    return (
+      <div className="mt-2 space-y-2">
+        <FieldBlock label="Path" icon={Folder}>
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]" title={path}>
+            {path}
+          </span>
+        </FieldBlock>
+        {reason && <FieldBlock label="Reason">{reason}</FieldBlock>}
+      </div>
+    );
+  }
+
+  // 兜底 — 不在 HITL_TOOL_NAMES 集合里, 不该走到这里, 但别挂掉
+  return (
+    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
+      {JSON.stringify(input, null, 2)}
+    </pre>
+  );
+}
+
+function FieldBlock({
+  label,
+  icon: Icon,
+  children,
+}: {
+  label: string;
+  icon?: typeof Package;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-[color:var(--color-ink)]">
+        {Icon && <Icon size={11} />}
+        <span>{label}</span>
+      </div>
+      <div className="rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] px-2.5 py-1.5 text-[13px] leading-relaxed text-[color:var(--color-paper-dim)]">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// 内联审批条 — 所有 HITL 工具共用. 按 toolName 决定按钮组合 + 主按钮文案.
+function InlineApprovalBar({
+  toolName,
   sessionId,
   toolUseId,
-  command,
+  input,
 }: {
+  toolName: string;
   sessionId: string;
   toolUseId: string;
-  command: string;
+  input: Record<string, unknown>;
 }) {
   const [busy, setBusy] = useState<
     null | "allow_once" | "allow_session" | "deny"
   >(null);
+
+  // 主按钮文案: workspace/script "Allow" / "Run", 其它 "Allow once"
+  const primaryLabel =
+    toolName === WORKSPACE_PERMISSION_TOOL_NAME
+      ? "Allow"
+      : toolName === RUN_SCRIPT_TOOL_NAME
+        ? "Run"
+        : "Allow once";
+
+  // allow_session 仅 Bash / install_libs 支持; 其它工具隐藏该按钮.
+  const supportsAllowSession = ALLOW_SESSION_TOOLS.includes(toolName);
+
+  // session 按钮是否可点 — Bash 需要非空 command, install_libs 需要非空 libs.
+  // (允许后端做最终校验, 这里只是 UX 提示, 空了也别让用户点了再失败.)
+  const sessionAllowed = (() => {
+    if (!supportsAllowSession) return false;
+    if (toolName === BASH_TOOL_NAME) {
+      return !!String(input.command ?? "").trim();
+    }
+    if (toolName === INSTALL_LIBS_TOOL_NAME) {
+      const libs = input.libs;
+      return Array.isArray(libs) && libs.some((x) => String(x).trim());
+    }
+    return false;
+  })();
+
+  const sessionLabel =
+    toolName === BASH_TOOL_NAME
+      ? "Allow same command (session)"
+      : toolName === INSTALL_LIBS_TOOL_NAME
+        ? "Allow same libs (session)"
+        : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -250,13 +444,13 @@ function BashApprovalBar({
         session_id: sessionId,
         decision,
       });
-      if (decision === "allow_session" && command) {
-        toast.success("此条命令本会话内免审");
+      if (decision === "allow_session") {
+        toast.success("此组合本会话内免审");
       } else if (decision === "deny") {
         toast.info("已拒绝");
       }
-      // 不主动隐藏 — pendingApproval prop 会因 tool_result 到达而变 false, 卡片
-      // 自然 unmount 这部分. busy 状态在那之前显示为 "Sending…".
+      // 不主动隐藏 — pendingApproval prop 会因 tool_result 到达而变 false,
+      // 卡片自然回退到普通形态. busy 状态在那之前显示为 "Sending…".
     } catch (err) {
       toast.error(`Response failed: ${String(err)}`);
       setBusy(null);
@@ -277,29 +471,33 @@ function BashApprovalBar({
           busy && busy !== "allow_once" && "cursor-not-allowed opacity-50",
         )}
       >
-        {busy === "allow_once" ? "Sending…" : "Allow once"}
+        {busy === "allow_once" ? "Sending…" : primaryLabel}
       </button>
-      <button
-        type="button"
-        onClick={() => decide("allow_session")}
-        disabled={busy !== null || !command}
-        title={
-          command
-            ? "本会话内同一条命令免审"
-            : "命令为空, 无法加入白名单"
-        }
-        className={cn(
-          "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",
-          busy === "allow_session"
-            ? "border-[color:var(--color-accent)] bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
-            : "border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]",
-          (busy && busy !== "allow_session") || !command
-            ? "cursor-not-allowed opacity-50"
-            : "",
-        )}
-      >
-        {busy === "allow_session" ? "Sending…" : "Allow same command (session)"}
-      </button>
+      {supportsAllowSession && (
+        <button
+          type="button"
+          onClick={() => decide("allow_session")}
+          disabled={busy !== null || !sessionAllowed}
+          title={
+            sessionAllowed
+              ? "本会话内同组合免审"
+              : toolName === BASH_TOOL_NAME
+                ? "命令为空, 无法加入白名单"
+                : "libs 为空, 无法加入白名单"
+          }
+          className={cn(
+            "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",
+            busy === "allow_session"
+              ? "border-[color:var(--color-accent)] bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+              : "border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]",
+            (busy && busy !== "allow_session") || !sessionAllowed
+              ? "cursor-not-allowed opacity-50"
+              : "",
+          )}
+        >
+          {busy === "allow_session" ? "Sending…" : sessionLabel}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => decide("deny")}

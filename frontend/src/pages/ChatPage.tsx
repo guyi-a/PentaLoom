@@ -2,10 +2,15 @@
 // - 顶部: 会话标题 (可改) + 挂载目录 chips + 删除按钮
 // - 中部: ChatStream (历史 + 现场流帧 + 授权弹窗 + 输入框)
 //
-// 数据加载:
-// - SWR 拿 SessionMeta (用于 sidebar 也共享同一份 'sessions' key, 但这里需要单条所以单独 key)
-// - SWR 拿 历史 messages
-// - 现场流: 用户每次发送 → 开 chatStream, frames 推进 liveFrames
+// 数据加载 + resume:
+// - SWR 拿 SessionMeta + 历史 messages
+// - mount / sid 变更时, 自动调 GET /chat/{sid}/resume 重连任何"正在跑的 turn":
+//   - 后端 buffer 不存在 / status=COMPLETE → 204 → 不做任何事 (历史已经全在 SWR 里)
+//   - 否则 (status=STREAMING) → 全量回放 buffer.chunks + 续订阅, 注入 pending
+//     审批 chunk, 把 frames 一帧帧 append 到 liveFrames. 用户切走再回来 / 刷新
+//     / 多 tab 同 session 都能毫发无损看到正在跑的 turn + 现在挂着的审批.
+// - 用户发送: chatStream POST /chat → 后端起后台 task 跑 query, 返回 stream_all().
+//   用户中途切走只 abort 本地 fetch, 后端 task 不被打断; 回来 resume 续接.
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -14,10 +19,16 @@ import useSWR, { useSWRConfig } from "swr";
 import { Check, Pencil, Trash2 } from "lucide-react";
 
 import { ChatStream } from "@/components/chat/ChatStream";
-import { api, chatStream } from "@/lib/api";
+import { api, chatStream, resumeChat } from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
 import type { Frame } from "@/lib/types";
 import { cn, shortenPath } from "@/lib/utils";
+
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof DOMException && err.name === "AbortError"
+  ) || (err as { name?: string })?.name === "AbortError";
+}
 
 export function ChatPage() {
   const { sid } = useParams();
@@ -40,17 +51,77 @@ export function ChatPage() {
   const [liveFrames, setLiveFrames] = useState<Frame[]>([]);
   const [localUserPrompt, setLocalUserPrompt] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // 当前活跃的 SSE 流的 abort 函数 (chatStream 或 resumeChat 都用同一槽位 —
+  // 任一时刻只会有一个: send() 跑时不会 resume, resume 跑完才 setSending(false))
   const abortRef = useRef<(() => void) | null>(null);
 
-  // sid 切换时清场
+  // sid 切换 / 首次 mount: 清场 + 自动 resume 进行中的 turn
   useEffect(() => {
+    let cancelled = false;
     setLiveFrames([]);
     setLocalUserPrompt(null);
     setSending(false);
+
+    if (!sid) return;
+
+    (async () => {
+      // resume 永远走 stream_all (delta 折叠 + 续订阅). 后端 + 前端 reducer
+      // 都按 (msg_uuid, index) 幂等, ChatStream 按 history uuid 跨源去重 — 即使
+      // 跟 SWR /messages 拉到的历史 race 也不会双份, thinking 也不会消失.
+      // 服务端在 buffer 不存在或 status=COMPLETE 时回 204.
+      let handle: { frames: AsyncIterable<Frame>; abort: () => void } | null = null;
+      try {
+        handle = await resumeChat({ sessionId: sid });
+      } catch (err) {
+        if (!cancelled) console.warn("resume request failed", err);
+        return;
+      }
+      if (!handle) return; // 没有在跑的 turn
+      if (cancelled) {
+        handle.abort();
+        return;
+      }
+      setSending(true);
+      abortRef.current = handle.abort;
+      try {
+        for await (const f of handle.frames) {
+          if (cancelled) break;
+          if (f.type === "user_prompt") {
+            // 后端在 resume 首帧塞回这轮 turn 的 user prompt — 用来补 "刷新后
+            // localUserPrompt 是 null, JSONL 又没 catch up" 的空窗.
+            setLocalUserPrompt(f.text);
+            continue;
+          }
+          setLiveFrames((prev) => appendFrame(prev, f));
+          if (f.type === "stream_end") break;
+        }
+        if (!cancelled) {
+          // turn 跑完 — 让 history + meta 重拉, 把 liveFrames 还给历史
+          await mutateHistory();
+          await mutateMeta();
+          globalMutate("sessions");
+          setLiveFrames([]);
+          setLocalUserPrompt(null);
+        }
+      } catch (err) {
+        // 用户切走 / 刷新触发的 abort 是预期; 别 toast
+        if (!cancelled && !isAbortError(err)) {
+          console.warn("resume stream error", err);
+        }
+      } finally {
+        if (!cancelled) {
+          setSending(false);
+          abortRef.current = null;
+        }
+      }
+    })();
+
     return () => {
+      cancelled = true;
       abortRef.current?.();
       abortRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   async function send(prompt: string) {
@@ -73,7 +144,11 @@ export function ChatPage() {
       setLiveFrames([]);
       setLocalUserPrompt(null);
     } catch (err) {
-      toast.error(`Send failed: ${String(err)}`);
+      // 用户切走 sid 时 cleanup 会 abort 本地 fetch — 这是预期, 别 toast.
+      // 后端 background task 仍在跑, 回来时 resume 能接上.
+      if (!isAbortError(err)) {
+        toast.error(`Send failed: ${String(err)}`);
+      }
     } finally {
       setSending(false);
       abortRef.current = null;

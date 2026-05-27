@@ -1,16 +1,27 @@
-"""POST /chat — SSE 流式聊天.
+"""POST /chat — SSE 流式聊天 (per-session buffer + 可重连).
 
 设计:
-  - body: {"prompt": "...", "session_id": "..."?, "mounted_dirs": [...]?}
-  - response: text/event-stream, 每帧 data: {json}\n\n
-    response header X-Session-Id 回写当前 session_id (前端首次拿到, 后续带上)
-  - 没传 session_id → 新建 ChatSession (mounted_dirs 校验后入 db, 沙箱目录自动建)
-  - 传了 session_id → db 拿 mounted_dirs, 请求里的 mounted_dirs 必须一致或不传 (防呆)
-  - LoomPool 给每个 session 一个常驻 PentaLoom (= 独立 CLI 子进程),
-    搭配 per-session asyncio.Lock 串行化该 session 内的 turn —
-    不同 session 之间不互阻.
+  - POST /chat: body {prompt, session_id?, mounted_dirs?}
+    - 没传 session_id → 新建 ChatSession
+    - 传了 → 校验存在 + 校验 mounted_dirs 一致
+    - 起后台 task 跑 pl.query(prompt), 每帧 append 到 per-session StreamBuffer
+    - response 直接吐 buffer.stream_all() — 第一次进来就是首连, 后续任何
+      GET /chat/{sid}/resume 都能重放 + 续订阅
+    - 客户端 abort (刷新 / 切 session) 只关订阅, 不杀后台 task — turn 继续跑
+
+  - GET /chat/{sid}/resume?subscribe_only=true|false:
+    - false (默认): 回放 buffer 全集 + 续订阅 (适合"我什么历史都没有, 给我全部")
+    - true: 只订阅新增 + 注入当前 pending (适合"我从 DB 拉过 JSONL 历史了, 别重复")
+    - 没活跃 buffer 返 204
+
+  - HITL pending: tool_use 帧 append 时同步 mark_pending; tool_result / error /
+    stream_end 时 clear_pending. PERMISSION_REGISTRY.future 本来就是 in-memory,
+    任何 HTTP POST /chat/permission 都能 resolve — 多连接共享免改协议.
+
+  - POST /chat/permission/{tool_use_id}: 沿用.
 """
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -29,16 +40,19 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
 from pentaloom.crud import chat_session as crud_chat
 from pentaloom.infra.db import AsyncSessionLocal
+from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import (
-    BASH_TOOL_NAME,
+    ALLOW_SESSION_TOOLS,
+    HITL_TOOL_NAMES,
     PERMISSION_REGISTRY,
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
+    allowlist_key,
 )
 
 router = APIRouter(tags=["chat"])
@@ -78,7 +92,6 @@ def _validate_mounted_dirs(dirs: list[str]) -> list[str]:
         if not p.is_dir():
             raise HTTPException(400, f"mounted_dirs path is not a directory: {d!r}")
         normalized.append(str(p.resolve()))
-    # 去重保留顺序
     seen: set[str] = set()
     out: list[str] = []
     for d in normalized:
@@ -92,17 +105,20 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _serialize(msg: Any) -> list[dict]:
-    """SDK message → 前端友好的 dict 列表 (一条 message 可能拆多帧).
+def _serialize(msg: Any, current_msg_id: str | None = None) -> list[dict]:
+    """SDK message → 前端友好的 dict 列表.
 
-    注意: TaskStartedMessage / TaskProgressMessage / TaskNotificationMessage 都是
-    SystemMessage 子类, 所以 Task* 分支必须放在 SystemMessage 兜底之前, 否则会
-    被 isinstance(msg, SystemMessage) 吞掉返回 [].
+    msg_uuid 统一用 **Anthropic message.id** (msg_xxxx) 作 stable key — 横跨
+    StreamEvent.content_block_delta / AssistantMessage / 历史 SessionMessage
+    三套来源都对得齐, 前端 reducer 按 (msg_uuid, index) 幂等 merge + 跨源去重.
 
-    流式: 因为 options 开了 include_partial_messages=True, 文本由 StreamEvent
-    分支以 text_delta 帧逐段推出. AssistantMessage 里的 TextBlock 跳过, 避免
-    跟 delta 重复 (delta 累积出的就是最终文本); tool_use / thinking 仍然按完整
-    block emit.
+    为什么不能用 SDK 的 envelope uuid: StreamEvent.uuid 是每个 event 自己的 id
+    (CLI 给的), 一个 message 的 N 个 content_block_delta 各有各的 uuid, 拿来
+    当合并 key 会把 thinking 切成 N 块. AssistantMessage.uuid 跟 StreamEvent.uuid
+    也不属同源, 撞不上.
+
+    current_msg_id 由 caller (_run_query_and_fill_buffer) 通过 sniff
+    StreamEvent(message_start) 维护, 见那里.
     """
     if isinstance(msg, StreamEvent):
         ev = msg.event or {}
@@ -115,7 +131,7 @@ def _serialize(msg: Any) -> list[dict]:
                     return []
                 return [{
                     "type": "text_delta",
-                    "msg_uuid": msg.uuid,
+                    "msg_uuid": current_msg_id,
                     "index": ev.get("index", 0),
                     "text": t,
                 }]
@@ -125,31 +141,43 @@ def _serialize(msg: Any) -> list[dict]:
                     return []
                 return [{
                     "type": "thinking_delta",
-                    "msg_uuid": msg.uuid,
+                    "msg_uuid": current_msg_id,
                     "index": ev.get("index", 0),
                     "text": t,
                 }]
         return []
 
     if isinstance(msg, AssistantMessage):
-        # text / thinking 走 StreamEvent 流式; 这里只挑 tool_use (input 已 parse 好)
-        return [
-            {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
-            for b in (msg.content or [])
-            if isinstance(b, ToolUseBlock)
-        ]
+        # 用 msg.message_id (anthropic msg_xxxx), 跟同 turn 的 content_block_delta
+        # 帧 + 历史 SessionMessage.message.id 同源, reducer 能正确合并去重.
+        out = []
+        for i, b in enumerate(msg.content or []):
+            if isinstance(b, ToolUseBlock):
+                out.append({
+                    "type": "tool_use",
+                    "id": b.id,
+                    "name": b.name,
+                    "input": b.input,
+                    "msg_uuid": msg.message_id,
+                    "index": i,
+                })
+        return out
 
     if isinstance(msg, UserMessage):
+        # user role 的 message 在 anthropic 没有 message.id (client-side 构造),
+        # tool_result 反正按 tool_use_id 去重, msg_uuid 留 None 也无碍.
         out = []
         content = msg.content
         if isinstance(content, list):
-            for b in content:
+            for i, b in enumerate(content):
                 if isinstance(b, ToolResultBlock):
                     out.append({
                         "type": "tool_result",
                         "tool_use_id": b.tool_use_id,
                         "content": b.content,
                         "is_error": bool(b.is_error),
+                        "msg_uuid": None,
+                        "index": i,
                     })
         return out
 
@@ -191,19 +219,16 @@ def _serialize(msg: Any) -> list[dict]:
 
 
 async def _resolve_session(req: ChatRequest) -> tuple[str, list[str]]:
-    """新建或读取 ChatSession, 返回 (sid, mounted_dirs).
-
-    新 session: 校验 mounted_dirs, 生成 sid, 入 db.
-    续 session: 拒绝不存在的 sid; 请求带了 mounted_dirs 必须跟 db 一致 (防呆).
-    """
+    """新建或读取 ChatSession, 返回 (sid, mounted_dirs)."""
     async with AsyncSessionLocal() as db:
         if req.session_id is None:
             mounted = _validate_mounted_dirs(req.mounted_dirs or [])
             sid = str(uuid.uuid4())
+            title = req.prompt.strip().splitlines()[0][:60] if req.prompt.strip() else None
             await crud_chat.create_chat_session(
-                db, session_id=sid, mounted_dirs=mounted
+                db, session_id=sid, mounted_dirs=mounted, title=title,
             )
-            logger.info(f"chat session created sid={sid} mounts={mounted}")
+            logger.info(f"chat session created sid={sid} mounts={mounted} title={title!r}")
             return sid, mounted
 
         sid = req.session_id
@@ -223,7 +248,52 @@ async def _resolve_session(req: ChatRequest) -> tuple[str, list[str]]:
         return sid, db_mounted
 
 
-@router.post("/chat", summary="向 PentaLoom 发一条消息, SSE 流回")
+async def _run_query_and_fill_buffer(pl, prompt: str, sid: str, lock: asyncio.Lock) -> None:
+    """后台 task: 跑一轮 pl.query(prompt), 把每帧 append 到 stream_buffer.
+
+    锁: per-session lock 串行化 turn (LoomPool 给的); 同 sid 同时只跑一轮.
+    异常: query 抛错 emit error frame; 一定走 finally append stream_end + finish().
+
+    msg_id 追踪: anthropic stream 协议里 message_start 携带 message.id, 后续同
+    一 message 的 content_block_delta 没自带 message id. 我们在这里维护
+    current_msg_id, 传给 _serialize 让 thinking_delta / text_delta 帧都带上
+    稳定的 (msg_uuid=message.id, index) — 前端 reducer 才能把同 message 的所有
+    delta 合并成一个 thinking / text 块, 不会切碎. message_stop 后清空.
+    """
+    buf = stream_buffers.get(sid)
+    assert buf is not None, f"stream_buffer should exist for {sid}"
+    current_msg_id: str | None = None
+    async with lock:
+        try:
+            async for msg in pl.query(prompt):
+                if isinstance(msg, StreamEvent):
+                    ev = msg.event or {}
+                    et = ev.get("type")
+                    if et == "message_start":
+                        current_msg_id = (ev.get("message") or {}).get("id")
+                    elif et == "message_stop":
+                        current_msg_id = None
+                for frame in _serialize(msg, current_msg_id):
+                    chunk = _sse(frame)
+                    buf.append(chunk)
+                    # 跟踪 HITL pending: tool_use(HITL 工具) → mark; tool_result → clear
+                    if frame.get("type") == "tool_use" and frame.get("name") in HITL_TOOL_NAMES:
+                        buf.mark_pending(str(frame.get("id", "")), chunk)
+                    elif frame.get("type") == "tool_result":
+                        buf.clear_pending(str(frame.get("tool_use_id", "")))
+        except asyncio.CancelledError:
+            logger.info(f"chat task cancelled (session={sid})")
+            buf.append(_sse({"type": "error", "message": "cancelled"}))
+            raise
+        except Exception as e:
+            logger.exception(f"chat task failed (session={sid}): {e}")
+            buf.append(_sse({"type": "error", "message": str(e)}))
+        finally:
+            buf.append(_sse({"type": "stream_end"}))
+            buf.finish()
+
+
+@router.post("/chat", summary="向 PentaLoom 发一条消息, SSE 流回 (支持后续 GET /resume 重连)")
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     pool = getattr(request.app.state, "pool", None)
     if pool is None:
@@ -236,34 +306,63 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
-    async def generate() -> AsyncIterator[str]:
-        async with lock:
-            try:
-                async for msg in pl.query(req.prompt):
-                    for frame in _serialize(msg):
-                        yield _sse(frame)
-            except Exception as e:
-                logger.exception(f"chat stream failed (session={sid}): {e}")
-                yield _sse({"type": "error", "message": str(e)})
-            finally:
-                yield _sse({"type": "stream_end"})
+    # 占住 buffer 名额 + 起后台 task. 后台 task 拿到 lock 才会真正开跑 (同 sid 上
+    # 轮没结束就排队), buffer 在前的 chunks 会保留, 重连仍能拿到.
+    buf = stream_buffers.create_for_turn(sid)
+    buf.set_user_prompt(req.prompt)
+    task = asyncio.create_task(_run_query_and_fill_buffer(pl, req.prompt, sid, lock))
+    buf.set_task(task)
 
     return StreamingResponse(
-        generate(),
+        buf.stream_all(),
+        media_type="text/event-stream",
+        headers={**SSE_HEADERS, "X-Session-Id": sid},
+    )
+
+
+@router.get(
+    "/chat/{sid}/resume",
+    summary="重连 / 订阅当前 turn 的 SSE 流",
+)
+async def resume(sid: str) -> Response:
+    """重连接当前 turn.
+
+    - 没活跃 buffer (没跑过 / 被 evict) → 204
+    - buffer 存在但 status=COMPLETE (上一轮跑完, 没新 turn) → 204
+      理由: turn 结束的 frames 已落 JSONL, /messages 能拿全; 这里若重放只会
+      跟历史重复. 前端不该再处理.
+    - 否则: stream_all 重放 (delta 折叠) + 续订阅.
+      前端按 (msg_uuid, index) 跨源去重 + 幂等 merge, 不会出双份. 不再有
+      subscribe_only 分支 — 全部走唯一一条路径, 重放安全.
+    """
+    from pentaloom.infra.stream_buffer import StreamStatus
+
+    buf = stream_buffers.get(sid)
+    if buf is None or buf.status == StreamStatus.COMPLETE:
+        return Response(status_code=204)
+
+    # 重连先注入 user_prompt frame, 让前端把"我刚发的那条"补上 — 用户原 prompt
+    # 既不进 buffer.chunks (UserMessage 文本走 _serialize 时被跳过), 也未必在
+    # SWR 拉到的 JSONL 里 (SDK 写时机不保证). 不注入的话刷新 / 切走再回 / 多 tab
+    # 都会看到自己消息消失到 turn 结束才出现.
+    user_prompt = buf.user_prompt
+    stream = buf.stream_all()
+
+    async def _with_user_prompt() -> AsyncIterator[str]:
+        if user_prompt:
+            yield _sse({"type": "user_prompt", "text": user_prompt})
+        async for chunk in stream:
+            yield chunk
+
+    return StreamingResponse(
+        _with_user_prompt(),
         media_type="text/event-stream",
         headers={**SSE_HEADERS, "X-Session-Id": sid},
     )
 
 
 class PermissionDecision(BaseModel):
-    """前端针对一次 HITL 工具调用的回执.
-
-    decision 语义:
-      - allow_once    : 仅放行当前这次调用.
-      - allow_session : 放行 + 加进本会话白名单 (仅 Bash 有效, 同一条 cmd 下次免审;
-                        workspace 一次性, allow_session 等价于 allow_once).
-      - deny          : 拒绝.
-    """
+    """前端针对一次 HITL 工具调用的回执."""
 
     session_id: str
     decision: Literal["allow_once", "allow_session", "deny"]
@@ -271,18 +370,11 @@ class PermissionDecision(BaseModel):
 
 @router.post(
     "/chat/permission/{tool_use_id}",
-    summary="回复一次 HITL 工具审批 (Bash / request_workspace_dir)",
+    summary="回复一次 HITL 工具审批",
 )
 async def chat_permission(
     tool_use_id: str, body: PermissionDecision, request: Request
 ) -> dict:
-    """前端在收到 tool_use 帧并让用户选择后, POST 到这里. 后端:
-      1. 根据 pending.tool_name 走不同的 side-effect (workspace 写 db,
-         bash 加 session allowlist), 再 resolve Future.
-      2. workspace 的 mount 不在这里 rebuild LoomPool — 由 LoomPool.get 下一轮
-         turn 时检测 db 里 mounted_dirs 跟 entry.mounted_dirs 不一致自动 rebuild
-         (走 resume 接回上下文).
-    """
     pending = PERMISSION_REGISTRY.peek(body.session_id, tool_use_id)
     if pending is None:
         raise HTTPException(
@@ -291,7 +383,7 @@ async def chat_permission(
 
     allow = body.decision != "deny"
     added_path: str | None = None
-    added_bash_cmd: str | None = None
+    added_allowlist_key: str | None = None
 
     if allow and pending.tool_name == REQUEST_WORKSPACE_DIR_TOOL_NAME:
         path = str(pending.tool_input.get("path", "")).strip()
@@ -302,32 +394,37 @@ async def chat_permission(
                 )
             added_path = path
         except ValueError as e:
-            # session 不在 db (理论上不可能, 因为 pending 是从 chat turn 里产生的)
             raise HTTPException(404, str(e)) from e
 
     if (
         allow
         and body.decision == "allow_session"
-        and pending.tool_name == BASH_TOOL_NAME
+        and pending.tool_name in ALLOW_SESSION_TOOLS
     ):
-        cmd = str(pending.tool_input.get("command", "")).strip()
-        if cmd:
+        key = allowlist_key(pending.tool_name, pending.tool_input)
+        if key:
             pool = getattr(request.app.state, "pool", None)
-            # pool 缺失 (initialized 前) / sid evict 都视为 best-effort 失败 — 不阻塞
-            # 当前这次 allow, 只是失去"下次免审"红利. 用户可以再点一次.
-            if pool is not None and pool.add_bash_allowed(body.session_id, cmd):
-                added_bash_cmd = cmd
+            if pool is not None and pool.add_hitl_allowed(
+                body.session_id, pending.tool_name, key
+            ):
+                added_allowlist_key = key
 
     PERMISSION_REGISTRY.resolve(body.session_id, tool_use_id, allow=allow)
+    # 同步 buffer pending 状态 (deny 时后端不会再 emit tool_result, 但 _serialize
+    # 里 deny 走 UserMessage 的 tool_result is_error=True, 会自然 clear. 这里
+    # 提前清一下也无害, 防止 buffer 状态滞后).
+    buf = stream_buffers.get(body.session_id)
+    if buf is not None:
+        buf.clear_pending(tool_use_id)
     logger.info(
         f"permission resolved sid={body.session_id} tool_use_id={tool_use_id} "
         f"tool={pending.tool_name} decision={body.decision} "
-        f"added_path={added_path} added_bash_cmd={added_bash_cmd!r}"
+        f"added_path={added_path} added_allowlist_key={added_allowlist_key!r}"
     )
     return {
         "session_id": body.session_id,
         "tool_use_id": tool_use_id,
         "decision": body.decision,
         "added_path": added_path,
-        "added_bash_cmd": added_bash_cmd,
+        "added_allowlist_key": added_allowlist_key,
     }

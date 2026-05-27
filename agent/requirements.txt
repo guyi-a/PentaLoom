@@ -26,3 +26,13 @@ alembic>=1.18.4
 # ---------- Web 服务 (FastAPI + uvicorn) ----------
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+
+# ---------- M2 文件读取 / 质量门 ----------
+# docx 段落+表格读出. python-docx 不支持 .doc (旧二进制), 用户需自行先转 .docx.
+python-docx>=1.2.0
+# pptx 读取 + audit (字体/几何/空 slide) + autofix (改 run.font.east_asian_name).
+python-pptx>=1.0.2
+# xlsx 读取 (data_only=True 拿缓存的公式值).
+openpyxl>=3.1.5
+# pdf 读取 / 空页检测 + auto-fix 删空页. import 名是 fitz.
+pymupdf>=1.27.0
