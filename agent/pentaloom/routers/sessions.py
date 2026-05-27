@@ -32,6 +32,7 @@ from pentaloom.models.session import (
     SessionMtime,
     SessionSummary,
 )
+from pentaloom.routers.chat import _validate_mounted_dirs
 from sqlalchemy import delete
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -61,6 +62,19 @@ class SessionMeta(BaseModel):
 
 class SessionPatch(BaseModel):
     title: str | None = None
+
+
+class MountsPatch(BaseModel):
+    """整体替换或增删 mounted_dirs.
+
+    - 提供 dirs: 整体替换 (UI 上"重排/清空"用)
+    - 提供 add/remove: 增量改 (UI 上 [+] 加挂载, hover-remove 删一条)
+    - 三者互斥, 同时给 add/remove 可以一次性 batch
+    """
+
+    dirs: list[str] | None = None
+    add: list[str] | None = None
+    remove: list[str] | None = None
 
 
 def _content_blocks_to_frames(content: Any, msg_uuid: str | None) -> list[dict]:
@@ -195,6 +209,48 @@ async def patch_session(sid: str, patch: SessionPatch) -> SessionMeta:
             await db.commit()
             await db.refresh(row)
         return SessionMeta.from_row(row)
+
+
+@router.patch("/{sid}/mounts", summary="改 session 的 mounted_dirs (会 evict LoomPool client, 下轮重建)")
+async def patch_mounts(sid: str, patch: MountsPatch, request: Request) -> SessionMeta:
+    """改完后 evict pool entry — 下条用户消息触发 LoomPool 重建时新 add_dirs 才生效.
+
+    跟 request_workspace_dir 工具语义一致: 当前 turn 不受影响, 下轮才看到新挂载.
+    """
+    if patch.dirs is None and patch.add is None and patch.remove is None:
+        raise HTTPException(400, "must supply at least one of dirs/add/remove")
+
+    async with AsyncSessionLocal() as db:
+        row = await crud_chat.get_chat_session(db, sid)
+        if row is None:
+            raise HTTPException(404, f"session {sid!r} not found")
+
+        if patch.dirs is not None:
+            new_dirs = list(patch.dirs)
+        else:
+            new_dirs = list(row.mounted_dirs)
+            if patch.add:
+                for d in patch.add:
+                    if d not in new_dirs:
+                        new_dirs.append(d)
+            if patch.remove:
+                remove_set = set(patch.remove)
+                new_dirs = [d for d in new_dirs if d not in remove_set]
+
+        new_dirs = _validate_mounted_dirs(new_dirs)
+        await crud_chat.set_mounted_dirs(db, sid, new_dirs)
+        row = await crud_chat.get_chat_session(db, sid)
+        assert row is not None
+
+    pool = getattr(request.app.state, "pool", None)
+    if pool is not None:
+        try:
+            await pool.evict(sid)
+        except Exception:
+            logger.exception(f"pool evict failed after mounts patch sid={sid}")
+
+    logger.info(f"mounts patched sid={sid} new={new_dirs}")
+    return SessionMeta.from_row(row)
 
 
 @router.delete("/{sid}", summary="永久删除 session: db 行 + 沙箱 + 镜像表 + LoomPool 缓存")

@@ -62,6 +62,19 @@ async def add_mounted_dir(
     return list(row.mounted_dirs)
 
 
+async def set_mounted_dirs(
+    db: AsyncSession, session_id: str, dirs: list[str]
+) -> list[str]:
+    """整体替换 mounted_dirs. 调用方负责校验/去重/标准化."""
+    row = await get_chat_session(db, session_id)
+    if row is None:
+        raise ValueError(f"session {session_id} not found")
+    row.mounted_dirs = list(dirs)
+    await db.commit()
+    await db.refresh(row)
+    return list(row.mounted_dirs)
+
+
 async def list_chat_sessions(db: AsyncSession) -> list[ChatSession]:
     result = await db.execute(
         select(ChatSession).order_by(ChatSession.last_active_at.desc())
