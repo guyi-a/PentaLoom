@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+/* ────────────────────────────────────────────────────────────────
+   PentaLoom 设计 tokens — Nordic Light
+   ────────────────────────────────────────────────────────────────
+   雾白底 + 石墨字 + 一抹钢蓝. Linear / Notion / Vercel 风的克制极简.
+   原则:
+   - 留白替代边框, 边框替代背景色块
+   - 颜色不超过 5 个 + 4 级灰阶
+   - 没有任何装饰纹理 (网格 / 噪点 / 阴影晕 全去)
+   - 五瓣 agent 色保留, 但全部冷调化 (一抹暖橙做对比)
+   注意: 变量名延续上一版 (paper/ink/bg-soft 等), 仅值重新定义.
+   "paper" 现在指页面主文字色 (深石墨), "ink" 指注释级浅灰.
+   ──────────────────────────────────────────────────────────────── */
+@theme {
+  /* ── 基底 (雾白 → 卡片白 → 微凹陷) ─────────────────────────── */
+  --color-bg:        #f7f6f3;  /* 主背景 = 雾白 */
+  --color-bg-soft:   #fbfaf7;  /* 侧栏 / header (比主背景再淡一点) */
+  --color-bg-card:   #ffffff;  /* 卡片 / hover (纯白, 反而最亮) */
+  --color-bg-raised: #eef0f3;  /* active / 选中态 (一丝冷灰) */
+  --color-bg-deep:   #f0eee9;  /* 输入框 / 代码块 (略凹的米灰) */
+
+  /* ── 线 ─────────────────────────────────────────────────────
+     浅色主题里线就是分割, 比背景仅深一档, 不能抢戏 */
+  --color-line:        #e3e1da;  /* 主分割线 */
+  --color-line-soft:   #ededea;  /* 极淡 */
+  --color-line-strong: #c8c5bc;  /* 强调 / focus */
+
+  /* ── 字 (前景反转: paper = 深石墨, ink = 浅注释) ──────────── */
+  --color-paper:      #1c1f26;  /* 主前景 = 石墨黑 */
+  --color-paper-dim:  #313640;  /* 次级 */
+  --color-ink:        #636873;  /* 注释 (>4.5:1 过 AA) */
+  --color-ink-dim:    #9aa0aa;  /* 极弱 — 仅装饰用 */
+
+  /* ── 五瓣 agent 线色 — Nordic 重排, 冷调为主, 一抹暖 ───────── */
+  --color-thread-file:     #3d5a80;  /* 钢蓝 — file (主色, 出现最多) */
+  --color-thread-app:      #6b7280;  /* 中灰 — app_gen (低调) */
+  --color-thread-browser:  #5a8068;  /* 雾绿 — browser */
+  --color-thread-computer: #c08050;  /* 暖橙 — computer/bash (唯一暖) */
+  --color-thread-search:   #88a3c4;  /* 浅蓝 — search */
+
+  /* ── 语义色 ─────────────────────────────────────────────── */
+  --color-accent:      #3d5a80;  /* 主点缀 = 钢蓝 */
+  --color-accent-dim:  #88a3c4;
+  --color-warn:        #c08050;
+  --color-error:       #c0453f;
+  --color-success:     #5a8068;
+
+  /* ── 字体 (Nordic 全 sans, mono 留给代码) ───────────────────── */
+  --font-serif: "Inter", "PingFang SC", system-ui, sans-serif;
+  --font-mono:  "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  /* ── 圆角 (Linear 风: 4-6px, 不要 0, 不要 12) ────────────────── */
+  --radius-sm: 3px;
+  --radius:    5px;
+  --radius-lg: 8px;
+}
+
+/* ────────────── 全局 reset + 基础 ────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-paper);
+  font-family: var(--font-serif);   /* Nordic 默认 sans */
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* weave-grid: 之前是装饰网格, Nordic 主题下去掉.
+   保留 class 选择器但置空, 避免改 jsx 又遗漏. */
+.weave-grid {
+  background-image: none;
+}
+
+/* ────────────── 排版工具类 ────────────── */
+.font-serif {
+  font-family: var(--font-serif);
+}
+.font-mono {
+  font-family: var(--font-mono);
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ────────────── 滚动条 ────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink);
+}
+
+/* ────────────── selection ────────────── */
+::selection {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+/* ────────────── focus ring ────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+/* 输入控件的 focus 反馈由 component 自己出 (border / shadow / ring),
+   user-agent 风格的方框 outline 跟卡片大圆角对不上, 显丑. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+/* ────────────── 线动画 (LoomMark active 状态用) ─────────────
+   pulse: 五根线轻轻明灭. 比之前的 weave-pull 节制. */
+@keyframes thread-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.thread-pulse {
+  animation: thread-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* 流式光标 — 一个柔和的圆点, 缩放 + 透明度做"心跳" 比生硬的 |█ 闪烁安静.
+   尺寸/颜色由 utility class 控制, 这里只管动画. */
+@keyframes caret {
+  0%, 100% { opacity: 0.35; transform: scale(0.7); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+.caret {
+  animation: caret 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  transform-origin: center;
+}
+
+/* ────────────── markdown 内排版 ────────────── */
+.prose-loom {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--color-paper);
+}
+.prose-loom p {
+  margin: 0.6em 0;
+}
+.prose-loom code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-bg-deep);
+  color: var(--color-accent);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+.prose-loom pre {
+  background: var(--color-bg-deep);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: 12px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.prose-loom pre code {
+  background: transparent;
+  color: var(--color-paper);
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.prose-loom a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-accent-dim);
+}
+.prose-loom h1,
+.prose-loom h2,
+.prose-loom h3 {
+  font-family: var(--font-serif);
+  color: var(--color-paper);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 1.1em 0 0.4em;
+}
+.prose-loom h1 { font-size: 20px; }
+.prose-loom h2 { font-size: 17px; }
+.prose-loom h3 { font-size: 15px; }
+.prose-loom ul,
+.prose-loom ol {
+  padding-left: 1.4em;
+  margin: 0.6em 0;
+}
+.prose-loom li {
+  margin: 0.25em 0;
+}
+.prose-loom blockquote {
+  border-left: 2px solid var(--color-line-strong);
+  padding-left: 12px;
+  color: var(--color-paper-dim);
+  margin: 0.6em 0;
+}
+.prose-loom hr {
+  border: none;
+  border-top: 1px solid var(--color-line);
+  margin: 1.2em 0;
+}
+.prose-loom table {
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 13.5px;
+}
+.prose-loom th,
+.prose-loom td {
+  border: 1px solid var(--color-line);
+  padding: 6px 10px;
+  text-align: left;
+}
+.prose-loom th {
+  background: var(--color-bg-deep);
+  font-weight: 600;
+  color: var(--color-paper);
+}
+.prose-loom strong {
+  font-weight: 600;
+  color: var(--color-paper);
+}

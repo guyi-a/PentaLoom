@@ -1,0 +1,28 @@
+# =============================================================================
+# PentaLoom Agent 层 - Python 依赖
+# =============================================================================
+# 安装:
+#   source agent/venv/bin/activate
+#   pip install -r agent/requirements.txt
+#
+# Python 3.12.13 (pyenv)
+# =============================================================================
+
+# ---------- 通用 ----------
+python-dotenv>=1.0.1
+pydantic>=2.0
+pydantic-settings>=2.13.1
+loguru>=0.7.2
+
+# ---------- Claude Agent SDK (主框架) ----------
+# agent loop / subagent 调度 / MCP 集成都依赖这里, 是 PentaLoom 五个子 Agent 的核心
+claude-agent-sdk>=0.2.87
+
+# ---------- 存储 ----------
+sqlalchemy[asyncio]>=2.0.46
+aiosqlite>=0.22.1
+alembic>=1.18.4
+
+# ---------- Web 服务 (FastAPI + uvicorn) ----------
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
