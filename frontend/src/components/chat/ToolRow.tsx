@@ -15,7 +15,7 @@
 // 给用户一瞬间瞥到"哦, 审批通过了" 再自然收起来.
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Circle, Loader2, ShieldAlert, XCircle } from "lucide-react";
+import { Check, ChevronRight, Loader2, ShieldAlert, XCircle } from "lucide-react";
 
 import { ApprovalInfo, InlineApprovalBar } from "./FrameBlock";
 import { BashExpansion } from "./tool-expansions/BashExpansion";
@@ -187,9 +187,9 @@ function StatusBadge({ status }: { status: ToolStatus }) {
     );
   }
   return (
-    <Circle
-      size={11}
-      className="fill-[color:var(--color-ink)]/40 stroke-[color:var(--color-ink)]/40"
+    <Check
+      size={13}
+      className="text-[color:var(--color-accent)]"
       aria-label="done"
     />
   );
