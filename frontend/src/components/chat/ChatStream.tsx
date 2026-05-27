@@ -17,7 +17,7 @@ import { FrameBlock } from "./FrameBlock";
 import { ToolRow, type ToolPair } from "./ToolRow";
 import { UserBubble } from "./UserBubble";
 import { PromptInput } from "./PromptInput";
-import type { Frame, HistoryMessage } from "@/lib/types";
+import type { Frame, HistoryMessage, ToolResultFrame } from "@/lib/types";
 import { TOOLS_NEEDING_APPROVAL } from "@/lib/types";
 
 interface Props {
@@ -34,21 +34,29 @@ interface Props {
 
 // 把 tool_use 跟 tool_result 按 tool_use_id 配对, 平铺成 (Frame | ToolPair) 列表.
 // 顺序保持 tool_use 出现位置 — result 来了只是塞回去, 不重排.
-// tool_result 单独成行的可能性: 配对失败 (孤儿 result, 不该发生), 走 FrameBlock 兜底.
+//
+// extResults: 跨 message 的 tool_result 池. 历史里 tool_use 在 assistant message,
+// tool_result 在紧跟的 user message — 单 message 内 pair 不到, 全栈历史会显示
+// "所有工具都在转圈". 传入全局 map 让 use 能查到外部 result.
 type RenderItem =
   | { kind: "frame"; frame: Frame; key: string }
   | { kind: "pair"; pair: ToolPair; key: string };
 
-function pairFrames(frames: Frame[]): RenderItem[] {
+function pairFrames(
+  frames: Frame[],
+  extResults?: Map<string, ToolResultFrame>,
+): RenderItem[] {
   const items: RenderItem[] = [];
   const pairIdxById = new Map<string, number>();
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
     if (f.type === "tool_use") {
+      // 先查 extResults — 历史跨 message 的 result 已落在那里
+      const ext = extResults?.get(f.id) ?? null;
       pairIdxById.set(f.id, items.length);
       items.push({
         kind: "pair",
-        pair: { use: f, result: null },
+        pair: { use: f, result: ext },
         key: `tool:${f.id}`,
       });
     } else if (f.type === "tool_result") {
@@ -63,8 +71,10 @@ function pairFrames(frames: Frame[]): RenderItem[] {
             key: cur.key,
           };
         }
+      } else if (extResults?.has(f.tool_use_id)) {
+        // 这条 result 对应的 use 在别的 message 里, 已经通过 extResults 在那边配上了 — 这里别重复渲染
       } else {
-        // 孤儿 result, 罕见但别挂掉
+        // 真孤儿 — 罕见但别挂掉
         items.push({
           kind: "frame",
           frame: f,
@@ -76,6 +86,35 @@ function pairFrames(frames: Frame[]): RenderItem[] {
     }
   }
   return items;
+}
+
+// 全局扫历史, 把所有 tool_result 按 tool_use_id 索引. 给 MessageGroup 渲染
+// assistant turn 时查跨 message 的 result 用.
+function buildHistoryResultMap(
+  history: HistoryMessage[],
+): Map<string, ToolResultFrame> {
+  const m = new Map<string, ToolResultFrame>();
+  for (const msg of history) {
+    for (const f of msg.frames) {
+      if (f.type === "tool_result") {
+        m.set(f.tool_use_id, f);
+      }
+    }
+  }
+  return m;
+}
+
+// user message 是不是纯 tool_result (没 text) — 是的话整条不渲染, 不然会显示
+// 一个空的 UserBubble 占位.
+function isPureToolResultMessage(message: HistoryMessage): boolean {
+  if (message.role !== "user") return false;
+  let hasText = false;
+  let hasResult = false;
+  for (const f of message.frames) {
+    if (f.type === "text" && f.text.trim()) hasText = true;
+    if (f.type === "tool_result") hasResult = true;
+  }
+  return hasResult && !hasText;
 }
 
 export function ChatStream({
@@ -127,6 +166,12 @@ export function ChatStream({
   // 流帧配对成 items — useMemo, 避免每次渲染都重算
   const streamedItems = useMemo(() => pairFrames(visibleStreamed), [visibleStreamed]);
 
+  // 历史里 tool_result 跨 message 的全局索引 — 给 MessageGroup 跨 message 配对用
+  const historyResultMap = useMemo(
+    () => buildHistoryResultMap(historyMessages),
+    [historyMessages],
+  );
+
   // ── 自动滚到底 (除非用户手动往上滚了) ────────────────────────
   const [autoScroll, setAutoScroll] = useState(true);
   useEffect(() => {
@@ -153,10 +198,18 @@ export function ChatStream({
         className="flex-1 overflow-y-auto"
       >
         <div className="mx-auto max-w-[820px] space-y-4 px-6 py-8">
-          {/* 历史 */}
-          {historyMessages.map((m) => (
-            <MessageGroup key={m.uuid} message={m} />
-          ))}
+          {/* 历史 — 先全局扫一遍 tool_result, 让 MessageGroup 渲染时能跨 message 配对.
+              否则 assistant message 里的 tool_use 配不上紧跟 user message 里的
+              tool_result, 全栈历史所有 chip 都停在 in-progress 转圈. */}
+          {historyMessages.map((m) =>
+            isPureToolResultMessage(m) ? null : (
+              <MessageGroup
+                key={m.uuid}
+                message={m}
+                extResults={historyResultMap}
+              />
+            ),
+          )}
 
           {/* 本轮用户 prompt — 历史里可能没有 (新建会话时, 后端写 jsonl 是异步的) */}
           {localUserPrompt && (
@@ -207,10 +260,20 @@ export function ChatStream({
   );
 }
 
-// 历史里一条消息 (一个 user/assistant turn) 的渲染. 同样把 tool_use/result 配对.
-function MessageGroup({ message }: { message: HistoryMessage }) {
+// 历史里一条消息 (一个 user/assistant turn) 的渲染. tool_use/result 在 history 里
+// 可能跨 message: assistant 的 tool_use 配紧跟 user message 的 tool_result.
+// 父组件传 extResults (全历史的 tool_use_id → result map), pairFrames 用它跨 message
+// 配对; 没传时退化成单 message 内配对 (跟 live 流一样).
+function MessageGroup({
+  message,
+  extResults,
+}: {
+  message: HistoryMessage;
+  extResults?: Map<string, ToolResultFrame>;
+}) {
   if (message.role === "user") {
-    // user 历史: frames 里基本就一个 text
+    // user 历史: frames 里可能有 text + tool_result; tool_result 已被
+    // extResults 收走并配到对应 assistant 的 ToolRow 上, 这里只渲染 text.
     const text = message.frames
       .filter((f): f is { type: "text"; text: string } => f.type === "text")
       .map((f) => f.text)
@@ -219,14 +282,8 @@ function MessageGroup({ message }: { message: HistoryMessage }) {
     return <UserBubble text={text} />;
   }
   // assistant: 一条 turn 里可能有 text/thinking/tool_use/tool_result 混合.
-  // 注意: 历史里同 turn 的 tool_use 和 tool_result 可能在不同 message 里
-  // (assistant message 含 tool_use; 接下来的 user message 含 tool_result) — 这里
-  // 单条 message 内的 pairFrames 不会把它们配对. 不过 SDK 历史输出里, assistant
-  // message 后面紧跟的 user message 走的是单独的 MessageGroup, 不在同 frame 列表.
-  // 历史 ToolRow 因此会看到 result=null, 渲染为 success-ish 但展开内容只有 input.
-  // 这是已知短板, 后端把同 turn 的 use+result 合到同 frames 数组里才彻底解决,
-  // 留给后续 PR. 当下"实时流"是主要 UX 路径, 历史回放只是补全.
-  const items = pairFrames(message.frames);
+  // 传 extResults 让 pairFrames 跨 message 拿 result.
+  const items = pairFrames(message.frames, extResults);
   return (
     <div className="space-y-3">
       {items.map((item) =>
