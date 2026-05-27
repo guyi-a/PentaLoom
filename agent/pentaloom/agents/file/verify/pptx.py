@@ -26,9 +26,9 @@ def verify_pptx(path: Path, *, autofix: bool) -> VerifyReport:
 
     if autofix and font_issues:
         # 改 EA 字体不动几何, 不影响后续 audit_geometry 结果
-        n = fix_fonts(prs)
+        n, used_font = fix_fonts(prs)
         if n > 0:
-            fixes_applied.append("fonts")
+            fixes_applied.append(f"fonts:{used_font}")
             # 修完字体: 之前的 font_tofu issue 转 warning 标"已修"
             font_issues = [
                 Issue(
@@ -36,7 +36,7 @@ def verify_pptx(path: Path, *, autofix: bool) -> VerifyReport:
                     kind=it.kind,
                     severity="warning",
                     location=it.location,
-                    message=f"{it.message} (已注入 Noto Sans SC)",
+                    message=f"{it.message} (已注入 {used_font})",
                 )
                 for it in font_issues
             ]

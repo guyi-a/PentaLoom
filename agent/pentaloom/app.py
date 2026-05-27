@@ -25,6 +25,8 @@ from claude_agent_sdk import (
 
 from pentaloom.config import get_settings
 from pentaloom.infra import SQLiteSessionStore
+from pentaloom.prompts import assemble_main_prompt
+from pentaloom.prompts.skills import ENABLED_SKILLS
 from pentaloom.tools import (
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
@@ -65,37 +67,6 @@ DEFAULT_TOOLS: list[str] = [
 # 必须走 can_use_tool 拿 tool_use_id 跟前端按钮 / 弹窗对齐, 所以这里特意剔除.
 DEFAULT_ALLOWED_TOOLS: list[str] = [t for t in DEFAULT_TOOLS if t not in HITL_TOOL_NAMES]
 
-DEFAULT_SYSTEM_PROMPT = (
-    "你是 PentaLoom 桌面助手. 根据用户请求, 选择合适的工具或 subagent 完成任务. "
-    "简洁回答.\n\n"
-    "文件读写约定:\n"
-    "- 读 .docx / .pptx / .xlsx 用 mcp__pentaloom_files__file_read, "
-    "不要自己写 Python 脚本提取二进制 (会丢格式 / 漏内容 / 慢).\n"
-    "- 读 .pdf / .txt / .md / .py / 图片 / .ipynb 走 Read 工具 (SDK 内置, 多模态自动处理).\n"
-    "- 生成或修改 .pdf / .pptx 后, 必须调一次 "
-    "mcp__pentaloom_files__file_verify(path, autofix=True) 自检质量, "
-    "直到 blocking_count=0 才能向用户报告交付完成."
-)
-
-
-def _build_system_prompt(base: str, mounted_dirs: list[str | Path] | None) -> str:
-    """把用户授权的工作目录拼进 system prompt.
-
-    SDK 的 add_dirs 只是给这些路径开读写白名单, LLM 本身并不知道这些目录代表
-    "用户的项目". 不加这段, 用户问"介绍下这个项目"时 LLM 没有工作区上下文, 会
-    fallback 去 memory / 训练数据里乱搜, 答非所问.
-    """
-    if not mounted_dirs:
-        return base
-    lines = "\n".join(f"- {d}" for d in mounted_dirs)
-    return (
-        f"{base}\n\n"
-        f"用户当前授权访问以下工作目录:\n{lines}\n"
-        f"当用户提到\"这个项目\"/\"当前项目\"/\"仓库\"/\"代码\"等, 默认指上述目录. "
-        f"需要查看代码或文件时, 直接到这些目录里找, 不要去其它地方."
-    )
-
-
 class PentaLoom:
     def __init__(
         self,
@@ -121,14 +92,20 @@ class PentaLoom:
         # 必须走 can_use_tool.
         allowed = [t for t in tools if t not in HITL_TOOL_NAMES]
 
+        # 显式传 system_prompt 时直接用 (调用方负责完整性); 否则按四段式组装.
+        # ENABLED_SKILLS 空列表时把 skills= 留 None, 不覆盖 SDK 默认.
+        resolved_prompt = (
+            system_prompt
+            if system_prompt is not None
+            else assemble_main_prompt(mounted_dirs=add_dirs)
+        )
         self._options = ClaudeAgentOptions(
             model=self._settings.model,
             tools=tools,
             allowed_tools=allowed,
             agents=agents or {},
-            system_prompt=_build_system_prompt(
-                system_prompt or DEFAULT_SYSTEM_PROMPT, add_dirs
-            ),
+            system_prompt=resolved_prompt,
+            skills=list(ENABLED_SKILLS) if ENABLED_SKILLS else None,
             setting_sources=[],
             strict_mcp_config=True,
             extra_args={},  # 不加 --bare, 否则 Task 工具会被压掉
