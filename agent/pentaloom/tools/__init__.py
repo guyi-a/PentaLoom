@@ -13,6 +13,7 @@ from pentaloom.tools.python_env import (
     PYTHON_ENV_PROMPT_INSTRUCTIONS,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.system_resources import INSTALL_NOTO_SANS_SC_FULL_NAME
 from pentaloom.tools.workspace import (
     ALLOW_SESSION_TOOLS,
     BASH_TOOL_NAME,
@@ -48,6 +49,7 @@ __all__ = [
     "FILES_PROMPT_INSTRUCTIONS",
     "HITL_TOOL_NAMES",
     "INSTALL_LIBS_FULL_NAME",
+    "INSTALL_NOTO_SANS_SC_FULL_NAME",
     "PERMISSION_REGISTRY",
     "PYTHON_ENV_MCP_SERVER",
     "PYTHON_ENV_MCP_SERVER_NAME",

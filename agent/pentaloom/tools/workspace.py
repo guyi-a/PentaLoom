@@ -39,10 +39,23 @@ from pentaloom.tools.python_env import (
     PYTHON_ENV_TOOLS,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.system_resources import (
+    INSTALL_NOTO_SANS_SC_FULL_NAME,
+    SYSTEM_RESOURCES_TOOLS,
+)
 
 WORKSPACE_MCP_SERVER_NAME = "pentaloom"
 REQUEST_TOOL_NAME = "request_workspace_dir"
 FULL_TOOL_NAME = f"mcp__{WORKSPACE_MCP_SERVER_NAME}__{REQUEST_TOOL_NAME}"
+
+
+# 主 prompt 的"工具守则"段会拼这一段.
+WORKSPACE_PROMPT_INSTRUCTIONS: str = (
+    "### 工作区挂载\n"
+    "- 用户提到本地目录 / 项目, 但当前没在已授权目录里时, 调 "
+    f"{FULL_TOOL_NAME} 请求挂载, 别自己猜路径或用 Bash 直接读.\n"
+    "- 挂载在用户同意的下一轮 turn 才生效, 当前 turn 内仍是旧的文件系统权限."
+)
 
 # Bash 在 app.py 的 allowed_tools 里被剔除 → 每次调用都会触发 can_use_tool.
 BASH_TOOL_NAME = "Bash"
@@ -56,6 +69,7 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     INSTALL_LIBS_FULL_NAME,
     RUN_SCRIPT_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
+    INSTALL_NOTO_SANS_SC_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
@@ -163,7 +177,7 @@ async def _request_workspace_dir(args: dict[str, Any]) -> dict[str, Any]:
 
 WORKSPACE_MCP_SERVER = create_sdk_mcp_server(
     name=WORKSPACE_MCP_SERVER_NAME,
-    tools=[_request_workspace_dir],
+    tools=[_request_workspace_dir, *SYSTEM_RESOURCES_TOOLS],
 )
 
 # Python 环境工具自己一个 server, 跟 workspace 解耦 (职责清晰; 多一个 in-process

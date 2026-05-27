@@ -19,6 +19,7 @@ import {
   Package,
   FileTerminal,
   Folder,
+  Type,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,6 +29,7 @@ import {
   ALLOW_SESSION_TOOLS,
   BASH_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
+  INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   TOOLS_NEEDING_APPROVAL,
@@ -355,6 +357,29 @@ function ApprovalInfo({
           </span>
         </FieldBlock>
         {reason && <FieldBlock label="Reason">{reason}</FieldBlock>}
+      </div>
+    );
+  }
+
+  if (name === INSTALL_FONT_TOOL_NAME) {
+    const reason = String(input.reason ?? "").trim();
+    return (
+      <div className="mt-2 space-y-2">
+        <FieldBlock label="Font" icon={Type}>
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+            Noto Sans SC (中文字体)
+          </span>
+        </FieldBlock>
+        <FieldBlock label="Install path">
+          <span className="text-[12.5px] text-[color:var(--color-paper-dim)]">
+            macOS: brew --cask 优先, 失败兜底下载 ~/Library/Fonts/ ·
+            Linux: ~/.local/share/fonts/ · Windows: %LOCALAPPDATA%/Microsoft/Windows/Fonts/
+          </span>
+        </FieldBlock>
+        {reason && <FieldBlock label="Reason">{reason}</FieldBlock>}
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          一次性操作 · 下载约 10-20MB · 装完仅本机生效
+        </div>
       </div>
     );
   }
