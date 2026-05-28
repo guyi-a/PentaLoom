@@ -1,23 +1,13 @@
-"""PentaLoom 五瓣 subagent.
+"""PentaLoom 五项能力 (capabilities).
 
-ALL_AGENTS 给 PentaLoom 主类直接传:
-    async with PentaLoom(agents=ALL_AGENTS) as pl: ...
+主 agent 直接调用这些模块, 不再走 SDK subagent 派发.
 
-也可以挑着用:
-    async with PentaLoom(agents={"file": FILE_OPS_AGENT}) as pl: ...
+每项一个子目录:
+  - file/      文件读写 / 文档解析 / 文档校验  (已实现)
+  - app_gen/   应用 / 项目脚手架生成           (待实现)
+  - browser/   浏览器自动化                    (待实现)
+  - computer/  桌面操作 (截屏 / 键鼠 / 窗口)   (待实现)
+  - search/    web 搜索 / 知识检索             (待实现)
 
-子目录结构 (每个 agent 一个目录, 内部可拆 prompts/tools/...):
-  - file/      已实现 (file_ops)
-  - app_gen/   待实现
-  - browser/   待实现
-  - computer/  待实现
-  - search/    待实现
+各能力的入口在 tools/ 下注册成 MCP 工具暴露给 LLM, 这里只放纯实现.
 """
-
-from pentaloom.agents.file import FILE_OPS_AGENT
-
-ALL_AGENTS = {
-    "file": FILE_OPS_AGENT,
-}
-
-__all__ = ["ALL_AGENTS", "FILE_OPS_AGENT"]

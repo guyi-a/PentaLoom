@@ -1,7 +1,7 @@
 """PPTX 三项 audit: 字体 tofu / 几何越界 / 空 slide.
 
-字体 tofu 思路抄 krow_pptx/audit/fonts: 中文文本 run 必须有 east_asian_name
-指向 CJK 字体; 否则查看端可能用 latin 字体 fallback, 中文显示成"豆腐字" (□).
+字体 tofu: 中文文本 run 必须有 east_asian_name 指向 CJK 字体, 否则查看端可能
+用 latin 字体 fallback, 中文显示成"豆腐字" (□).
 
 几何越界: shape 的 left/top/width/height 推算 right/bottom, 跟 slide 宽高
 比较; 差 > 10pt (= 127000 EMU) 算 blocking. 留 10pt 是因为 PPT 里挂边出血
@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from pentaloom.agents.file._models import Issue
+from pentaloom.capabilities.file._models import Issue
 
 # 1 pt = 12700 EMU. 留 10pt 容差.
 _GEO_TOLERANCE_EMU = 10 * 12700

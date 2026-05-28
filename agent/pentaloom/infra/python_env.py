@@ -9,7 +9,7 @@
     避开 LLM 把代码塞进参数导致 escaping 失控.
   - timeout 触发后 kill 整个 process group, 防 matplotlib 之类 fork 出来的子进程残留.
 
-环境构建策略 (借鉴 krow-agent):
+环境构建策略:
   - 用 login shell 抓一次 PATH (Electron 从 Finder 拉起来的 main process 不跑 .zshrc,
     bare PATH 找不到 uv). 抓完缓存, 后续子进程都用这份.
   - uv cache / Python 安装目录都重定向到 settings.data_dir 下, 卸载 PentaLoom 时

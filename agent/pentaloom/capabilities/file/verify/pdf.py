@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pentaloom.agents.file._models import Issue, VerifyReport
+from pentaloom.capabilities.file._models import Issue, VerifyReport
 
 
 def _is_blank_page(page) -> bool:

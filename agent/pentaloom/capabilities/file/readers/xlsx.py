@@ -10,7 +10,7 @@ import csv
 import io
 from pathlib import Path
 
-from pentaloom.agents.file._models import FileReadResult, FileWarning
+from pentaloom.capabilities.file._models import FileReadResult, FileWarning
 
 
 def _sheet_to_csv(ws, max_rows: int, max_cols: int) -> tuple[str, dict[str, int]]:

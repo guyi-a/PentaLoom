@@ -1,4 +1,4 @@
-// 进入 PentaLoom 的第一屏 — 参考 Claude 桌面端版式:
+// 进入 PentaLoom 的第一屏:
 //   - 中央紧凑输入卡片 (textarea + footer 按钮行)
 //   - 卡片内左下 [+] 附件按钮 (暂未实现, disabled)
 //   - 卡片内右下 [↑] 发送 (accent)

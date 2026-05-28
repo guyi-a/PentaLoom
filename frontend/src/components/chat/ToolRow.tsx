@@ -1,5 +1,5 @@
-// 单行聚合 chip — 把一对 (tool_use, tool_result|null) 渲染成 krow-app 风的
-// 单行 chip + 状态 icon + 可展开特化内容. 取代旧 FrameBlock 的 ToolUseBlock +
+// 单行聚合 chip — 把一对 (tool_use, tool_result|null) 渲染成单行 chip +
+// 状态 icon + 可展开特化内容. 取代旧 FrameBlock 的 ToolUseBlock +
 // ToolResultBlock 两块堆叠.
 //
 // 状态机:

@@ -19,13 +19,13 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from pentaloom.agents.file._models import FileReadResult, VerifyReport
-from pentaloom.agents.file._path import resolve_user_path
-from pentaloom.agents.file.readers.docx import read_docx
-from pentaloom.agents.file.readers.pptx import read_pptx
-from pentaloom.agents.file.readers.xlsx import read_xlsx
-from pentaloom.agents.file.verify.pdf import verify_pdf
-from pentaloom.agents.file.verify.pptx import verify_pptx
+from pentaloom.capabilities.file._models import FileReadResult, VerifyReport
+from pentaloom.capabilities.file._path import resolve_user_path
+from pentaloom.capabilities.file.readers.docx import read_docx
+from pentaloom.capabilities.file.readers.pptx import read_pptx
+from pentaloom.capabilities.file.readers.xlsx import read_xlsx
+from pentaloom.capabilities.file.verify.pdf import verify_pdf
+from pentaloom.capabilities.file.verify.pptx import verify_pptx
 
 FILES_MCP_SERVER_NAME = "pentaloom_files"
 FILE_READ_TOOL_NAME = "file_read"

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pentaloom.agents.file._models import Issue, VerifyReport
-from pentaloom.agents.file.verify._pptx_audit import (
+from pentaloom.capabilities.file._models import Issue, VerifyReport
+from pentaloom.capabilities.file.verify._pptx_audit import (
     audit_content,
     audit_fonts,
     audit_geometry,
 )
-from pentaloom.agents.file.verify._pptx_fix import fix_fonts
+from pentaloom.capabilities.file.verify._pptx_fix import fix_fonts
 
 
 def verify_pptx(path: Path, *, autofix: bool) -> VerifyReport:

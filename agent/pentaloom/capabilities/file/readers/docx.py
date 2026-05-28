@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pentaloom.agents.file._models import FileReadResult, FileWarning
+from pentaloom.capabilities.file._models import FileReadResult, FileWarning
 
 
 def _table_to_markdown(table) -> str:

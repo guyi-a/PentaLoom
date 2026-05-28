@@ -45,7 +45,7 @@ PYTHON_ENV_PROMPT_INSTRUCTIONS: str = (
 
 # LLM 习惯把整段 Python 直接塞进 script_path. 探测到就回错让它改走 "先 Write
 # 文件再传路径" 的路 — 否则 inline 代码 escape 灾难 + 没法 Read 复审 + traceback
-# 行号对不上. 思路抄自 krow tools/python.py:_looks_like_inline_python.
+# 行号对不上.
 _INLINE_CODE_MARKERS = (
     "\n",
     "import ",
