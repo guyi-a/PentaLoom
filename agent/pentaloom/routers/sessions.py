@@ -15,8 +15,8 @@ from typing import Any
 
 from claude_agent_sdk import (
     SessionMessage,
-    get_session_messages_from_store,
 )
+from claude_agent_sdk._internal.sessions import project_key_for_directory
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
@@ -159,6 +159,54 @@ async def get_session(sid: str) -> SessionMeta:
     return SessionMeta.from_row(row)
 
 
+def _entry_to_session_message(entry: dict) -> SessionMessage | None:
+    """SDK store 里的一行 entry → SessionMessage. 不走 parentUuid 链还原.
+
+    SDK 自带 get_session_messages_from_store 用 leaf→root 单链回溯, 并行 tool_use
+    场景 (一个 assistant 同时调 2+ 工具, 树在 tool_use 处分叉) 会丢掉除 main chain
+    以外的分支 — 实测见 sid 55a358dc: Bash + install_libs 并行, Bash 的 tool_result
+    所在分支被裁, 前端拿不到 result → Bash chip 永远转圈.
+
+    我们不需要 chain 重建, 按 seq 平铺给前端就够 (前端会用 message_id + tool_use_id
+    跨 message 配对). 这里只做 visibility 过滤 (与 SDK 内部 _is_visible_message 一致).
+    """
+    etype = entry.get("type")
+    if etype not in ("user", "assistant"):
+        return None
+    if entry.get("isMeta") or entry.get("isSidechain") or entry.get("teamName"):
+        return None
+    return SessionMessage(
+        type="user" if etype == "user" else "assistant",  # type: ignore[arg-type]
+        uuid=entry.get("uuid", ""),
+        session_id=entry.get("sessionId", ""),
+        message=entry.get("message"),
+        parent_tool_use_id=None,
+    )
+
+
+async def _load_session_messages_linear(
+    sid: str, directory: str, limit: int | None, offset: int
+) -> list[SessionMessage]:
+    """按 seq 顺序读完整 transcript, 不走 parentUuid 单链回溯 — 保留所有并行分支."""
+    store = SQLiteSessionStore()
+    project_key = project_key_for_directory(directory)
+    entries = await store.load({"project_key": project_key, "session_id": sid})
+    if not entries:
+        return []
+    msgs: list[SessionMessage] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        sm = _entry_to_session_message(e)
+        if sm is not None:
+            msgs.append(sm)
+    if limit is not None and limit > 0:
+        return msgs[offset : offset + limit]
+    if offset > 0:
+        return msgs[offset:]
+    return msgs
+
+
 @router.get("/{sid}/messages", summary="session 完整对话历史 (按时间序)")
 async def get_session_messages(
     sid: str, limit: int | None = None, offset: int = 0
@@ -174,10 +222,9 @@ async def get_session_messages(
         # 沙箱不存在说明 session 从没跑过 (db 行可能也没建), 直接 404
         raise HTTPException(404, f"session {sid!r} has no transcript")
 
-    store = SQLiteSessionStore()
     try:
-        msgs = await get_session_messages_from_store(
-            store, sid, directory=str(sandbox), limit=limit, offset=offset
+        msgs = await _load_session_messages_linear(
+            sid, str(sandbox), limit=limit, offset=offset
         )
     except Exception as e:
         logger.exception(f"failed to read history for {sid}: {e}")
