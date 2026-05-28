@@ -1,0 +1,114 @@
+#!/bin/bash
+# PentaLoom 开发模式一键启动 — agent (FastAPI) + frontend (Vite) 两进程
+# 用法: ./start-dev.sh
+# 选项:
+#   --no-frontend   只起 agent (调后端接口用)
+#   --debug         agent 开热重载 (PENTALOOM_DEBUG=true)
+
+set -e
+
+cd "$(dirname "$0")"
+
+WITH_FRONTEND=1
+DEBUG=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-frontend) WITH_FRONTEND=0 ;;
+    --debug) DEBUG=1 ;;
+  esac
+done
+
+echo "🧵 启动 PentaLoom 开发环境"
+echo ""
+
+PIDS=()
+
+cleanup() {
+  echo ""
+  echo "⏹  停止所有服务..."
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  exit
+}
+trap cleanup INT TERM
+
+# ── Agent (FastAPI) ───────────────────────────────────────────────────
+echo "📡 启动 agent (FastAPI, 端口 8090)..."
+pushd agent > /dev/null
+
+if [ ! -d "venv" ]; then
+  echo "  → venv 不存在, 自动创建并安装依赖..."
+  python3 -m venv venv
+  source venv/bin/activate
+  pip install -q --upgrade pip
+  pip install -q -r requirements.txt
+else
+  source venv/bin/activate
+fi
+
+# .env 兜底
+if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+  echo "  → .env 不存在, 从 .env.example 复制 (记得填 API key)..."
+  cp .env.example .env
+fi
+
+if [ "$DEBUG" = "1" ]; then
+  PENTALOOM_DEBUG=true python main.py 2>&1 | sed -u 's/^/[agent] /' &
+else
+  python main.py 2>&1 | sed -u 's/^/[agent] /' &
+fi
+PIDS+=($!)
+popd > /dev/null
+
+# 等 agent /health 就绪
+echo "  ⏳ 等待 http://127.0.0.1:8090/health ..."
+for i in $(seq 1 60); do
+  if curl -sf http://127.0.0.1:8090/health >/dev/null 2>&1; then
+    echo "  ✓ agent 就绪"
+    break
+  fi
+  sleep 0.5
+  if [ "$i" = "60" ]; then
+    echo "  ⚠ 30s 仍未就绪, 看上面 [agent] 输出排查"
+  fi
+done
+
+# ── Frontend (Vite) ───────────────────────────────────────────────────
+if [ "$WITH_FRONTEND" = "1" ]; then
+  echo "🎨 启动前端 (Vite, 端口 5273)..."
+  pushd frontend > /dev/null
+  if [ ! -d "node_modules" ]; then
+    echo "  → node_modules 不存在, 自动 npm install..."
+    npm install --silent
+  fi
+  npm run dev 2>&1 | sed -u 's/^/[frontend] /' &
+  PIDS+=($!)
+  popd > /dev/null
+
+  echo "  ⏳ 等待 http://127.0.0.1:5273 ..."
+  for i in $(seq 1 60); do
+    if curl -sf http://127.0.0.1:5273 >/dev/null 2>&1; then
+      echo "  ✓ 前端就绪"
+      break
+    fi
+    sleep 0.5
+    if [ "$i" = "60" ]; then
+      echo "  ⚠ 30s 仍未就绪, 看上面 [frontend] 输出排查"
+    fi
+  done
+fi
+
+echo ""
+echo "✅ PentaLoom 已启动"
+echo ""
+echo "  🔧 agent API   : http://localhost:8090"
+echo "  📖 API 文档    : http://localhost:8090/docs"
+if [ "$WITH_FRONTEND" = "1" ]; then
+  echo "  🎨 前端        : http://localhost:5273"
+fi
+echo ""
+echo "  按 Ctrl+C 停止所有服务"
+echo ""
+
+wait
