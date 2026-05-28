@@ -54,6 +54,8 @@ agent/pentaloom-data/
 
 # 本地备忘 / 给 Claude Code 看的项目状态文件
 CLAUDE.md
+AGENT.md
+AGENTS.md
 
 # 内部文档 / spike 试验代码 (不入仓库)
 docs/

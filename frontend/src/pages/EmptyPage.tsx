@@ -63,12 +63,12 @@ export function EmptyPage() {
         mountedDirs: mounts,
       });
       setLiveSid(handle.sessionId);
+      navigate(`/s/${handle.sessionId}`);
       mutate("sessions");
       for await (const f of handle.frames) {
         setLiveFrames((prev) => appendFrame(prev, f));
         if (f.type === "stream_end") break;
       }
-      navigate(`/s/${handle.sessionId}`);
       mutate("sessions");
     } catch (err) {
       toast.error(`Send failed: ${String(err)}`);

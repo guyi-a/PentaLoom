@@ -18,7 +18,7 @@
 // - < 768: 展开成全屏 drawer 覆盖
 // - 用户手动 toggle 后写 localStorage, 优先级高于默认
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
@@ -28,6 +28,7 @@ import { ChatStream } from "@/components/chat/ChatStream";
 import { RightPanel } from "@/components/right-panel/RightPanel";
 import { api, chatStream, resumeChat } from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
+import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
 import type { Frame } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,14 @@ function isAbortError(err: unknown): boolean {
 }
 
 const PANEL_LS_KEY = "pentaloom:right-panel:open";
+const PANEL_WIDTH_LS_KEY = "pentaloom:right-panel:width";
+const PANEL_MIN = 280;
+const PANEL_DEFAULT = 340;
+const PANEL_MAX = 520;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
 
 // 按当前 viewport + localStorage 决定 panel 初始展开状态.
 // 默认: >=1280 开; <1280 收. localStorage 有值就覆盖默认.
@@ -47,6 +56,12 @@ function initialPanelOpen(): boolean {
   if (saved === "true") return true;
   if (saved === "false") return false;
   return window.innerWidth >= 1280;
+}
+
+function initialPanelWidth(): number {
+  if (typeof window === "undefined") return PANEL_DEFAULT;
+  const saved = Number(window.localStorage.getItem(PANEL_WIDTH_LS_KEY));
+  return Number.isFinite(saved) ? clamp(saved, PANEL_MIN, PANEL_MAX) : PANEL_DEFAULT;
 }
 
 export function ChatPage() {
@@ -76,6 +91,7 @@ export function ChatPage() {
 
   // ── 右栏开关 ─────────────────────────────────────────────
   const [panelOpen, setPanelOpenRaw] = useState<boolean>(initialPanelOpen);
+  const [panelWidth, setPanelWidthRaw] = useState<number>(initialPanelWidth);
   // ChatPage 持有真值, 但要写 localStorage. setPanelOpen 包装一下.
   function setPanelOpen(next: boolean) {
     setPanelOpenRaw(next);
@@ -84,6 +100,43 @@ export function ChatPage() {
     } catch {
       /* localStorage 不可用就算了 */
     }
+  }
+
+  function setPanelWidth(next: number) {
+    const width = clamp(Math.round(next), PANEL_MIN, PANEL_MAX);
+    setPanelWidthRaw(width);
+    try {
+      window.localStorage.setItem(PANEL_WIDTH_LS_KEY, String(width));
+    } catch {
+      /* localStorage 不可用就算了 */
+    }
+  }
+
+  function beginPanelResize(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!desktopPanelVisible) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMove(ev: PointerEvent) {
+      const maxByMain = e.currentTarget.parentElement?.parentElement
+        ? e.currentTarget.parentElement.parentElement.clientWidth - MAIN_CONTENT_MIN_WIDTH
+        : PANEL_MAX;
+      const maxWidth = Math.max(PANEL_MIN, Math.min(PANEL_MAX, maxByMain));
+      setPanelWidth(clamp(startWidth - (ev.clientX - startX), PANEL_MIN, maxWidth));
+    }
+    function onUp() {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
   }
 
   // viewport <768 时, 右栏走 fixed drawer 模式, 主区不让出宽度. 用 matchMedia.
@@ -277,13 +330,19 @@ export function ChatPage() {
               />
             </div>
             {desktopPanelVisible && (
-              <div className="w-[320px] shrink-0 xl:w-[340px]">
+              <div className="relative shrink-0" style={{ width: panelWidth }}>
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  title="Drag to resize panel"
+                  onPointerDown={beginPanelResize}
+                  className="absolute left-[-3px] top-0 z-20 h-full w-1.5 cursor-col-resize transition-colors hover:bg-[color:var(--color-accent)]/20"
+                />
                 <RightPanel
                   sessionId={meta.session_id}
                   meta={meta}
                   history={history ?? []}
                   liveFrames={liveFrames}
-                  onClose={() => setPanelOpen(false)}
                   onMountsChanged={onMountsChanged}
                 />
               </div>
@@ -307,7 +366,6 @@ export function ChatPage() {
               meta={meta}
               history={history ?? []}
               liveFrames={liveFrames}
-              onClose={() => setPanelOpen(false)}
               onMountsChanged={onMountsChanged}
             />
           </div>

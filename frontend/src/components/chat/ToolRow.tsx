@@ -19,12 +19,16 @@ import { Check, ChevronRight, Loader2, ShieldAlert, XCircle } from "lucide-react
 
 import { ApprovalInfo, InlineApprovalBar } from "./FrameBlock";
 import { BashExpansion } from "./tool-expansions/BashExpansion";
+import { BrowserBridgeExpansion } from "./tool-expansions/BrowserBridgeExpansion";
+import { BrowserUseExpansion } from "./tool-expansions/BrowserUseExpansion";
 import { FileVerifyExpansion } from "./tool-expansions/FileVerifyExpansion";
 import { GenericExpansion } from "./tool-expansions/GenericExpansion";
 import { RunScriptExpansion } from "./tool-expansions/RunScriptExpansion";
 import { friendlyToolName, oneLineSummary, threadColorForTool, toolIcon } from "@/lib/tool-meta";
 import {
   BASH_TOOL_NAME,
+  BROWSER_BRIDGE_TOOL_NAME,
+  BROWSER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   TOOLS_NEEDING_APPROVAL,
@@ -61,9 +65,8 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
   const isHitl = TOOLS_NEEDING_APPROVAL.includes(use.name);
   const showApproval = !!pendingApproval && isHitl && !!sessionId;
   const status = computeStatus(pair, showApproval);
-  // Skill 工具只是 LLM 主动加载某个 skill 的信号 — input/result 没什么可看的,
-  // 一行显示 "Skill · <name>" 就够; 强行不可展开, 省得用户点开后看到一堆没用的 JSON.
-  const isSkill = use.name === "Skill";
+  // Skill / Read 这类工具在折叠标题里已经足够表达含义, 展开只会露出冗余 JSON.
+  const compactOnly = use.name === "Skill" || use.name === "Read";
 
   // null = 用户没碰过, 跟着状态机走; true/false = 用户手动锁定
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
@@ -107,21 +110,21 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
       <button
         type="button"
         onClick={() => {
-          if (isSkill) return;
+          if (compactOnly) return;
           setUserToggled(!open);
         }}
         className={cn(
           "flex w-full items-center gap-2 text-left text-[13px]",
-          isSkill && "cursor-default",
+          compactOnly && "cursor-default",
         )}
       >
         <Icon size={13} className="shrink-0 text-[color:var(--color-ink)]" />
-        <span className="font-mono text-[13px] font-medium text-[color:var(--color-paper)]">
+        <span className="shrink-0 whitespace-nowrap font-mono text-[13px] font-medium text-[color:var(--color-paper)]">
           {display}
         </span>
         {summary && (
           <span
-            className="truncate font-mono text-[12.5px] text-[color:var(--color-paper-dim)]"
+            className="min-w-0 truncate font-mono text-[12.5px] text-[color:var(--color-paper-dim)]"
             title={summary}
           >
             · {summary}
@@ -130,7 +133,7 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
         {/* 状态 chip — 永远靠右挨着 chevron, 一眼能看 */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <StatusBadge status={status} />
-          {!isSkill && (
+          {!compactOnly && (
             <ChevronRight
               size={13}
               className={cn(
@@ -142,7 +145,7 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
         </span>
       </button>
 
-      {open && !isSkill && (
+      {open && !compactOnly && (
         <div className="mt-2 space-y-2">
           {showApproval ? (
             <ApprovalInfo name={use.name} input={use.input} />
@@ -166,6 +169,8 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
 function ExpansionFor({ pair }: { pair: ToolPair }) {
   const name = pair.use.name;
   if (name === BASH_TOOL_NAME) return <BashExpansion {...pair} />;
+  if (name === BROWSER_BRIDGE_TOOL_NAME) return <BrowserBridgeExpansion {...pair} />;
+  if (name === BROWSER_USE_TOOL_NAME) return <BrowserUseExpansion {...pair} />;
   if (name === RUN_SCRIPT_TOOL_NAME) return <RunScriptExpansion {...pair} />;
   if (name === FILE_VERIFY_TOOL_NAME) return <FileVerifyExpansion {...pair} />;
   return <GenericExpansion {...pair} />;

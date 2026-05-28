@@ -200,7 +200,7 @@ export function ChatStream({
       <div
         ref={scrollerRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto"
+        className="scrollbar-hidden flex-1 overflow-y-auto"
       >
         <div className="mx-auto max-w-[820px] space-y-4 px-6 py-8">
           {/* 历史 — 先全局扫一遍 tool_result, 让 MessageGroup 渲染时能跨 message 配对.

@@ -20,4 +20,5 @@ from __future__ import annotations
 ENABLED_SKILLS: list[str] = [
     "report-generator",
     "browser-use",
+    "browser-bridge",
 ]
