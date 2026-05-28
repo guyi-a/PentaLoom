@@ -1,6 +1,6 @@
 // 单个会话页 /s/:sid:
-// - 顶部: 会话标题 (可改) + 挂载目录 chips + 删除按钮
-// - 中部: ChatStream (历史 + 现场流帧 + 授权弹窗 + 输入框)
+// - 顶部: 会话标题 (可改) + 删除按钮 + PanelRight 切换
+// - 中部: 左 (ChatStream 历史 + 流帧 + 输入) + 右 (RightPanel: Todo/Workspace/Context)
 //
 // 数据加载 + resume:
 // - SWR 拿 SessionMeta + 历史 messages
@@ -11,23 +11,42 @@
 //     / 多 tab 同 session 都能毫发无损看到正在跑的 turn + 现在挂着的审批.
 // - 用户发送: chatStream POST /chat → 后端起后台 task 跑 query, 返回 stream_all().
 //   用户中途切走只 abort 本地 fetch, 后端 task 不被打断; 回来 resume 续接.
+//
+// 三栏 layout 响应式 (持久化在 localStorage):
+// - >= 1280: 默认展开 340px
+// - 768-1280: 默认收起, 展开走 320px
+// - < 768: 展开成全屏 drawer 覆盖
+// - 用户手动 toggle 后写 localStorage, 优先级高于默认
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
-import { Check, Pencil, Trash2 } from "lucide-react";
+import { Check, PanelRightClose, PanelRightOpen, Pencil, Trash2 } from "lucide-react";
 
 import { ChatStream } from "@/components/chat/ChatStream";
+import { RightPanel } from "@/components/right-panel/RightPanel";
 import { api, chatStream, resumeChat } from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
 import type { Frame } from "@/lib/types";
-import { cn, shortenPath } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 function isAbortError(err: unknown): boolean {
   return (
     err instanceof DOMException && err.name === "AbortError"
   ) || (err as { name?: string })?.name === "AbortError";
+}
+
+const PANEL_LS_KEY = "pentaloom:right-panel:open";
+
+// 按当前 viewport + localStorage 决定 panel 初始展开状态.
+// 默认: >=1280 开; <1280 收. localStorage 有值就覆盖默认.
+function initialPanelOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  const saved = window.localStorage.getItem(PANEL_LS_KEY);
+  if (saved === "true") return true;
+  if (saved === "false") return false;
+  return window.innerWidth >= 1280;
 }
 
 export function ChatPage() {
@@ -54,6 +73,29 @@ export function ChatPage() {
   // 当前活跃的 SSE 流的 abort 函数 (chatStream 或 resumeChat 都用同一槽位 —
   // 任一时刻只会有一个: send() 跑时不会 resume, resume 跑完才 setSending(false))
   const abortRef = useRef<(() => void) | null>(null);
+
+  // ── 右栏开关 ─────────────────────────────────────────────
+  const [panelOpen, setPanelOpenRaw] = useState<boolean>(initialPanelOpen);
+  // ChatPage 持有真值, 但要写 localStorage. setPanelOpen 包装一下.
+  function setPanelOpen(next: boolean) {
+    setPanelOpenRaw(next);
+    try {
+      window.localStorage.setItem(PANEL_LS_KEY, next ? "true" : "false");
+    } catch {
+      /* localStorage 不可用就算了 */
+    }
+  }
+
+  // viewport <768 时, 右栏走 fixed drawer 模式, 主区不让出宽度. 用 matchMedia.
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const cb = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", cb);
+    return () => mq.removeEventListener("change", cb);
+  }, []);
 
   // sid 切换 / 首次 mount: 清场 + 自动 resume 进行中的 turn
   useEffect(() => {
@@ -155,6 +197,15 @@ export function ChatPage() {
     }
   }
 
+  // 给 RightPanel 用 — Workspace 改完调这里刷 meta + sidebar (mounted_dirs 是 SessionMeta 的字段)
+  const onMountsChanged = useMemo(
+    () => () => {
+      mutateMeta();
+      globalMutate("sessions");
+    },
+    [mutateMeta, globalMutate],
+  );
+
   if (metaError) {
     return (
       <div className="flex h-full items-center justify-center px-6">
@@ -173,12 +224,18 @@ export function ChatPage() {
     );
   }
 
+  // 右栏在 desktop (>=768) 时占内联宽度; 在 mobile 时悬浮 drawer 覆盖.
+  const desktopPanelVisible = !isMobile && panelOpen;
+  const mobilePanelVisible = isMobile && panelOpen;
+
   return (
     <div className="flex h-full flex-col">
       <ChatHeader
         sessionId={meta.session_id}
         title={meta.title}
-        mountedDirs={meta.mounted_dirs}
+        mountedCount={meta.mounted_dirs.length}
+        panelOpen={panelOpen}
+        onTogglePanel={() => setPanelOpen(!panelOpen)}
         onTitleChange={async (next) => {
           try {
             await api.patchSession(meta.session_id, { title: next });
@@ -208,16 +265,54 @@ export function ChatPage() {
             </div>
           </div>
         ) : (
-          <ChatStream
-            sessionId={meta.session_id}
-            historyMessages={history ?? []}
-            streamedFrames={liveFrames}
-            localUserPrompt={localUserPrompt}
-            onUserSend={send}
-            inputDisabled={sending}
-          />
+          <div className="flex h-full min-h-0">
+            <div className="min-w-0 flex-1">
+              <ChatStream
+                sessionId={meta.session_id}
+                historyMessages={history ?? []}
+                streamedFrames={liveFrames}
+                localUserPrompt={localUserPrompt}
+                onUserSend={send}
+                inputDisabled={sending}
+              />
+            </div>
+            {desktopPanelVisible && (
+              <div className="w-[320px] shrink-0 xl:w-[340px]">
+                <RightPanel
+                  sessionId={meta.session_id}
+                  meta={meta}
+                  history={history ?? []}
+                  liveFrames={liveFrames}
+                  onClose={() => setPanelOpen(false)}
+                  onMountsChanged={onMountsChanged}
+                />
+              </div>
+            )}
+          </div>
         )}
       </div>
+
+      {/* mobile drawer — 全屏覆盖, 半透明黑遮罩点击关闭 */}
+      {mobilePanelVisible && (
+        <div className="fixed inset-0 z-40">
+          <button
+            type="button"
+            aria-label="Close panel"
+            onClick={() => setPanelOpen(false)}
+            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+          />
+          <div className="absolute right-0 top-0 h-full w-[min(360px,90vw)]">
+            <RightPanel
+              sessionId={meta.session_id}
+              meta={meta}
+              history={history ?? []}
+              liveFrames={liveFrames}
+              onClose={() => setPanelOpen(false)}
+              onMountsChanged={onMountsChanged}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -226,13 +321,17 @@ export function ChatPage() {
 function ChatHeader({
   sessionId,
   title,
-  mountedDirs,
+  mountedCount,
+  panelOpen,
+  onTogglePanel,
   onTitleChange,
   onDelete,
 }: {
   sessionId: string;
   title: string | null;
-  mountedDirs: string[];
+  mountedCount: number;
+  panelOpen: boolean;
+  onTogglePanel: () => void;
   onTitleChange: (next: string | null) => void;
   onDelete: () => void;
 }) {
@@ -252,7 +351,7 @@ function ChatHeader({
 
   return (
     <div className="border-b border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-6 py-3">
-      <div className="mx-auto flex max-w-[760px] items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {editing ? (
             <input
@@ -305,6 +404,32 @@ function ChatHeader({
           )}
         </div>
 
+        {/* 紧凑 mounts chip — 右栏关时这里也能看一眼; 点开右栏 */}
+        {mountedCount > 0 && (
+          <button
+            type="button"
+            onClick={onTogglePanel}
+            title={`${mountedCount} mount${mountedCount === 1 ? "" : "s"} · Open panel`}
+            className="shrink-0 rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-paper-dim)] transition-colors hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]"
+          >
+            {mountedCount} mount{mountedCount === 1 ? "" : "s"}
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onTogglePanel}
+          title={panelOpen ? "Hide panel" : "Show panel"}
+          className={cn(
+            "shrink-0 rounded-[5px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1.5 transition-colors hover:border-[color:var(--color-line-strong)]",
+            panelOpen
+              ? "text-[color:var(--color-paper-dim)]"
+              : "text-[color:var(--color-ink)]",
+          )}
+        >
+          {panelOpen ? <PanelRightClose size={12} /> : <PanelRightOpen size={12} />}
+        </button>
+
         <button
           type="button"
           onClick={onDelete}
@@ -314,26 +439,6 @@ function ChatHeader({
           <Trash2 size={12} className="inline" />
         </button>
       </div>
-
-      {/* mounted dirs 横条 */}
-      {mountedDirs.length > 0 && (
-        <div className="mx-auto mt-2 flex max-w-[760px] flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-medium uppercase tracking-[0.15em] text-[color:var(--color-ink-dim)]">
-            mounts
-          </span>
-          {mountedDirs.map((d) => (
-            <span
-              key={d}
-              title={d}
-              className={cn(
-                "max-w-[180px] truncate rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-0.5 font-mono text-[10px] text-[color:var(--color-paper-dim)]",
-              )}
-            >
-              {shortenPath(d, 32)}
-            </span>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

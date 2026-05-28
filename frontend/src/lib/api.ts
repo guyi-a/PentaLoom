@@ -4,6 +4,8 @@ import type {
   BrowseResponse,
   Frame,
   HistoryMessage,
+  OpenFileResp,
+  PatchMountsBody,
   PermissionDecisionBody,
   PermissionDecisionResp,
   SessionMeta,
@@ -53,6 +55,20 @@ export const api = {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return http<BrowseResponse>(`/fs/browse${q}`);
   },
+  // 用系统默认 app 打开 path. reveal=true 时定位到文件 (Finder/Explorer 选中).
+  // 后端按 session.mounted_dirs ∪ sandbox 子树校验, 越权返 403.
+  openFile: (args: { sessionId: string; path: string; reveal?: boolean }) =>
+    http<OpenFileResp>(`/fs/open`, {
+      method: "POST",
+      json: {
+        session_id: args.sessionId,
+        path: args.path,
+        reveal: args.reveal ?? false,
+      },
+    }),
+  // 改 session 的 mounted_dirs. 后端 evict LoomPool entry, 下条消息触发 client 重建.
+  patchMounts: (sid: string, body: PatchMountsBody) =>
+    http<SessionMeta>(`/sessions/${sid}/mounts`, { method: "PATCH", json: body }),
 };
 
 // ──── chat SSE ───────────────────────────────────────────────

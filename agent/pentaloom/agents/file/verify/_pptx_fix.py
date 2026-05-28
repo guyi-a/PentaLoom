@@ -1,8 +1,10 @@
-"""PPTX auto-fix: 给中文 run 注入 east_asian 字体引用 (默认 "Noto Sans SC").
+"""PPTX auto-fix: 给中文 run 注入 east_asian 字体引用.
+
+默认从 detect_cjk_fonts() 取第一项 (系统真装的字体), 探不到回退 DEFAULT_CJK_FONT
+(Noto Sans SC) — 至少在装了 Noto 的机器上能渲对.
 
 不真嵌入字体 — 仅修改 a:rPr/a:ea/@typeface. 查看端没装该字体仍 fallback,
-M2 简化方案. M3 再补真嵌入 ([Content_Types].xml + ppt/fonts/* + presentation.xml
-的 embeddedFontLst).
+M5+ 再补真嵌入 ([Content_Types].xml + ppt/fonts/* + presentation.xml 的 embeddedFontLst).
 """
 
 from __future__ import annotations
@@ -15,9 +17,20 @@ _NS = f"{{{_DRAWING_NS}}}"
 DEFAULT_CJK_FONT = "Noto Sans SC"
 
 
-def fix_fonts(prs, *, cjk_font: str = DEFAULT_CJK_FONT) -> int:
-    """给所有中文 run 注入 east_asian_name. 返回修改的 run 数."""
+def fix_fonts(prs, *, cjk_font: str | None = None) -> tuple[int, str]:
+    """给所有中文 run 注入 east_asian_name. 返回 (修改的 run 数, 实际注入的字体名).
+
+    cjk_font=None: 从 detect_cjk_fonts() 取第一项, 系统什么都没装时回退
+    DEFAULT_CJK_FONT — 这种情况下注的字体在用户机上仍可能 fallback,
+    所以 verify 报告会强提示"清单为空, 该装字体了".
+    """
     from lxml import etree  # type: ignore[import-not-found]
+
+    if cjk_font is None:
+        from pentaloom.infra.fonts import detect_cjk_fonts
+
+        installed = detect_cjk_fonts()
+        cjk_font = installed[0] if installed else DEFAULT_CJK_FONT
 
     fixed = 0
     for slide in prs.slides:
@@ -30,7 +43,7 @@ def fix_fonts(prs, *, cjk_font: str = DEFAULT_CJK_FONT) -> int:
                         continue
                     if _ensure_ea(run, cjk_font, etree):
                         fixed += 1
-    return fixed
+    return fixed, cjk_font
 
 
 def _ensure_ea(run, cjk_font: str, etree) -> bool:

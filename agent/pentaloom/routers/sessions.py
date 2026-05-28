@@ -15,8 +15,8 @@ from typing import Any
 
 from claude_agent_sdk import (
     SessionMessage,
-    get_session_messages_from_store,
 )
+from claude_agent_sdk._internal.sessions import project_key_for_directory
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
@@ -32,6 +32,7 @@ from pentaloom.models.session import (
     SessionMtime,
     SessionSummary,
 )
+from pentaloom.routers.chat import _validate_mounted_dirs
 from sqlalchemy import delete
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -61,6 +62,19 @@ class SessionMeta(BaseModel):
 
 class SessionPatch(BaseModel):
     title: str | None = None
+
+
+class MountsPatch(BaseModel):
+    """整体替换或增删 mounted_dirs.
+
+    - 提供 dirs: 整体替换 (UI 上"重排/清空"用)
+    - 提供 add/remove: 增量改 (UI 上 [+] 加挂载, hover-remove 删一条)
+    - 三者互斥, 同时给 add/remove 可以一次性 batch
+    """
+
+    dirs: list[str] | None = None
+    add: list[str] | None = None
+    remove: list[str] | None = None
 
 
 def _content_blocks_to_frames(content: Any, msg_uuid: str | None) -> list[dict]:
@@ -145,6 +159,54 @@ async def get_session(sid: str) -> SessionMeta:
     return SessionMeta.from_row(row)
 
 
+def _entry_to_session_message(entry: dict) -> SessionMessage | None:
+    """SDK store 里的一行 entry → SessionMessage. 不走 parentUuid 链还原.
+
+    SDK 自带 get_session_messages_from_store 用 leaf→root 单链回溯, 并行 tool_use
+    场景 (一个 assistant 同时调 2+ 工具, 树在 tool_use 处分叉) 会丢掉除 main chain
+    以外的分支 — 实测见 sid 55a358dc: Bash + install_libs 并行, Bash 的 tool_result
+    所在分支被裁, 前端拿不到 result → Bash chip 永远转圈.
+
+    我们不需要 chain 重建, 按 seq 平铺给前端就够 (前端会用 message_id + tool_use_id
+    跨 message 配对). 这里只做 visibility 过滤 (与 SDK 内部 _is_visible_message 一致).
+    """
+    etype = entry.get("type")
+    if etype not in ("user", "assistant"):
+        return None
+    if entry.get("isMeta") or entry.get("isSidechain") or entry.get("teamName"):
+        return None
+    return SessionMessage(
+        type="user" if etype == "user" else "assistant",  # type: ignore[arg-type]
+        uuid=entry.get("uuid", ""),
+        session_id=entry.get("sessionId", ""),
+        message=entry.get("message"),
+        parent_tool_use_id=None,
+    )
+
+
+async def _load_session_messages_linear(
+    sid: str, directory: str, limit: int | None, offset: int
+) -> list[SessionMessage]:
+    """按 seq 顺序读完整 transcript, 不走 parentUuid 单链回溯 — 保留所有并行分支."""
+    store = SQLiteSessionStore()
+    project_key = project_key_for_directory(directory)
+    entries = await store.load({"project_key": project_key, "session_id": sid})
+    if not entries:
+        return []
+    msgs: list[SessionMessage] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        sm = _entry_to_session_message(e)
+        if sm is not None:
+            msgs.append(sm)
+    if limit is not None and limit > 0:
+        return msgs[offset : offset + limit]
+    if offset > 0:
+        return msgs[offset:]
+    return msgs
+
+
 @router.get("/{sid}/messages", summary="session 完整对话历史 (按时间序)")
 async def get_session_messages(
     sid: str, limit: int | None = None, offset: int = 0
@@ -160,10 +222,9 @@ async def get_session_messages(
         # 沙箱不存在说明 session 从没跑过 (db 行可能也没建), 直接 404
         raise HTTPException(404, f"session {sid!r} has no transcript")
 
-    store = SQLiteSessionStore()
     try:
-        msgs = await get_session_messages_from_store(
-            store, sid, directory=str(sandbox), limit=limit, offset=offset
+        msgs = await _load_session_messages_linear(
+            sid, str(sandbox), limit=limit, offset=offset
         )
     except Exception as e:
         logger.exception(f"failed to read history for {sid}: {e}")
@@ -195,6 +256,48 @@ async def patch_session(sid: str, patch: SessionPatch) -> SessionMeta:
             await db.commit()
             await db.refresh(row)
         return SessionMeta.from_row(row)
+
+
+@router.patch("/{sid}/mounts", summary="改 session 的 mounted_dirs (会 evict LoomPool client, 下轮重建)")
+async def patch_mounts(sid: str, patch: MountsPatch, request: Request) -> SessionMeta:
+    """改完后 evict pool entry — 下条用户消息触发 LoomPool 重建时新 add_dirs 才生效.
+
+    跟 request_workspace_dir 工具语义一致: 当前 turn 不受影响, 下轮才看到新挂载.
+    """
+    if patch.dirs is None and patch.add is None and patch.remove is None:
+        raise HTTPException(400, "must supply at least one of dirs/add/remove")
+
+    async with AsyncSessionLocal() as db:
+        row = await crud_chat.get_chat_session(db, sid)
+        if row is None:
+            raise HTTPException(404, f"session {sid!r} not found")
+
+        if patch.dirs is not None:
+            new_dirs = list(patch.dirs)
+        else:
+            new_dirs = list(row.mounted_dirs)
+            if patch.add:
+                for d in patch.add:
+                    if d not in new_dirs:
+                        new_dirs.append(d)
+            if patch.remove:
+                remove_set = set(patch.remove)
+                new_dirs = [d for d in new_dirs if d not in remove_set]
+
+        new_dirs = _validate_mounted_dirs(new_dirs)
+        await crud_chat.set_mounted_dirs(db, sid, new_dirs)
+        row = await crud_chat.get_chat_session(db, sid)
+        assert row is not None
+
+    pool = getattr(request.app.state, "pool", None)
+    if pool is not None:
+        try:
+            await pool.evict(sid)
+        except Exception:
+            logger.exception(f"pool evict failed after mounts patch sid={sid}")
+
+    logger.info(f"mounts patched sid={sid} new={new_dirs}")
+    return SessionMeta.from_row(row)
 
 
 @router.delete("/{sid}", summary="永久删除 session: db 行 + 沙箱 + 镜像表 + LoomPool 缓存")

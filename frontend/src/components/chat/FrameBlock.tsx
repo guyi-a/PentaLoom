@@ -1,24 +1,18 @@
-// 单帧渲染器: 把后端 SSE 一帧 (text/thinking/tool_use/tool_result/task_*/result/error)
-// 渲染成一个"卡片". 整个聊天流就是 frames.map(FrameBlock).
-//
-// 设计原则:
-// - 视觉密度按重要性分层: text 是主台词 (大字 + paper 色), thinking/tool 是边注 (小字 + ink 色)
-// - tool_use / tool_result 用左侧色条标识所属"线" (file/app/browser/computer/search)
-// - task_* 折叠成一行小 chip, 不抢戏
-// - 工具输入 / 工具输出超过一定长度自动折叠, 点开看详情
+// 单帧渲染器: 把后端 SSE 一帧 (text/thinking/task_*/result/error) 渲染成一个"卡片".
+// tool_use / tool_result 不再走这里 — 配对成 ToolPair 由 <ToolRow> 渲染一行.
+// 见 ChatStream.tsx 的 pairedFrames 派生.
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  ChevronRight,
-  Wrench,
-  Brain,
   AlertCircle,
-  CheckCircle2,
+  Brain,
+  ChevronRight,
+  Folder,
   Package,
   FileTerminal,
-  Folder,
+  Type,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,23 +22,19 @@ import {
   ALLOW_SESSION_TOOLS,
   BASH_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
+  INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
-  TOOLS_NEEDING_APPROVAL,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "@/lib/types";
+import { truncate } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
 interface Props {
   frame: Frame;
-  // 父组件算出来的"该 tool_use 当前在等用户审批" — 这里只在 Bash 工具上用到
-  // (workspace 走独立 dialog, 不在 frame 内联). 由 ChatStream 通过 ToolUseBlock
-  // 链路传下来.
-  pendingApproval?: boolean;
-  sessionId?: string;
 }
 
-export function FrameBlock({ frame, pendingApproval, sessionId }: Props) {
+export function FrameBlock({ frame }: Props) {
   switch (frame.type) {
     case "text":
       return <TextBlock text={frame.text} streaming={frame.streaming} />;
@@ -55,22 +45,10 @@ export function FrameBlock({ frame, pendingApproval, sessionId }: Props) {
     case "thinking":
       return <ThinkingBlock text={frame.text} streaming={frame.streaming} />;
     case "tool_use":
-      return (
-        <ToolUseBlock
-          toolUseId={frame.id}
-          name={frame.name}
-          input={frame.input}
-          pendingApproval={pendingApproval}
-          sessionId={sessionId}
-        />
-      );
     case "tool_result":
-      return (
-        <ToolResultBlock
-          content={frame.content}
-          isError={frame.is_error}
-        />
-      );
+      // 现在由 ChatStream 配对成 ToolPair → <ToolRow>. 这里走到说明上游漏配对了,
+      // 不该把 raw JSON 抛给用户, 静默吞掉.
+      return null;
     case "task_started":
       return (
         <TaskChip
@@ -179,88 +157,10 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean 
   );
 }
 
-// ──── tool_use — agent 决定调用一个工具 ─────────────────────
-function ToolUseBlock({
-  toolUseId,
-  name,
-  input,
-  pendingApproval,
-  sessionId,
-}: {
-  toolUseId: string;
-  name: string;
-  input: Record<string, unknown>;
-  pendingApproval?: boolean;
-  sessionId?: string;
-}) {
-  // 任何 HITL 工具待审批时, 默认展开把"要做什么"清楚摆出来; 其它情况折叠.
-  const showApproval =
-    !!pendingApproval && TOOLS_NEEDING_APPROVAL.includes(name) && !!sessionId;
-  const [open, setOpen] = useState(showApproval);
-  const display = friendlyToolName(name);
-  const threadColor = threadColorForTool(name);
-  const oneLine = oneLineSummary(name, input);
-
-  return (
-    <div
-      className={cn(
-        "rounded-[5px] border-l-2 bg-[color:var(--color-bg-soft)] py-2 pl-3 pr-3",
-        showApproval && "ring-1 ring-[color:var(--color-warn)]/30",
-      )}
-      style={{ borderLeftColor: threadColor }}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 text-left text-[13px]"
-      >
-        <Wrench size={13} className="text-[color:var(--color-ink)]" />
-        <span className="font-mono text-[13px] font-medium text-[color:var(--color-paper)]">
-          {display}
-        </span>
-        {oneLine && (
-          <span className="truncate font-mono text-[13px] text-[color:var(--color-paper-dim)]" title={oneLine}>
-            · {oneLine}
-          </span>
-        )}
-        {showApproval && (
-          <span className="ml-1 rounded-[3px] bg-[color:var(--color-warn)]/15 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide text-[color:var(--color-warn)]">
-            awaiting approval
-          </span>
-        )}
-        <ChevronRight
-          size={13}
-          className={cn(
-            "ml-auto shrink-0 text-[color:var(--color-ink)] transition-transform",
-            open && "rotate-90",
-          )}
-        />
-      </button>
-      {open && (
-        // 审批中: 富信息块 (packages / script / path) 比 JSON 直观, 便于用户决策.
-        // 非审批 / 历史回放: 仍用 JSON pre, 信息无损.
-        showApproval ? (
-          <ApprovalInfo name={name} input={input} />
-        ) : (
-          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
-            {JSON.stringify(input, null, 2)}
-          </pre>
-        )
-      )}
-      {showApproval && (
-        <InlineApprovalBar
-          toolName={name}
-          sessionId={sessionId!}
-          toolUseId={toolUseId}
-          input={input}
-        />
-      )}
-    </div>
-  );
-}
+// ──── ApprovalInfo / InlineApprovalBar / FieldBlock — 给 ToolRow 复用 ────
 
 // 审批中的富信息块. 按 toolName 切渲染, 优先把用户拍板要看的字段亮出来.
-function ApprovalInfo({
+export function ApprovalInfo({
   name,
   input,
 }: {
@@ -271,7 +171,7 @@ function ApprovalInfo({
     const cmd = String(input.command ?? "").trim();
     const desc = String(input.description ?? "").trim();
     return (
-      <div className="mt-2 space-y-2">
+      <div className="space-y-2">
         <FieldBlock label="Command">
           <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper)]">
             {cmd || "(empty)"}
@@ -289,7 +189,7 @@ function ApprovalInfo({
       : [];
     const reason = String(input.reason ?? "").trim();
     return (
-      <div className="mt-2 space-y-2">
+      <div className="space-y-2">
         <FieldBlock label={`Packages (${libs.length})`} icon={Package}>
           <div className="flex flex-wrap gap-1.5">
             {libs.length === 0 ? (
@@ -319,7 +219,7 @@ function ApprovalInfo({
     const args = Array.isArray(rawArgs) ? rawArgs.map((x) => String(x)) : [];
     const desc = String(input.description ?? "").trim();
     return (
-      <div className="mt-2 space-y-2">
+      <div className="space-y-2">
         <FieldBlock label="Script" icon={FileTerminal}>
           <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]" title={scriptPath}>
             {scriptPath}
@@ -348,7 +248,7 @@ function ApprovalInfo({
     const path = String(input.path ?? "");
     const reason = String(input.reason ?? "").trim();
     return (
-      <div className="mt-2 space-y-2">
+      <div className="space-y-2">
         <FieldBlock label="Path" icon={Folder}>
           <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]" title={path}>
             {path}
@@ -359,15 +259,38 @@ function ApprovalInfo({
     );
   }
 
+  if (name === INSTALL_FONT_TOOL_NAME) {
+    const reason = String(input.reason ?? "").trim();
+    return (
+      <div className="space-y-2">
+        <FieldBlock label="Font" icon={Type}>
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+            Noto Sans SC (中文字体)
+          </span>
+        </FieldBlock>
+        <FieldBlock label="Install path">
+          <span className="text-[12.5px] text-[color:var(--color-paper-dim)]">
+            macOS: brew --cask 优先, 失败兜底下载 ~/Library/Fonts/ ·
+            Linux: ~/.local/share/fonts/ · Windows: %LOCALAPPDATA%/Microsoft/Windows/Fonts/
+          </span>
+        </FieldBlock>
+        {reason && <FieldBlock label="Reason">{reason}</FieldBlock>}
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          一次性操作 · 下载约 10-20MB · 装完仅本机生效
+        </div>
+      </div>
+    );
+  }
+
   // 兜底 — 不在 HITL_TOOL_NAMES 集合里, 不该走到这里, 但别挂掉
   return (
-    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
+    <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
       {JSON.stringify(input, null, 2)}
     </pre>
   );
 }
 
-function FieldBlock({
+export function FieldBlock({
   label,
   icon: Icon,
   children,
@@ -390,7 +313,7 @@ function FieldBlock({
 }
 
 // 内联审批条 — 所有 HITL 工具共用. 按 toolName 决定按钮组合 + 主按钮文案.
-function InlineApprovalBar({
+export function InlineApprovalBar({
   toolName,
   sessionId,
   toolUseId,
@@ -413,11 +336,11 @@ function InlineApprovalBar({
         ? "Run"
         : "Allow once";
 
-  // allow_session 仅 Bash / install_libs 支持; 其它工具隐藏该按钮.
+  // allow_session 仅 Bash / install_libs / file_verify 支持; 其它工具隐藏该按钮.
   const supportsAllowSession = ALLOW_SESSION_TOOLS.includes(toolName);
 
-  // session 按钮是否可点 — Bash 需要非空 command, install_libs 需要非空 libs.
-  // (允许后端做最终校验, 这里只是 UX 提示, 空了也别让用户点了再失败.)
+  // session 按钮是否可点 — Bash 需要非空 command, install_libs 需要非空 libs,
+  // file_verify 需要非空 path.
   const sessionAllowed = (() => {
     if (!supportsAllowSession) return false;
     if (toolName === BASH_TOOL_NAME) {
@@ -456,7 +379,7 @@ function InlineApprovalBar({
         toast.info("已拒绝");
       }
       // 不主动隐藏 — pendingApproval prop 会因 tool_result 到达而变 false,
-      // 卡片自然回退到普通形态. busy 状态在那之前显示为 "Sending…".
+      // ToolRow 自然回退到普通形态. busy 状态在那之前显示为 "Sending…".
     } catch (err) {
       toast.error(`Response failed: ${String(err)}`);
       setBusy(null);
@@ -464,7 +387,7 @@ function InlineApprovalBar({
   }
 
   return (
-    <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-[color:var(--color-line)] pt-2.5">
+    <div className="flex flex-wrap items-center gap-1.5 border-t border-[color:var(--color-line)] pt-2.5">
       <button
         type="button"
         onClick={() => decide("allow_once")}
@@ -520,66 +443,6 @@ function InlineApprovalBar({
       >
         {busy === "deny" ? "Sending…" : "Deny"}
       </button>
-    </div>
-  );
-}
-
-// ──── tool_result — 工具回执 ─────────────────────────────────
-function ToolResultBlock({
-  content,
-  isError,
-}: {
-  content: unknown;
-  isError: boolean;
-}) {
-  const text = stringifyToolResult(content);
-  const isLong = text.length > 400;
-  const [open, setOpen] = useState(!isLong);
-
-  return (
-    <div
-      className={cn(
-        "rounded-[5px] border-l-2 py-2 pl-3 pr-3",
-        isError
-          ? "border-[color:var(--color-error)] bg-[color:var(--color-error)]/5"
-          : "border-[color:var(--color-line-strong)] bg-[color:var(--color-bg-soft)]",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 text-left text-[13px]"
-      >
-        {isError ? (
-          <AlertCircle size={13} className="text-[color:var(--color-error)]" />
-        ) : (
-          <CheckCircle2 size={13} className="text-[color:var(--color-ink)]" />
-        )}
-        <span
-          className={cn(
-            isError
-              ? "text-[color:var(--color-error)]"
-              : "text-[color:var(--color-paper-dim)]",
-          )}
-        >
-          {isError ? "tool failed" : "tool result"}
-        </span>
-        <span className="font-mono text-[11px] text-[color:var(--color-ink)]">
-          {isLong ? `${text.length} chars` : ""}
-        </span>
-        <ChevronRight
-          size={13}
-          className={cn(
-            "ml-auto shrink-0 text-[color:var(--color-ink)] transition-transform",
-            open && "rotate-90",
-          )}
-        />
-      </button>
-      {open && (
-        <pre className="mt-2 max-h-[420px] overflow-y-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper-dim)]">
-          {text}
-        </pre>
-      )}
     </div>
   );
 }
@@ -683,74 +546,4 @@ function ErrorBlock({ message }: { message: string }) {
       <span className="whitespace-pre-wrap">{message}</span>
     </div>
   );
-}
-
-// ──── helpers ────────────────────────────────────────────────
-
-function friendlyToolName(name: string): string {
-  // mcp__pentaloom__request_workspace_dir → "request workspace dir"
-  if (name.startsWith("mcp__")) {
-    return name.split("__").slice(2).join("·").replace(/_/g, " ");
-  }
-  return name;
-}
-
-function threadColorForTool(name: string): string {
-  // 简单分类: read/write/edit/glob/grep → file 线
-  // bash → computer 线; task → app 线; webfetch/websearch → search 线
-  const n = name.toLowerCase();
-  if (n.includes("bash")) return "var(--color-thread-computer)";
-  if (n === "task" || n.startsWith("task")) return "var(--color-thread-app)";
-  if (n.includes("fetch") || n.includes("search") || n.includes("web"))
-    return "var(--color-thread-search)";
-  if (n.includes("browser")) return "var(--color-thread-browser)";
-  if (
-    n.includes("read") ||
-    n.includes("write") ||
-    n.includes("edit") ||
-    n.includes("glob") ||
-    n.includes("grep")
-  )
-    return "var(--color-thread-file)";
-  return "var(--color-line-strong)";
-}
-
-function oneLineSummary(name: string, input: Record<string, unknown>): string {
-  // 对常见工具给一个一眼能看出"做什么"的摘要
-  const n = name.toLowerCase();
-  if (n.includes("read") && typeof input.file_path === "string")
-    return input.file_path;
-  if ((n.includes("write") || n.includes("edit")) && typeof input.file_path === "string")
-    return input.file_path;
-  if (n.includes("bash") && typeof input.command === "string")
-    return truncate(input.command, 80);
-  if (n.includes("glob") && typeof input.pattern === "string")
-    return input.pattern;
-  if (n.includes("grep") && typeof input.pattern === "string")
-    return input.pattern;
-  if (n === "task" && typeof input.description === "string")
-    return input.description;
-  if (typeof input.path === "string") return input.path;
-  if (typeof input.url === "string") return input.url;
-  return "";
-}
-
-function stringifyToolResult(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    // [{type:'text', text}, ...]
-    return content
-      .map((b) => {
-        if (b && typeof b === "object" && "text" in b)
-          return String((b as { text: unknown }).text);
-        return JSON.stringify(b);
-      })
-      .join("\n");
-  }
-  if (content == null) return "";
-  return JSON.stringify(content, null, 2);
-}
-
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }

@@ -159,6 +159,10 @@ export const RUN_SCRIPT_TOOL_NAME =
 export const FILE_VERIFY_TOOL_NAME =
   "mcp__pentaloom_files__file_verify";
 
+// 装中文字体 Noto Sans SC 到系统 (内联审批, 一次性操作 — 只 allow_once / deny).
+export const INSTALL_FONT_TOOL_NAME =
+  "mcp__pentaloom__install_noto_sans_sc";
+
 export const BASH_TOOL_NAME = "Bash";
 
 // 需要 HITL 审批的工具名全集. 必须跟后端 pentaloom.tools.HITL_TOOL_NAMES 对齐.
@@ -169,6 +173,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
+  INSTALL_FONT_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -211,4 +216,16 @@ export interface BrowseResponse {
   home: string;          // $HOME, 给"回家"按钮
   entries: FsEntry[];
   truncated: boolean;
+}
+
+// POST /fs/open 的回执. 失败走 throw, 200 时只回实际打开的规范化路径.
+export interface OpenFileResp {
+  opened: string;
+}
+
+// PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.
+export interface PatchMountsBody {
+  dirs?: string[];
+  add?: string[];
+  remove?: string[];
 }

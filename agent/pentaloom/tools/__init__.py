@@ -5,12 +5,15 @@ from pentaloom.tools.files import (
     FILE_VERIFY_FULL_NAME,
     FILES_MCP_SERVER,
     FILES_MCP_SERVER_NAME,
+    FILES_PROMPT_INSTRUCTIONS,
 )
 from pentaloom.tools.python_env import (
     INSTALL_LIBS_FULL_NAME,
     PYTHON_ENV_MCP_SERVER_NAME,
+    PYTHON_ENV_PROMPT_INSTRUCTIONS,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.system_resources import INSTALL_NOTO_SANS_SC_FULL_NAME
 from pentaloom.tools.workspace import (
     ALLOW_SESSION_TOOLS,
     BASH_TOOL_NAME,
@@ -20,6 +23,7 @@ from pentaloom.tools.workspace import (
     REGISTRY as PERMISSION_REGISTRY,
     WORKSPACE_MCP_SERVER,
     WORKSPACE_MCP_SERVER_NAME,
+    WORKSPACE_PROMPT_INSTRUCTIONS,
     allowlist_key,
     build_hitl_hooks,
     make_can_use_tool,
@@ -28,6 +32,13 @@ from pentaloom.tools.workspace import (
 # 向后兼容旧 import 名 (LoomPool / routers 还在用 WORKSPACE_REGISTRY).
 WORKSPACE_REGISTRY = PERMISSION_REGISTRY
 
+# 给主 prompt 的 capabilities 段用. 顺序 = 段在 prompt 里出现的顺序.
+TOOL_PROMPT_INSTRUCTIONS: list[str] = [
+    WORKSPACE_PROMPT_INSTRUCTIONS,
+    FILES_PROMPT_INSTRUCTIONS,
+    PYTHON_ENV_PROMPT_INSTRUCTIONS,
+]
+
 __all__ = [
     "ALLOW_SESSION_TOOLS",
     "BASH_TOOL_NAME",
@@ -35,15 +46,20 @@ __all__ = [
     "FILE_VERIFY_FULL_NAME",
     "FILES_MCP_SERVER",
     "FILES_MCP_SERVER_NAME",
+    "FILES_PROMPT_INSTRUCTIONS",
     "HITL_TOOL_NAMES",
     "INSTALL_LIBS_FULL_NAME",
+    "INSTALL_NOTO_SANS_SC_FULL_NAME",
     "PERMISSION_REGISTRY",
     "PYTHON_ENV_MCP_SERVER",
     "PYTHON_ENV_MCP_SERVER_NAME",
+    "PYTHON_ENV_PROMPT_INSTRUCTIONS",
     "REQUEST_WORKSPACE_DIR_TOOL_NAME",
     "RUN_SCRIPT_FULL_NAME",
+    "TOOL_PROMPT_INSTRUCTIONS",
     "WORKSPACE_MCP_SERVER",
     "WORKSPACE_MCP_SERVER_NAME",
+    "WORKSPACE_PROMPT_INSTRUCTIONS",
     "WORKSPACE_REGISTRY",
     "allowlist_key",
     "build_hitl_hooks",
