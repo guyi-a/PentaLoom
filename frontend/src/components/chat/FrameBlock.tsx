@@ -21,7 +21,9 @@ import type { Frame } from "@/lib/types";
 import {
   ALLOW_SESSION_TOOLS,
   BASH_TOOL_NAME,
+  BROWSER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
+  INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
@@ -89,6 +91,10 @@ export function FrameBlock({ frame }: Props) {
     case "error":
       return <ErrorBlock message={frame.message} />;
     case "stream_end":
+      return null;
+    case "permission_resolved":
+      // 控制帧: 仅用于让 ChatStream 的 pendingApprovalIds reducer 知道审批已落定,
+      // UI 上不渲染卡片 — 否则 "Allow → 卡片立刻消失" 的体验就被这块兜底破坏了.
       return null;
     default:
       // 兜底: 未知 frame, 不该有, 但别挂掉
@@ -339,8 +345,7 @@ export function InlineApprovalBar({
   // allow_session 仅 Bash / install_libs / file_verify 支持; 其它工具隐藏该按钮.
   const supportsAllowSession = ALLOW_SESSION_TOOLS.includes(toolName);
 
-  // session 按钮是否可点 — Bash 需要非空 command, install_libs 需要非空 libs,
-  // file_verify 需要非空 path.
+  // session 按钮是否可点 — 各工具按需要的字段判. 跟后端 allowlist_key 计算口径一致.
   const sessionAllowed = (() => {
     if (!supportsAllowSession) return false;
     if (toolName === BASH_TOOL_NAME) {
@@ -353,6 +358,13 @@ export function InlineApprovalBar({
     if (toolName === FILE_VERIFY_TOOL_NAME) {
       return !!String(input.path ?? "").trim();
     }
+    if (toolName === INSTALL_BROWSER_USE_TOOL_NAME) {
+      const step = String(input.step ?? "").trim();
+      return step === "check" || step === "install" || step === "chromium";
+    }
+    if (toolName === BROWSER_USE_TOOL_NAME) {
+      return !!String(input.command ?? "").trim();
+    }
     return false;
   })();
 
@@ -363,7 +375,11 @@ export function InlineApprovalBar({
         ? "Allow same libs (session)"
         : toolName === FILE_VERIFY_TOOL_NAME
           ? "Allow same file (session)"
-          : "Allow (session)";
+          : toolName === INSTALL_BROWSER_USE_TOOL_NAME
+            ? "Allow same step (session)"
+            : toolName === BROWSER_USE_TOOL_NAME
+              ? "Allow same action (session)"
+              : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -414,7 +430,11 @@ export function InlineApprovalBar({
                 ? "命令为空, 无法加入白名单"
                 : toolName === FILE_VERIFY_TOOL_NAME
                   ? "path 为空, 无法加入白名单"
-                  : "libs 为空, 无法加入白名单"
+                  : toolName === BROWSER_USE_TOOL_NAME
+                    ? "command 为空, 无法加入白名单"
+                    : toolName === INSTALL_BROWSER_USE_TOOL_NAME
+                      ? "step 不合法, 无法加入白名单"
+                      : "libs 为空, 无法加入白名单"
           }
           className={cn(
             "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",

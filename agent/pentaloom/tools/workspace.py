@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,13 @@ from claude_agent_sdk import (
 )
 from loguru import logger
 
+from pentaloom.capabilities.browser import extract_action_verb
+from pentaloom.infra.stream_buffer import stream_buffers
+from pentaloom.tools.browser import (
+    BROWSER_USE_FULL_NAME,
+    INSTALL_BROWSER_USE_FULL_NAME,
+    VALID_INSTALL_STEPS,
+)
 from pentaloom.tools.files import (
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
@@ -49,14 +57,6 @@ REQUEST_TOOL_NAME = "request_workspace_dir"
 FULL_TOOL_NAME = f"mcp__{WORKSPACE_MCP_SERVER_NAME}__{REQUEST_TOOL_NAME}"
 
 
-# 主 prompt 的"工具守则"段会拼这一段.
-WORKSPACE_PROMPT_INSTRUCTIONS: str = (
-    "### 工作区挂载\n"
-    "- 用户提到本地目录 / 项目, 但当前没在已授权目录里时, 调 "
-    f"{FULL_TOOL_NAME} 请求挂载, 别自己猜路径或用 Bash 直接读.\n"
-    "- 挂载在用户同意的下一轮 turn 才生效, 当前 turn 内仍是旧的文件系统权限."
-)
-
 # Bash 在 app.py 的 allowed_tools 里被剔除 → 每次调用都会触发 can_use_tool.
 BASH_TOOL_NAME = "Bash"
 
@@ -70,15 +70,20 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     RUN_SCRIPT_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
     INSTALL_NOTO_SANS_SC_FULL_NAME,
+    INSTALL_BROWSER_USE_FULL_NAME,
+    BROWSER_USE_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
 # run_python_script 脚本内容每次都变, 给"会话级免审"没意义 — 这两个 allow_session
-# 退化为 allow_once. 其余 (Bash / install_libs / file_verify) 才真正走会话级缓存.
+# 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_*) 才真正
+# 走会话级缓存.
 ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BASH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
+    INSTALL_BROWSER_USE_FULL_NAME,
+    BROWSER_USE_FULL_NAME,
 })
 
 
@@ -211,6 +216,22 @@ def _normalize_file_verify(tool_input: dict[str, Any]) -> str:
     return str(tool_input.get("path", "")).strip()
 
 
+def _normalize_install_browser_use(tool_input: dict[str, Any]) -> str:
+    """install_browser_use 的免审 key = step. 同一步 (check/install/chromium) 会话内
+    只问一次, 重复装 / 反复 check 不再打扰用户."""
+    return str(tool_input.get("step", "")).strip()
+
+
+def _normalize_browser_use(tool_input: dict[str, Any]) -> str:
+    """browser_use 的免审 key = action verb (open/state/click/eval/...). 同一类动作
+    首次审, 后续免审. command 文本可能千变万化, 用 verb 折叠成可枚举的集合."""
+    cmd = str(tool_input.get("command", "")).strip()
+    if not cmd:
+        return ""
+    verb = extract_action_verb(cmd)
+    return verb or ""
+
+
 def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
     if tool_name == BASH_TOOL_NAME:
@@ -221,6 +242,12 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return key or None
     if tool_name == FILE_VERIFY_FULL_NAME:
         key = _normalize_file_verify(tool_input)
+        return key or None
+    if tool_name == INSTALL_BROWSER_USE_FULL_NAME:
+        key = _normalize_install_browser_use(tool_input)
+        return key or None
+    if tool_name == BROWSER_USE_FULL_NAME:
+        key = _normalize_browser_use(tool_input)
         return key or None
     return None
 
@@ -257,6 +284,17 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
                 f"{tool_name} auto-allowed (session allowlist) sid={sid} "
                 f"tool_use_id={tool_use_id} key={key!r}"
             )
+            # 推一帧 permission_resolved 让前端 reducer 立刻把 id 从 pendingApprovalIds
+            # 移除, 否则前端只看到 tool_use 没看到任何 dismiss 信号, 会渲染出审批栏直到
+            # tool_result 来才消失 — 视觉上"闪一下".
+            buf = stream_buffers.get(sid)
+            if buf is not None:
+                payload = {
+                    "type": "permission_resolved",
+                    "tool_use_id": tool_use_id,
+                    "decision": "auto_session",
+                }
+                buf.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
             return PermissionResultAllow()
 
         # workspace 的 path 是必填; 缺了直接 deny, 不浪费 UI 一次确认.
@@ -282,6 +320,20 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             path = str(tool_input.get("path", "")).strip()
             if not path:
                 return PermissionResultDeny(message="path 不能为空")
+
+        # install_browser_use 必须给合法 step.
+        if tool_name == INSTALL_BROWSER_USE_FULL_NAME:
+            step = str(tool_input.get("step", "")).strip()
+            if step not in VALID_INSTALL_STEPS:
+                return PermissionResultDeny(
+                    message=f"step 必须是 {'/'.join(sorted(VALID_INSTALL_STEPS))} 之一"
+                )
+
+        # browser_use 必须给非空 command.
+        if tool_name == BROWSER_USE_FULL_NAME:
+            cmd = str(tool_input.get("command", "")).strip()
+            if not cmd:
+                return PermissionResultDeny(message="command 不能为空")
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input

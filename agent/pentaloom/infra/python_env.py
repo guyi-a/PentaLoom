@@ -231,6 +231,11 @@ async def _run(
     )
 
 
+# 公开别名: 模块外想跑任意命令时用. 内部 install_libs / run_script / run_uv_cli
+# 都走同一份实现, 不重复造 timeout / process group 处理.
+run_command = _run
+
+
 # ── uv project 管理 ────────────────────────────────────────────
 
 def ensure_uv_project(python_env_dir: Path) -> None:
@@ -298,6 +303,40 @@ async def install_libs(
         env=env,
         timeout=timeout,
         timeout_message="uv add timed out",
+    )
+
+
+async def run_uv_cli(
+    settings: Settings,
+    bin_name: str,
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = _RUN_TIMEOUT,
+    timeout_message: str | None = None,
+) -> ScriptResult:
+    """跑共享 uv project 里装的 CLI: uv run --project <env> <bin_name> [args...].
+
+    给非 python 入口的 CLI 用 (比如 browser-use, playwright). cwd 不传时落到 sandbox 外
+    的 python_env_dir, 跟 install/run_script 一致. 用户工具通常应该传 sandbox 让相对路径
+    落到对应会话目录里.
+    """
+    ensure_uv_project(settings.python_env_dir)
+    env = build_env(settings)
+    cmd = [
+        uv_bin(env),
+        "run",
+        "--project",
+        str(settings.python_env_dir),
+        bin_name,
+        *args,
+    ]
+    return await _run(
+        cmd,
+        cwd=cwd or settings.python_env_dir,
+        env=env,
+        timeout=timeout,
+        timeout_message=timeout_message or f"uv run {bin_name} timed out",
     )
 
 

@@ -33,16 +33,6 @@ RUN_SCRIPT_FULL_NAME = (
 )
 
 
-# 主 prompt 的"工具守则"段会拼这一段.
-PYTHON_ENV_PROMPT_INSTRUCTIONS: str = (
-    "### 跑 Python 代码\n"
-    f"- 装第三方包用 {INSTALL_LIBS_FULL_NAME} (会请求用户授权), "
-    "不要自己拼 pip / uv 命令走 Bash.\n"
-    f"- 跑 .py 脚本用 {RUN_SCRIPT_FULL_NAME}: 先用 Write 把脚本落到 sandbox 或挂载目录, "
-    "再把绝对路径传过来. 工具不接受 inline 代码 (escape 灾难 + 行号对不上).\n"
-    "- 一次性、纯命令的探查走 Bash; 涉及导入 / 多行逻辑 / 调试的一律走脚本路径."
-)
-
 # LLM 习惯把整段 Python 直接塞进 script_path. 探测到就回错让它改走 "先 Write
 # 文件再传路径" 的路 — 否则 inline 代码 escape 灾难 + 没法 Read 复审 + traceback
 # 行号对不上.
