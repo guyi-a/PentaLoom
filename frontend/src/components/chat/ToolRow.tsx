@@ -61,6 +61,9 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
   const isHitl = TOOLS_NEEDING_APPROVAL.includes(use.name);
   const showApproval = !!pendingApproval && isHitl && !!sessionId;
   const status = computeStatus(pair, showApproval);
+  // Skill 工具只是 LLM 主动加载某个 skill 的信号 — input/result 没什么可看的,
+  // 一行显示 "Skill · <name>" 就够; 强行不可展开, 省得用户点开后看到一堆没用的 JSON.
+  const isSkill = use.name === "Skill";
 
   // null = 用户没碰过, 跟着状态机走; true/false = 用户手动锁定
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
@@ -103,8 +106,14 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
     >
       <button
         type="button"
-        onClick={() => setUserToggled(!open)}
-        className="flex w-full items-center gap-2 text-left text-[13px]"
+        onClick={() => {
+          if (isSkill) return;
+          setUserToggled(!open);
+        }}
+        className={cn(
+          "flex w-full items-center gap-2 text-left text-[13px]",
+          isSkill && "cursor-default",
+        )}
       >
         <Icon size={13} className="shrink-0 text-[color:var(--color-ink)]" />
         <span className="font-mono text-[13px] font-medium text-[color:var(--color-paper)]">
@@ -121,17 +130,19 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
         {/* 状态 chip — 永远靠右挨着 chevron, 一眼能看 */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <StatusBadge status={status} />
-          <ChevronRight
-            size={13}
-            className={cn(
-              "text-[color:var(--color-ink)] transition-transform",
-              open && "rotate-90",
-            )}
-          />
+          {!isSkill && (
+            <ChevronRight
+              size={13}
+              className={cn(
+                "text-[color:var(--color-ink)] transition-transform",
+                open && "rotate-90",
+              )}
+            />
+          )}
         </span>
       </button>
 
-      {open && (
+      {open && !isSkill && (
         <div className="mt-2 space-y-2">
           {showApproval ? (
             <ApprovalInfo name={use.name} input={use.input} />

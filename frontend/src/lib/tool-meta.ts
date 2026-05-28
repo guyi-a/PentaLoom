@@ -16,6 +16,7 @@ import {
   Play,
   Search,
   ShieldCheck,
+  Sparkles,
   Terminal,
   Type,
   Wrench,
@@ -43,6 +44,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   Grep: Search,
   Task: Play,
   TodoWrite: ListChecks,
+  Skill: Sparkles,
   WebFetch: Globe,
   WebSearch: Globe,
   [WORKSPACE_PERMISSION_TOOL_NAME]: FolderOpen,
@@ -109,6 +111,7 @@ export function oneLineSummary(
     const todos = input.todos;
     if (Array.isArray(todos)) return `${todos.length} item${todos.length === 1 ? "" : "s"}`;
   }
+  if (name === "Skill" && typeof input.skill === "string") return input.skill;
   if (name === RUN_SCRIPT_TOOL_NAME && typeof input.script_path === "string")
     return input.script_path;
   if (name === INSTALL_LIBS_TOOL_NAME && Array.isArray(input.libs))
