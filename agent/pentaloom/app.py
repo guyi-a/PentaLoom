@@ -57,6 +57,11 @@ DEFAULT_TOOLS: list[str] = [
     "Glob",
     "Grep",
     "TodoWrite",
+    # Skill 必须显式列在 tools — SDK 的 _apply_skills_defaults 只把 Skill(<name>)
+    # 加进 allowed_tools 当 permission rule, 不会自动注册 Skill 工具本身. 不加
+    # 这条 LLM 拿不到 Skill 工具, 只能 ls/find 去翻 .claude/skills/ 找 SKILL.md
+    # 自己读 — 实测过, 跟 SDK 原生 skill 加载语义对不上.
+    "Skill",
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     INSTALL_NOTO_SANS_SC_FULL_NAME,
@@ -108,7 +113,13 @@ class PentaLoom:
             agents=agents or {},
             system_prompt=resolved_prompt,
             skills=list(ENABLED_SKILLS) if ENABLED_SKILLS else None,
-            setting_sources=[],
+            # "project" → CLI 从 cwd (= sandbox 目录) 往上找 .claude/, 命中
+            # agent/.claude/skills/<name>/SKILL.md. 不读 user 全局 .claude/,
+            # 避免跟用户自己的 Claude Code 配置串味.
+            # 关键: skills= 传 list 时, SDK 的 _apply_skills_defaults 只在
+            # setting_sources is None 时才默认填 ["user","project"]; 显式 [] 会
+            # 跳过自动填, 导致 CLI 根本不扫 skill 目录 — 必须显式设 project.
+            setting_sources=["project"],
             strict_mcp_config=True,
             extra_args={},  # 不加 --bare, 否则 Task 工具会被压掉
             session_store=self._store,

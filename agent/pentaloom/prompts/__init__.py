@@ -1,14 +1,15 @@
 """PentaLoom 主 agent 提示词组装.
 
-五段式: identity → style → capabilities (工具 + 内置 skills) → env (运行时字体清单) →
+五段式: identity → style → capabilities (工具 + 可加载 skills) → env (运行时字体清单) →
 context (mounted_dirs). 空段省略.
 
 调用入口:
     from pentaloom.prompts import assemble_main_prompt
     prompt = assemble_main_prompt(mounted_dirs=[...])
 
-工具引导走 `pentaloom.tools.TOOL_PROMPT_INSTRUCTIONS` (每个 tool 模块自己维护),
-内置 skill 段 (M3 暂用) 在 prompts/skill_*.py, prompts/ 这边只负责组装 — 单向依赖.
+工具引导走 `pentaloom.tools.TOOL_PROMPT_INSTRUCTIONS` (每个 tool 模块自己维护).
+Skill 内容由 SDK 原生机制按需加载 (Skill 工具) — system prompt 里只列 ENABLED_SKILLS
+的名字 + description, 不再硬塞全文.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from pathlib import Path
 
 from pentaloom.prompts import capabilities, context, env, fingerprint
 from pentaloom.prompts.identity import MAIN_IDENTITY
-from pentaloom.prompts.skill_report_generator import REPORT_GENERATOR_INSTRUCTIONS
 from pentaloom.prompts.skills import ENABLED_SKILLS
 from pentaloom.prompts.style import GLOBAL_STYLE
 
@@ -42,7 +42,9 @@ def assemble_main_prompt(
     if skills is None:
         skills = list(ENABLED_SKILLS)
     if skill_instructions is None:
-        skill_instructions = [REPORT_GENERATOR_INSTRUCTIONS]
+        # SDK 原生 skill 机制接通后, 不再内联 skill 全文 — capabilities 段只列
+        # ENABLED_SKILLS 名字让 LLM 自己按需 Skill() 拉取.
+        skill_instructions = []
     if available_cjk_fonts is None:
         # 延迟 import 防 prompts → infra 循环 (infra/__init__.py 不 import prompts).
         from pentaloom.infra.fonts import detect_cjk_fonts
