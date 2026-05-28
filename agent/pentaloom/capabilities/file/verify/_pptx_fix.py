@@ -9,7 +9,7 @@ M5+ 再补真嵌入 ([Content_Types].xml + ppt/fonts/* + presentation.xml 的 em
 
 from __future__ import annotations
 
-from pentaloom.agents.file.verify._pptx_audit import _has_cjk
+from pentaloom.capabilities.file.verify._pptx_audit import _has_cjk
 
 _DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _NS = f"{{{_DRAWING_NS}}}"

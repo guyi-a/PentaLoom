@@ -1,14 +1,9 @@
 """PentaLoom FastAPI 入口.
 
 跑法:
-    cd agent
-    python main.py                       # 默认, debug=False
+    python main.py                       # 默认
     PENTALOOM_DEBUG=true python main.py  # 热重载
-
-或直接 uvicorn:
     uvicorn pentaloom.server:app --reload --port 8090
-
-端口 8090 (避开 wolfpack 的 8080). 前端 dev server 走 5273.
 """
 
 import asyncio
@@ -19,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from pentaloom import __version__
-from pentaloom.agents import ALL_AGENTS
 from pentaloom.config import get_settings
 from pentaloom.infra import python_env
 from pentaloom.infra.db import Base, engine
@@ -42,7 +36,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    pool = LoomPool(agents=ALL_AGENTS)
+    pool = LoomPool()
     app.state.pool = pool
 
     prewarm_task = asyncio.create_task(python_env.prewarm(settings))

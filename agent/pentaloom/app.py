@@ -2,12 +2,10 @@
 
 包装 ClaudeSDKClient + ClaudeAgentOptions, 注入:
   - SQLiteSessionStore (entries/summaries 镜像到 alembic 管的 DB)
-  - 主 agent tools 全集 (subagent tools 必须是子集, 见 sdk-探索结论)
+  - 主 agent tools 全集
   - Novita API key/base_url (走 SDK 子进程 env, 不污染父进程)
 
 用法:
-    from pentaloom import PentaLoom
-
     async with PentaLoom() as pl:
         async for msg in pl.query("帮我看看 tests 目录"):
             ...

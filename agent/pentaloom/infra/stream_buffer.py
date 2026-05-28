@@ -6,7 +6,7 @@
   turn 可能跑几十秒, 用户切走再回来本就该看到进度, 而且 HITL pending 还挂着
   asyncio.Future, 没人来取就死锁直到 evict.
 
-设计 (照 Ling-Agent / krow-agent 的 StreamBuffer 抄):
+设计:
   - per-session 一个 StreamBuffer, 累积本轮 turn 已 emit 的所有 SSE chunk (str).
   - chunks 是已编码好的完整 "data: {...}\n\n", 不再二次 serialize.
   - subscribers: list[asyncio.Queue] — 每个连接一个 queue, 不互相干扰.

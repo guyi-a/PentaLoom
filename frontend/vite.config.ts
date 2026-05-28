@@ -3,9 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-// PentaLoom frontend.
-// dev: 5273 (避开 wolfpack 5173); 后端 FastAPI 跑 8090.
-// proxy /api → 8090, 这样前端代码统一走 /api 前缀, prod 部署时把网关挂同域即可.
+// PentaLoom frontend — dev: 5273, 后端 FastAPI 8090.
+// proxy /api → 8090, prod 部署时把网关挂同域即可.
 export default defineConfig({
   base: "./",
   plugins: [react(), tailwindcss()],
