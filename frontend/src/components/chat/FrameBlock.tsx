@@ -21,6 +21,7 @@ import type { Frame } from "@/lib/types";
 import {
   ALLOW_SESSION_TOOLS,
   BASH_TOOL_NAME,
+  BROWSER_BRIDGE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_BROWSER_USE_TOOL_NAME,
@@ -29,6 +30,8 @@ import {
   RUN_SCRIPT_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "@/lib/types";
+import { parseBrowserBridgeInput } from "@/lib/browser-bridge";
+import { parseBrowserCommand } from "@/lib/browser-command";
 import { truncate } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -219,6 +222,80 @@ export function ApprovalInfo({
     );
   }
 
+  if (name === INSTALL_BROWSER_USE_TOOL_NAME) {
+    const step = String(input.step ?? "").trim();
+    const indexUrl = String(input.index_url ?? "").trim();
+    return (
+      <div className="space-y-2">
+        <FieldBlock label="Step" icon={Package}>
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+            {step || "check"}
+          </span>
+        </FieldBlock>
+        {indexUrl && <FieldBlock label="Index URL">{indexUrl}</FieldBlock>}
+      </div>
+    );
+  }
+
+  if (name === BROWSER_USE_TOOL_NAME) {
+    const command = String(input.command ?? "").trim();
+    const parsed = parseBrowserCommand(command);
+    return (
+      <div className="space-y-2">
+        {parsed?.action && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <FieldBlock label="Action">
+              <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+                {parsed.action}
+              </span>
+            </FieldBlock>
+            {parsed.target && (
+              <FieldBlock label="Target">
+                <span className="break-all font-mono text-[12.5px] text-[color:var(--color-paper)]">
+                  {truncate(parsed.target, 160)}
+                </span>
+              </FieldBlock>
+            )}
+          </div>
+        )}
+        <FieldBlock label="Command">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper)]">
+            {command || "(empty)"}
+          </pre>
+        </FieldBlock>
+      </div>
+    );
+  }
+
+  if (name === BROWSER_BRIDGE_TOOL_NAME) {
+    const info = parseBrowserBridgeInput(input);
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Action">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {info?.action ?? String(input.action ?? "(empty)")}
+            </span>
+          </FieldBlock>
+          {info?.target && (
+            <FieldBlock label="Target">
+              <span className="break-all font-mono text-[12.5px] text-[color:var(--color-paper)]">
+                {truncate(info.target, 160)}
+              </span>
+            </FieldBlock>
+          )}
+        </div>
+        {info?.detail && info.action === "execute_script" && (
+          <FieldBlock label="Page Script">
+            <pre className="max-h-[180px] overflow-y-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper)]">
+              {info.detail}
+            </pre>
+          </FieldBlock>
+        )}
+      </div>
+    );
+  }
+
   if (name === RUN_SCRIPT_TOOL_NAME) {
     const scriptPath = String(input.script_path ?? "");
     const rawArgs = input.args;
@@ -365,6 +442,11 @@ export function InlineApprovalBar({
     if (toolName === BROWSER_USE_TOOL_NAME) {
       return !!String(input.command ?? "").trim();
     }
+    if (toolName === BROWSER_BRIDGE_TOOL_NAME) {
+      // bridge 用单 key, 任何合法 action 都算 "enabled" — 第一次 allow session
+      // 后整个会话所有 bridge 调用免审 (用户真实浏览器, 默认信任).
+      return !!String(input.action ?? "").trim();
+    }
     return false;
   })();
 
@@ -379,7 +461,9 @@ export function InlineApprovalBar({
             ? "Allow same step (session)"
             : toolName === BROWSER_USE_TOOL_NAME
               ? "Allow same action (session)"
-              : "Allow (session)";
+              : toolName === BROWSER_BRIDGE_TOOL_NAME
+                ? "Allow browser bridge (session)"
+                : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -434,7 +518,9 @@ export function InlineApprovalBar({
                     ? "command 为空, 无法加入白名单"
                     : toolName === INSTALL_BROWSER_USE_TOOL_NAME
                       ? "step 不合法, 无法加入白名单"
-                      : "libs 为空, 无法加入白名单"
+                      : toolName === BROWSER_BRIDGE_TOOL_NAME
+                        ? "action 为空, 无法加入白名单"
+                        : "libs 为空, 无法加入白名单"
           }
           className={cn(
             "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",

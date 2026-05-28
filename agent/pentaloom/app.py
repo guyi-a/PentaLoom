@@ -49,6 +49,11 @@ from pentaloom.tools.browser import (
     INSTALL_BROWSER_USE_FULL_NAME,
     build_browser_mcp_server,
 )
+from pentaloom.tools.browser_bridge import (
+    BROWSER_BRIDGE_FULL_NAME,
+    BROWSER_BRIDGE_MCP_SERVER,
+    BROWSER_BRIDGE_MCP_SERVER_NAME,
+)
 
 # 主 agent 的工具全集. subagent 的 tools 只能从这里挑.
 # Task 必带 — 派 subagent 全靠它.
@@ -77,6 +82,7 @@ DEFAULT_TOOLS: list[str] = [
     INSTALL_BROWSER_USE_FULL_NAME,
     BROWSER_USE_FULL_NAME,
     BROWSER_SESSION_INFO_FULL_NAME,
+    BROWSER_BRIDGE_FULL_NAME,
 ]
 
 # 不需要 prompt 的工具 (auto-approve). HITL 工具 (Bash + request_workspace_dir)
@@ -150,6 +156,9 @@ class PentaLoom:
                 PYTHON_ENV_MCP_SERVER_NAME: PYTHON_ENV_MCP_SERVER,
                 FILES_MCP_SERVER_NAME: FILES_MCP_SERVER,
                 BROWSER_MCP_SERVER_NAME: browser_server,
+                # bridge 是 user-scoped (一个用户 Chrome 通常就一个), 模块级 singleton
+                # 跨 PentaLoom session 共享同一组扩展连接.
+                BROWSER_BRIDGE_MCP_SERVER_NAME: BROWSER_BRIDGE_MCP_SERVER,
             },
             can_use_tool=can_use_tool,
             # PreToolUse hook 把 Bash 标成 "ask" 路由到 can_use_tool. SDK 文档里

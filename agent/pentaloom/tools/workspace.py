@@ -35,6 +35,10 @@ from pentaloom.tools.browser import (
     INSTALL_BROWSER_USE_FULL_NAME,
     VALID_INSTALL_STEPS,
 )
+from pentaloom.tools.browser_bridge import (
+    BROWSER_BRIDGE_FULL_NAME,
+    VALID_ACTIONS as BRIDGE_VALID_ACTIONS,
+)
 from pentaloom.tools.files import (
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
@@ -72,18 +76,22 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     INSTALL_NOTO_SANS_SC_FULL_NAME,
     INSTALL_BROWSER_USE_FULL_NAME,
     BROWSER_USE_FULL_NAME,
+    BROWSER_BRIDGE_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
 # run_python_script 脚本内容每次都变, 给"会话级免审"没意义 — 这两个 allow_session
 # 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_*) 才真正
 # 走会话级缓存.
+# browser_bridge 用单 key "enabled" — 任何 action 第一次审批后整个会话所有
+# bridge 调用免审 (用户的真实浏览器, 默认信任).
 ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BASH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
     INSTALL_BROWSER_USE_FULL_NAME,
     BROWSER_USE_FULL_NAME,
+    BROWSER_BRIDGE_FULL_NAME,
 })
 
 
@@ -232,6 +240,15 @@ def _normalize_browser_use(tool_input: dict[str, Any]) -> str:
     return verb or ""
 
 
+def _normalize_browser_bridge(_tool_input: dict[str, Any]) -> str:
+    """browser_bridge 用单 key — 任何 action 首次审批后, 整个会话 bridge 所有调用免审.
+
+    设计理由: bridge 操作用户真实浏览器, 用户能直接看见每一步, 默认信任. 不像
+    browser_use 那样按 verb 切碎审 (那是因为 use 起的是独立机器人浏览器, 用户
+    看不到, 才要按动作粒度卡)."""
+    return "enabled"
+
+
 def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
     if tool_name == BASH_TOOL_NAME:
@@ -249,6 +266,8 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     if tool_name == BROWSER_USE_FULL_NAME:
         key = _normalize_browser_use(tool_input)
         return key or None
+    if tool_name == BROWSER_BRIDGE_FULL_NAME:
+        return _normalize_browser_bridge(tool_input)
     return None
 
 
@@ -334,6 +353,14 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             cmd = str(tool_input.get("command", "")).strip()
             if not cmd:
                 return PermissionResultDeny(message="command 不能为空")
+
+        # browser_bridge 必须给合法 action.
+        if tool_name == BROWSER_BRIDGE_FULL_NAME:
+            act = str(tool_input.get("action", "")).strip()
+            if act not in BRIDGE_VALID_ACTIONS:
+                return PermissionResultDeny(
+                    message=f"action 不合法; 合法值: {', '.join(sorted(BRIDGE_VALID_ACTIONS))}"
+                )
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input

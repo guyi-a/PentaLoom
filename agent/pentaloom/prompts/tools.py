@@ -17,6 +17,7 @@ from pentaloom.tools.browser import (
     BROWSER_USE_FULL_NAME,
     INSTALL_BROWSER_USE_FULL_NAME,
 )
+from pentaloom.tools.browser_bridge import BROWSER_BRIDGE_FULL_NAME
 from pentaloom.tools.files import FILE_READ_FULL_NAME, FILE_VERIFY_FULL_NAME
 from pentaloom.tools.python_env import (
     INSTALL_LIBS_FULL_NAME,
@@ -52,14 +53,18 @@ PYTHON_ENV_PROMPT_INSTRUCTIONS: str = (
 
 BROWSER_PROMPT_INSTRUCTIONS: str = (
     "### 浏览器自动化\n"
-    "- 任何浏览器任务**先 load `browser-use` skill**, 看完铁律 (操作成功 ≠ 任务成功 / "
-    "用户阻断终止 / URL 未变换标签页 / state 索引瞬态 / 下载工作流) 再开始.\n"
-    f"- 第一次用浏览器先调 {INSTALL_BROWSER_USE_FULL_NAME}(step='check') 看环境是否就绪, "
-    "按返回 next_step 装齐 (install → chromium).\n"
-    f"- 跑命令用 {BROWSER_USE_FULL_NAME}(command='...'), 命令体跟 browser-use CLI 一致 "
-    "(open / state / click N / eval ... / close); --session 不需要手传, 工具自动注入.\n"
+    "- 任何浏览器任务**先决策走哪条路径**: 调 "
+    f"{BROWSER_BRIDGE_FULL_NAME}(action='extension_status'), 看返回 `ready` 字段:\n"
+    "  - `ready=true` → load `browser-bridge` skill, 走真实浏览器 (扩展桥接). **首选**.\n"
+    "  - `ready=false` → load `browser-use` skill, 走独立机器人浏览器 (CLI 子进程).\n"
+    f"- bridge 路径: 通过 {BROWSER_BRIDGE_FULL_NAME}(action=...) 单工具, 27 个 action "
+    "(open_tab / read_state / click N / type N text / describe_element 等). "
+    "首次任何 action 弹审批, Allow session 后整个会话所有 bridge 调用免审.\n"
+    "- use 路径: 先调 "
+    f"{INSTALL_BROWSER_USE_FULL_NAME}(step='check') 看环境, 按 next_step 装齐 (install → chromium). "
+    f"跑命令用 {BROWSER_USE_FULL_NAME}(command='...'), 命令体跟 browser-use CLI 一致.\n"
     f"- 生成可复用 Python 脚本前调 {BROWSER_SESSION_INFO_FULL_NAME}() 拿 session_name / "
-    "profile / cookies_path 当常量."
+    "profile / cookies_path 当常量 (仅 use 路径需要)."
 )
 
 # capabilities.render 收的就是这个 list. 顺序决定段在 system prompt 里出现的顺序.
