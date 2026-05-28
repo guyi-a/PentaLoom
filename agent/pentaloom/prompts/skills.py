@@ -19,4 +19,5 @@ from __future__ import annotations
 # 空列表时 app.py 会把 skills=None 传给 ClaudeAgentOptions, 跟 SDK 默认一致.
 ENABLED_SKILLS: list[str] = [
     "report-generator",
+    "browser-use",
 ]

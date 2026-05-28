@@ -416,6 +416,14 @@ async def chat_permission(
     buf = stream_buffers.get(body.session_id)
     if buf is not None:
         buf.clear_pending(tool_use_id)
+        # 推一帧 permission_resolved, 让所有订阅者 (含刷新后重连) 知道审批已落定.
+        # 不依赖 tool_result 来 dismiss 审批栏 — 工具实际执行可能要几分钟 (uv add
+        # browser-use 等), 期间审批栏要先消失, ToolRow 回退到 in-progress 状态.
+        buf.append(_sse({
+            "type": "permission_resolved",
+            "tool_use_id": tool_use_id,
+            "decision": body.decision,
+        }))
     logger.info(
         f"permission resolved sid={body.session_id} tool_use_id={tool_use_id} "
         f"tool={pending.tool_name} decision={body.decision} "

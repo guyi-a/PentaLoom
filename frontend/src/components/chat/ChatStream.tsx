@@ -147,8 +147,11 @@ export function ChatStream({
   }, [historyMessages, streamedFrames]);
 
   // ── 收集所有 pending 的 HITL tool_use id ─────────────────────
-  // 规则: tool_use(name ∈ TOOLS_NEEDING_APPROVAL) 之后没对应 tool_result 就算
-  // pending. 把所有 pending id 收集成 set, 透给 ToolRow 决定是否展开审批条.
+  // 规则: tool_use(name ∈ TOOLS_NEEDING_APPROVAL) 之后没对应 tool_result
+  // **或** permission_resolved 就算 pending. permission_resolved 是 POST
+  // /chat/permission 后端立刻发的, 让审批栏 (按钮) 在工具实际执行前就消失;
+  // tool_result 是工具跑完才到, 中间几秒~几分钟靠 permission_resolved 提前
+  // dismiss. 把所有 pending id 收集成 set, 透给 ToolRow 决定是否展开审批条.
   const pendingApprovalIds = useMemo<Set<string>>(() => {
     const open = new Set<string>();
     const resolved = new Set<string>();
@@ -156,6 +159,8 @@ export function ChatStream({
       if (f.type === "tool_use" && TOOLS_NEEDING_APPROVAL.includes(f.name)) {
         open.add(f.id);
       } else if (f.type === "tool_result") {
+        resolved.add(f.tool_use_id);
+      } else if (f.type === "permission_resolved") {
         resolved.add(f.tool_use_id);
       }
     }

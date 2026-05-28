@@ -35,18 +35,6 @@ FILE_READ_FULL_NAME = f"mcp__{FILES_MCP_SERVER_NAME}__{FILE_READ_TOOL_NAME}"
 FILE_VERIFY_FULL_NAME = f"mcp__{FILES_MCP_SERVER_NAME}__{FILE_VERIFY_TOOL_NAME}"
 
 
-# 主 prompt 的"工具守则"段会拼这一段. 工具名走常量, 改名不会跟提示词漂移.
-FILES_PROMPT_INSTRUCTIONS: str = (
-    "### 文件读写\n"
-    f"- 读 .docx / .pptx / .xlsx 用 {FILE_READ_FULL_NAME}, "
-    "不要自己写 Python 脚本提取二进制 (会丢格式 / 漏内容 / 慢).\n"
-    "- 读 .pdf / .txt / .md / .py / 图片 / .ipynb 走 Read 工具 (SDK 内置, 多模态自动处理).\n"
-    "- 生成或修改 .pdf / .pptx 后, 必须调一次 "
-    f"{FILE_VERIFY_FULL_NAME}(path, autofix=True) 自检质量, "
-    "直到 blocking_count=0 才能向用户报告交付完成."
-)
-
-
 def _err(msg: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": msg}], "is_error": True}
 

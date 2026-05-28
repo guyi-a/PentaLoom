@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
 )
 
+from pentaloom.capabilities.browser import compute_session_name
 from pentaloom.config import get_settings
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.prompts import assemble_main_prompt
@@ -40,6 +41,13 @@ from pentaloom.tools import (
     WORKSPACE_MCP_SERVER,
     WORKSPACE_MCP_SERVER_NAME,
     build_hitl_hooks,
+)
+from pentaloom.tools.browser import (
+    BROWSER_MCP_SERVER_NAME,
+    BROWSER_SESSION_INFO_FULL_NAME,
+    BROWSER_USE_FULL_NAME,
+    INSTALL_BROWSER_USE_FULL_NAME,
+    build_browser_mcp_server,
 )
 
 # 主 agent 的工具全集. subagent 的 tools 只能从这里挑.
@@ -66,6 +74,9 @@ DEFAULT_TOOLS: list[str] = [
     RUN_SCRIPT_FULL_NAME,
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
+    INSTALL_BROWSER_USE_FULL_NAME,
+    BROWSER_USE_FULL_NAME,
+    BROWSER_SESSION_INFO_FULL_NAME,
 ]
 
 # 不需要 prompt 的工具 (auto-approve). HITL 工具 (Bash + request_workspace_dir)
@@ -93,9 +104,18 @@ class PentaLoom:
         if extra_tools:
             tools.extend(t for t in extra_tools if t not in tools)
         # extra_tools 默认进 auto-approve (避免用户加自定义工具还要手动配 allow).
-        # HITL 工具 (Bash + request_workspace_dir) 保留 prompt — 都是策略点,
+        # HITL 工具 (Bash + request_workspace_dir + browser_*) 保留 prompt — 都是策略点,
         # 必须走 can_use_tool.
         allowed = [t for t in tools if t not in HITL_TOOL_NAMES]
+
+        # browser MCP server 是 per-instance 工厂构造的 — session_name 跟 sandbox
+        # 闭包在工具体内, LLM 调工具时不用 (也无法) 传 session id. 没 sid 时回退默认值,
+        # 给程序化直起 PentaLoom (不走 LoomPool) 也能正常加载 browser server.
+        logical_sid = session_id or resume or "default"
+        browser_sandbox = Path(cwd) if cwd else (self._settings.data_dir / "default-sandbox")
+        browser_server = build_browser_mcp_server(
+            compute_session_name(logical_sid), browser_sandbox
+        )
 
         # 显式传 system_prompt 时直接用 (调用方负责完整性); 否则按四段式组装.
         # ENABLED_SKILLS 空列表时把 skills= 留 None, 不覆盖 SDK 默认.
@@ -129,6 +149,7 @@ class PentaLoom:
                 WORKSPACE_MCP_SERVER_NAME: WORKSPACE_MCP_SERVER,
                 PYTHON_ENV_MCP_SERVER_NAME: PYTHON_ENV_MCP_SERVER,
                 FILES_MCP_SERVER_NAME: FILES_MCP_SERVER,
+                BROWSER_MCP_SERVER_NAME: browser_server,
             },
             can_use_tool=can_use_tool,
             # PreToolUse hook 把 Bash 标成 "ask" 路由到 can_use_tool. SDK 文档里

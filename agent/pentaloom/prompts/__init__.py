@@ -7,9 +7,9 @@ context (mounted_dirs). 空段省略.
     from pentaloom.prompts import assemble_main_prompt
     prompt = assemble_main_prompt(mounted_dirs=[...])
 
-工具引导走 `pentaloom.tools.TOOL_PROMPT_INSTRUCTIONS` (每个 tool 模块自己维护).
-Skill 内容由 SDK 原生机制按需加载 (Skill 工具) — system prompt 里只列 ENABLED_SKILLS
-的名字 + description, 不再硬塞全文.
+工具引导走 `pentaloom.prompts.tools.TOOL_PROMPT_INSTRUCTIONS` (集中维护, 工具模块
+只关心行为). Skill 内容由 SDK 原生机制按需加载 (Skill 工具) — system prompt 里只列
+ENABLED_SKILLS 的名字 + description, 不再硬塞全文.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from pentaloom.prompts import capabilities, context, env, fingerprint
 from pentaloom.prompts.identity import MAIN_IDENTITY
 from pentaloom.prompts.skills import ENABLED_SKILLS
 from pentaloom.prompts.style import GLOBAL_STYLE
+from pentaloom.prompts.tools import TOOL_PROMPT_INSTRUCTIONS
 
 
 def assemble_main_prompt(
@@ -35,9 +36,6 @@ def assemble_main_prompt(
     显式传参用于测试; 默认从注册表 / 系统探测取.
     """
     if tool_instructions is None:
-        # 延迟 import 防循环 (tools/__init__.py 不 import prompts/, 反向同样).
-        from pentaloom.tools import TOOL_PROMPT_INSTRUCTIONS
-
         tool_instructions = list(TOOL_PROMPT_INSTRUCTIONS)
     if skills is None:
         skills = list(ENABLED_SKILLS)

@@ -51,7 +51,8 @@ export type Frame =
   | ResultFrame
   | ErrorFrame
   | StreamEndFrame
-  | UserPromptFrame;
+  | UserPromptFrame
+  | PermissionResolvedFrame;
 
 // 流式 turn 中, 后端按 token 推 text_delta / thinking_delta; 前端 reducer 把同
 // (msg_uuid, index) 的 deltas 合并成一个 TextFrame / ThinkingFrame (带 streaming=true),
@@ -143,6 +144,17 @@ export interface UserPromptFrame {
   text: string;
 }
 
+// 后端在 POST /chat/permission 完成 resolve 后推一帧. 让审批栏立刻消失,
+// ToolRow 回退到 in-progress (等真正的 tool_result 进来), 而不是傻等几分钟.
+// 重连重放也带这一帧, 解决"刷新后看到已 resolve 的审批栏又被点一次→404"的 bug.
+// decision="auto_session" 是 can_use_tool 命中本会话 allowlist 自动 allow 的快路径
+// 推的, 不经过 HTTP route — 防止"点过 Allow session 后续同 verb 仍闪一下审批栏".
+export interface PermissionResolvedFrame {
+  type: "permission_resolved";
+  tool_use_id: string;
+  decision: "allow_once" | "allow_session" | "deny" | "auto_session";
+}
+
 // ──── workspace 授权工具特殊常量 ─────────────────────────────
 
 export const WORKSPACE_PERMISSION_TOOL_NAME =
@@ -163,6 +175,13 @@ export const FILE_VERIFY_TOOL_NAME =
 export const INSTALL_FONT_TOOL_NAME =
   "mcp__pentaloom__install_noto_sans_sc";
 
+// 装 browser-use CLI / Chromium (内联审批, 支持 allow_session — 同 step 本会话内只问一次).
+export const INSTALL_BROWSER_USE_TOOL_NAME =
+  "mcp__pentaloom_browser__install_browser_use";
+// 跑 browser-use CLI 子命令 (内联审批, 支持 allow_session — 同 action verb 本会话内只问一次).
+export const BROWSER_USE_TOOL_NAME =
+  "mcp__pentaloom_browser__browser_use";
+
 export const BASH_TOOL_NAME = "Bash";
 
 // 需要 HITL 审批的工具名全集. 必须跟后端 pentaloom.tools.HITL_TOOL_NAMES 对齐.
@@ -174,6 +193,8 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   RUN_SCRIPT_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
+  INSTALL_BROWSER_USE_TOOL_NAME,
+  BROWSER_USE_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -182,6 +203,8 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   BASH_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
+  INSTALL_BROWSER_USE_TOOL_NAME,
+  BROWSER_USE_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {
