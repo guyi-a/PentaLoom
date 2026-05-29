@@ -21,4 +21,5 @@ ENABLED_SKILLS: list[str] = [
     "report-generator",
     "browser-use",
     "browser-bridge",
+    "computer-use",
 ]

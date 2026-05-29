@@ -159,6 +159,10 @@ async def chrome_bridge_ws(websocket: WebSocket) -> None:
                     future.set_exception(HTTPException(status_code=502, detail=detail))
                 continue
 
+            # 扩展保活心跳, 正常路径静默处理, 避免 dev 日志每 15s 刷屏.
+            if msg_type == "ping":
+                continue
+
             logger.debug(f"chrome-bridge unhandled message: {message}")
 
     except WebSocketDisconnect:

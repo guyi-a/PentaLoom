@@ -18,6 +18,7 @@ from pentaloom.tools.browser import (
     INSTALL_BROWSER_USE_FULL_NAME,
 )
 from pentaloom.tools.browser_bridge import BROWSER_BRIDGE_FULL_NAME
+from pentaloom.tools.computer_use import COMPUTER_USE_FULL_NAME
 from pentaloom.tools.files import FILE_READ_FULL_NAME, FILE_VERIFY_FULL_NAME
 from pentaloom.tools.python_env import (
     INSTALL_LIBS_FULL_NAME,
@@ -67,16 +68,30 @@ BROWSER_PROMPT_INSTRUCTIONS: str = (
     "profile / cookies_path 当常量 (仅 use 路径需要)."
 )
 
+COMPUTER_PROMPT_INSTRUCTIONS: str = (
+    "### macOS 桌面自动化 (computer-use)\n"
+    "- 桌面级任务 (操作 Finder / 系统设置 / 备忘录 / Music / Mail 等原生 app, 跨 app 走菜单, "
+    f"发系统快捷键) 走 {COMPUTER_USE_FULL_NAME}. 先 load `computer-use` skill 看铁律.\n"
+    "- **第一步**调 action='permissions' 检查 trusted; 没授权时按返回 message 引导用户.\n"
+    "- 任何 app 都能走 menu (action='menu', target=app名, path=['文件','新建窗口']) — "
+    "实测 Electron app 的菜单也完整可用, 这是最稳的入口.\n"
+    "- 主内容操作 (snapshot + press / set_value 按 index) 只在**原生 app** 真正可用; "
+    "Chrome / VSCode 等自渲染 app 主区是黑盒, 别在这工具里折腾, 走 browser_bridge / file 能力.\n"
+    "- 首次任何 action 弹审批, Allow session 后整个会话所有 computer 调用免审."
+)
+
 # capabilities.render 收的就是这个 list. 顺序决定段在 system prompt 里出现的顺序.
 TOOL_PROMPT_INSTRUCTIONS: list[str] = [
     WORKSPACE_PROMPT_INSTRUCTIONS,
     FILES_PROMPT_INSTRUCTIONS,
     PYTHON_ENV_PROMPT_INSTRUCTIONS,
     BROWSER_PROMPT_INSTRUCTIONS,
+    COMPUTER_PROMPT_INSTRUCTIONS,
 ]
 
 __all__ = [
     "BROWSER_PROMPT_INSTRUCTIONS",
+    "COMPUTER_PROMPT_INSTRUCTIONS",
     "FILES_PROMPT_INSTRUCTIONS",
     "PYTHON_ENV_PROMPT_INSTRUCTIONS",
     "TOOL_PROMPT_INSTRUCTIONS",

@@ -184,6 +184,9 @@ export const BROWSER_USE_TOOL_NAME =
 // 通过 Chrome 扩展操控真实浏览器 (内联审批, 单 key — 首次任何 action 后整个会话所有 bridge 调用免审).
 export const BROWSER_BRIDGE_TOOL_NAME =
   "mcp__pentaloom_browser_bridge__browser_bridge";
+// macOS 桌面自动化 (内联审批, 单 key — 同 bridge 模式, 首次后整个会话免审).
+export const COMPUTER_USE_TOOL_NAME =
+  "mcp__pentaloom_computer__computer_use";
 
 export const BASH_TOOL_NAME = "Bash";
 
@@ -199,6 +202,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   INSTALL_BROWSER_USE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -210,6 +214,7 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   INSTALL_BROWSER_USE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {

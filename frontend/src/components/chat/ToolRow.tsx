@@ -21,6 +21,7 @@ import { ApprovalInfo, InlineApprovalBar } from "./FrameBlock";
 import { BashExpansion } from "./tool-expansions/BashExpansion";
 import { BrowserBridgeExpansion } from "./tool-expansions/BrowserBridgeExpansion";
 import { BrowserUseExpansion } from "./tool-expansions/BrowserUseExpansion";
+import { ComputerUseExpansion } from "./tool-expansions/ComputerUseExpansion";
 import { FileVerifyExpansion } from "./tool-expansions/FileVerifyExpansion";
 import { GenericExpansion } from "./tool-expansions/GenericExpansion";
 import { RunScriptExpansion } from "./tool-expansions/RunScriptExpansion";
@@ -29,6 +30,7 @@ import {
   BASH_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   TOOLS_NEEDING_APPROVAL,
@@ -171,6 +173,7 @@ function ExpansionFor({ pair }: { pair: ToolPair }) {
   if (name === BASH_TOOL_NAME) return <BashExpansion {...pair} />;
   if (name === BROWSER_BRIDGE_TOOL_NAME) return <BrowserBridgeExpansion {...pair} />;
   if (name === BROWSER_USE_TOOL_NAME) return <BrowserUseExpansion {...pair} />;
+  if (name === COMPUTER_USE_TOOL_NAME) return <ComputerUseExpansion {...pair} />;
   if (name === RUN_SCRIPT_TOOL_NAME) return <RunScriptExpansion {...pair} />;
   if (name === FILE_VERIFY_TOOL_NAME) return <FileVerifyExpansion {...pair} />;
   return <GenericExpansion {...pair} />;
