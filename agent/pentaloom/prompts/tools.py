@@ -70,13 +70,21 @@ BROWSER_PROMPT_INSTRUCTIONS: str = (
 
 COMPUTER_PROMPT_INSTRUCTIONS: str = (
     "### macOS 桌面自动化 (computer-use)\n"
-    "- 桌面级任务 (操作 Finder / 系统设置 / 备忘录 / Music / Mail 等原生 app, 跨 app 走菜单, "
-    f"发系统快捷键) 走 {COMPUTER_USE_FULL_NAME}. 先 load `computer-use` skill 看铁律.\n"
-    "- **第一步**调 action='permissions' 检查 trusted; 没授权时按返回 message 引导用户.\n"
-    "- 任何 app 都能走 menu (action='menu', target=app名, path=['文件','新建窗口']) — "
-    "实测 Electron app 的菜单也完整可用, 这是最稳的入口.\n"
-    "- 主内容操作 (snapshot + press / set_value 按 index) 只在**原生 app** 真正可用; "
-    "Chrome / VSCode 等自渲染 app 主区是黑盒, 别在这工具里折腾, 走 browser_bridge / file 能力.\n"
+    "- 桌面级任务 (操作原生 app / 跨 app 走菜单 / 发系统快捷键 / Electron 主区兜底) 走 "
+    f"{COMPUTER_USE_FULL_NAME}. 先 load `computer-use` skill 看铁律.\n"
+    "- **第一步**调 action='permissions' 检查**两类**权限: "
+    "accessibility (给 AX/mouse/key) + screen_recording (给 screenshot). "
+    "缺哪个按返回 message 引导用户开 (是两个独立 TCC, 同一宿主分别授权).\n"
+    "- 任何 app 都能走 menu (action='menu', target=app名, path=['文件','新建']) — "
+    "Electron app 菜单完整可用, 这是最稳的入口.\n"
+    "- **AX 主区拿不到** (Electron 主区 / Chrome 网页区 / Canvas) 时走视觉兜底: "
+    "screenshot(target=app) → 推理元素逻辑坐标 → mouse_click(x, y) + paste(text). "
+    "screenshot **直接返 image 给你 see** (~1.1k vision token), 不是 base64 字符串 — "
+    "**不要**写脚本解码 + Read, 工具已经把图直接给你了.\n"
+    "- **坐标系**: mouse/paste 用逻辑像素; screenshot 返物理像素 + 缩放后像素 + scale; "
+    "换算公式 logical_x = image_x * (logical_w / scaled_w), 直接照 ScreenshotResult.note 抄.\n"
+    "- 输文本一律用 paste(text=...), **不要尝试 type unicode** (中文 IME 会吞键码). "
+    "paste 工具自动备份 + 恢复用户剪贴板, 不会污染.\n"
     "- 首次任何 action 弹审批, Allow session 后整个会话所有 computer 调用免审."
 )
 

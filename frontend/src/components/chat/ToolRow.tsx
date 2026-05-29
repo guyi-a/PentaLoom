@@ -8,7 +8,7 @@
 //   success         result.is_error=false
 //   failed          result.is_error=true
 //
-// 默认展开: hitl-pending / failed; 折叠: in-progress / success.
+// 默认展开: hitl-pending; 折叠: in-progress / success / failed.
 // 用户点过 chevron 之后 (userToggled !== null) 锁定用户选择, 状态变化不再覆盖.
 //
 // hitl-pending → success/failed 转换时 250ms 后自动折叠 (仅 userToggled === null).
@@ -59,7 +59,7 @@ function computeStatus(pair: ToolPair, pendingApproval: boolean): ToolStatus {
 }
 
 function defaultOpenFor(status: ToolStatus): boolean {
-  return status === "hitl-pending" || status === "failed";
+  return status === "hitl-pending";
 }
 
 export function ToolRow({ pair, pendingApproval, sessionId }: Props) {

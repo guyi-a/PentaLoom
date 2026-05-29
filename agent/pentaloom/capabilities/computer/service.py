@@ -16,8 +16,9 @@ from pentaloom.capabilities.computer._models import (
     ActionResult,
     AppInfo,
     AXElement,
-    PermissionStatus,
+    PermissionsReport,
     SnapshotResult,
+    SubsystemPermission,
 )
 from pentaloom.capabilities.computer._platform import require_macos
 
@@ -40,43 +41,85 @@ DEFAULT_MAX_CHILDREN = 30
 # ── permission ────────────────────────────────────────────────
 
 
-def check_permission(*, prompt: bool = False) -> PermissionStatus:
-    """检查 AX 权限. prompt=True 时触发系统授权弹窗 (首次必须这样)."""
-    require_macos()
+def _check_accessibility(*, prompt: bool) -> SubsystemPermission:
+    """AX 权限: AXIsProcessTrusted(); 触发弹窗用 AXIsProcessTrustedWithOptions."""
     from ApplicationServices import (
         AXIsProcessTrusted,
         AXIsProcessTrustedWithOptions,
     )
-
-    binary = sys.executable
-    host_binary = os.path.realpath(binary)
     trusted = bool(AXIsProcessTrusted())
     prompt_triggered = False
-
     if not trusted and prompt:
-        # 触发系统弹窗 "X 想要使用辅助功能控制电脑". X 是启动 python 的 GUI 宿主
-        # (Terminal / iTerm / Electron), 不是 python 自己. 这是 macOS TCC 模型.
         AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
         prompt_triggered = True
 
     if trusted:
-        msg = "已授权, 可以正常调用 AX API"
+        msg = "Accessibility 已授权 (AX 树 / mouse / keyboard CGEvent 都可用)"
     else:
         msg = (
-            "未授权. macOS 不允许在 GUI '+' 手选裸 binary; 必须传 prompt=True 触发系统弹窗, "
-            "点'打开系统设置'后, 在 Accessibility 列表里找到启动 python 的宿主进程 "
-            "(Terminal / iTerm / 你的 Electron app) 开开关即可. 一旦宿主拿到权限, "
-            "所有从它启的 python 子进程都自动有权限, 跟 venv / pyenv 路径无关."
+            "Accessibility 未授权. macOS 不让 GUI '+' 手选裸 binary; 必须传 "
+            "prompt=True 触发系统弹窗, 用户点'打开系统设置'后在 Accessibility 列表里 "
+            "找到启动 python 的宿主进程 (Terminal / iTerm / VSCode / Electron) 开开关. "
+            "宿主拿权限后所有从它启的 python 子进程都自动有, 跟 venv 路径无关."
         )
         if prompt_triggered:
             msg += " 这次调用已触发弹窗, 请到系统设置开开关后重试."
+    return SubsystemPermission(
+        trusted=trusted, prompt_triggered=prompt_triggered, message=msg
+    )
 
-    return PermissionStatus(
-        trusted=trusted,
+
+def _check_screen_recording(*, prompt: bool) -> SubsystemPermission:
+    """Screen Recording 权限: CGPreflightScreenCaptureAccess (macOS 10.15+).
+
+    触发授权弹窗: CGRequestScreenCaptureAccess() — 立刻返当前状态 (通常 false),
+    用户去 System Settings 开了才生效, 跟 AX 同款 TCC 流程.
+    """
+    from Quartz import (
+        CGPreflightScreenCaptureAccess,
+        CGRequestScreenCaptureAccess,
+    )
+    trusted = bool(CGPreflightScreenCaptureAccess())
+    prompt_triggered = False
+    if not trusted and prompt:
+        CGRequestScreenCaptureAccess()
+        prompt_triggered = True
+
+    if trusted:
+        msg = "Screen Recording 已授权 (screenshot action 可用)"
+    else:
+        msg = (
+            "Screen Recording 未授权. 系统设置 → 隐私与安全性 → 屏幕录制 → 找到启动 "
+            "python 的宿主进程 (Terminal / iTerm / VSCode 等) 开开关. **必须重启宿主** "
+            "权限才生效 (跟 Accessibility 不同; 这是 macOS 的 TCC 行为)."
+        )
+        if prompt_triggered:
+            msg += " 这次调用已触发系统授权弹窗."
+    return SubsystemPermission(
+        trusted=trusted, prompt_triggered=prompt_triggered, message=msg
+    )
+
+
+def check_permissions(*, prompt: bool = False) -> PermissionsReport:
+    """检查 Accessibility + Screen Recording 双权限.
+
+    AX 给 mouse / keyboard / AX 树读取用; Screen Recording 给 screenshot 用 — 是
+    两个独立 TCC, 同一宿主进程要分别授权.
+
+    prompt=True 时**两类**都尝试触发系统授权弹窗 (各自只有缺权限时才会弹).
+    """
+    require_macos()
+
+    binary = sys.executable
+    host_binary = os.path.realpath(binary)
+    accessibility = _check_accessibility(prompt=prompt)
+    screen_recording = _check_screen_recording(prompt=prompt)
+
+    return PermissionsReport(
         host_process=os.path.basename(host_binary),
         host_binary=host_binary,
-        prompt_triggered=prompt_triggered,
-        message=msg,
+        accessibility=accessibility,
+        screen_recording=screen_recording,
     )
 
 
@@ -374,8 +417,17 @@ def set_value(raw_elem, value: str, element_desc: str) -> ActionResult:
 
 
 def focus_app(target: str) -> ActionResult:
-    """把指定 app 切到前台 (相当于 Dock 点图标)."""
+    """把指定 app 切到前台. 包含 reopen 被关的主窗口 (Mac 标准: 关窗不退进程, app 还活).
+
+    两步走:
+      1. activateWithOptions_ 加 NSApplicationActivateAllWindows + IgnoringOtherApps,
+         把所有已存在的窗口提到前台
+      2. osascript 'tell application "X" to activate' 触发 reopen (等同 Dock 点击),
+         给主窗口被关的 app 重开主窗口
+    """
     require_macos()
+    import subprocess
+
     from AppKit import NSWorkspace
 
     pid = _resolve_app_pid(target)
@@ -387,25 +439,46 @@ def focus_app(target: str) -> ActionResult:
             message=f"找不到 app: {target!r}",
         )
     ws = NSWorkspace.sharedWorkspace()
+    nsra = None
     for a in ws.runningApplications():
         if int(a.processIdentifier()) == pid:
-            # activateWithOptions 在 macOS 14+ 上会忽略 NSApplicationActivateIgnoringOtherApps,
-            # 但 activate() 还有效.
-            try:
-                a.activate()
-            except Exception:
-                a.activateWithOptions_(0)
-            return ActionResult(
-                action="focus",
-                target_description=f"{a.localizedName()} (pid={pid})",
-                success=True,
-                message="已切到前台",
+            nsra = a
+            break
+    if nsra is None:
+        return ActionResult(
+            action="focus",
+            target_description=target,
+            success=False,
+            message="pid 找到了但 NSRunningApplication 拿不到",
+        )
+
+    app_name = str(nsra.localizedName() or "")
+
+    # NSApplicationActivateAllWindows = 1, IgnoringOtherApps = 2
+    try:
+        nsra.activateWithOptions_(1 | 2)
+    except Exception:
+        try:
+            nsra.activate()
+        except Exception:
+            pass
+
+    # osascript 'activate' 等同 Dock 点击, 会触发 reopen 主窗口 — 给 'app 跑但主窗口被关'
+    # 的场景 (Mac 关窗不退进程是常态). 失败静默 (activate 已经跑过, 这是兜底).
+    if app_name:
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{app_name}" to activate'],
+                check=False, timeout=3, capture_output=True,
             )
+        except Exception:
+            pass
+
     return ActionResult(
         action="focus",
-        target_description=target,
-        success=False,
-        message="pid 找到了但 NSRunningApplication 拿不到",
+        target_description=f"{app_name} (pid={pid})",
+        success=True,
+        message="已切到前台 (含 reopen 被关主窗口的兜底)",
     )
 
 
