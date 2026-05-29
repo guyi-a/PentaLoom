@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from loguru import logger
 
 from pentaloom.capabilities import browser as browser_caps
 from pentaloom.capabilities.browser._command import parse_browser_command
@@ -101,6 +102,35 @@ async def _run_browser_side_command(
     """cookies 导入导出这类副车命令, 60s 超时."""
     args = list(session_args) + shlex.split(command)
     return await _run_browser_cli(settings, args, cwd=cwd, timeout=60)
+
+
+async def close_browser_use_session(settings: Settings, session_id: str) -> None:
+    """LoomPool evict / shutdown 时调, best-effort 关掉 browser-use CLI 留下的浏览器进程.
+
+    browser-use CLI 跟 PentaLoom 子进程是两条独立生命周期: PentaLoom 关了 CLI 留下的
+    Chrome 进程还在后台跑. 不定时清, 跑久了机器全是孤儿 Chrome.
+
+    任何失败都吞 (CLI 没装 / session 不存在 / 进程已死 / 超时), 不能拖累 evict 流程.
+    """
+    try:
+        if not _has_browser_use_cli(settings):
+            return  # CLI 没装, 自然没起过任何 browser-use 浏览器
+        session_name = browser_caps.compute_session_name(session_id)
+        # cwd 用 python_env_dir 兜底 — sandbox 可能已被外部清理, python_env_dir 永远在
+        result = await _run_browser_cli(
+            settings,
+            ["--session", session_name, "close"],
+            cwd=settings.python_env_dir,
+            timeout=15,  # 给短超时, evict 不能挂在这里
+        )
+        if result.exit_code != 0:
+            # 多数情况是 session 不存在 (Agent 这轮没用浏览器), 不算错误
+            logger.debug(
+                f"browser-use close 非 0 退出 (可能 session 不存在) sid={session_id} "
+                f"exit={result.exit_code}"
+            )
+    except Exception as e:  # noqa: BLE001 — best effort, 任何错误都吞
+        logger.debug(f"browser-use close 失败 (忽略) sid={session_id}: {e}")
 
 
 async def _maybe_import_cookies(
