@@ -39,6 +39,10 @@ from pentaloom.tools.browser_bridge import (
     BROWSER_BRIDGE_FULL_NAME,
     VALID_ACTIONS as BRIDGE_VALID_ACTIONS,
 )
+from pentaloom.tools.computer_use import (
+    COMPUTER_USE_FULL_NAME,
+    VALID_ACTIONS as COMPUTER_VALID_ACTIONS,
+)
 from pentaloom.tools.files import (
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
@@ -77,14 +81,15 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     INSTALL_BROWSER_USE_FULL_NAME,
     BROWSER_USE_FULL_NAME,
     BROWSER_BRIDGE_FULL_NAME,
+    COMPUTER_USE_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
 # run_python_script 脚本内容每次都变, 给"会话级免审"没意义 — 这两个 allow_session
-# 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_*) 才真正
-# 走会话级缓存.
-# browser_bridge 用单 key "enabled" — 任何 action 第一次审批后整个会话所有
-# bridge 调用免审 (用户的真实浏览器, 默认信任).
+# 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_* / computer_use)
+# 才真正走会话级缓存.
+# browser_bridge / computer_use 用单 key "enabled" — 任何 action 第一次审批后
+# 整个会话所有调用免审 (用户的真实浏览器 / 真实电脑, 默认信任).
 ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BASH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
@@ -92,6 +97,7 @@ ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     INSTALL_BROWSER_USE_FULL_NAME,
     BROWSER_USE_FULL_NAME,
     BROWSER_BRIDGE_FULL_NAME,
+    COMPUTER_USE_FULL_NAME,
 })
 
 
@@ -249,6 +255,11 @@ def _normalize_browser_bridge(_tool_input: dict[str, Any]) -> str:
     return "enabled"
 
 
+def _normalize_computer_use(_tool_input: dict[str, Any]) -> str:
+    """computer_use 同 browser_bridge 单 key 模式 — 用户真实电脑, 看得见每一步, 默认信任."""
+    return "enabled"
+
+
 def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
     if tool_name == BASH_TOOL_NAME:
@@ -268,6 +279,8 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return key or None
     if tool_name == BROWSER_BRIDGE_FULL_NAME:
         return _normalize_browser_bridge(tool_input)
+    if tool_name == COMPUTER_USE_FULL_NAME:
+        return _normalize_computer_use(tool_input)
     return None
 
 
@@ -360,6 +373,14 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             if act not in BRIDGE_VALID_ACTIONS:
                 return PermissionResultDeny(
                     message=f"action 不合法; 合法值: {', '.join(sorted(BRIDGE_VALID_ACTIONS))}"
+                )
+
+        # computer_use 必须给合法 action.
+        if tool_name == COMPUTER_USE_FULL_NAME:
+            act = str(tool_input.get("action", "")).strip()
+            if act not in COMPUTER_VALID_ACTIONS:
+                return PermissionResultDeny(
+                    message=f"action 不合法; 合法值: {', '.join(sorted(COMPUTER_VALID_ACTIONS))}"
                 )
 
         fut = REGISTRY.register(

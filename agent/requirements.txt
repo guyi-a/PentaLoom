@@ -36,3 +36,9 @@ python-pptx>=1.0.2
 openpyxl>=3.1.5
 # pdf 读取 / 空页检测 + auto-fix 删空页. import 名是 fitz.
 pymupdf>=1.27.0
+
+# ---------- M8 computer-use (macOS only) ----------
+# AX 树读取 / 操作; NSWorkspace 列 app; CGEvent 发键盘事件.
+# 非 macOS 平台 pip 装这俩会失败 — 用 sys_platform 约束让 Linux/Windows 跳过.
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"

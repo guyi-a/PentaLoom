@@ -27,6 +27,7 @@ import {
   BASH_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
@@ -36,6 +37,7 @@ import {
 } from "./types";
 import { browserCommandSummary } from "./browser-command";
 import { browserBridgeSummary } from "./browser-bridge";
+import { computerUseSummary } from "./computer-use";
 
 // 显式映射 — 名字硬编码不优雅但比模糊 includes 准, 工具数量有限.
 // 没命中的走通用 Wrench. 兜底用 Hammer 还是 Wrench 区分有意义: Wrench 是兜底,
@@ -58,6 +60,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   [FILE_VERIFY_TOOL_NAME]: ShieldCheck,
   [INSTALL_FONT_TOOL_NAME]: Type,
   [BROWSER_BRIDGE_TOOL_NAME]: Globe,
+  [COMPUTER_USE_TOOL_NAME]: Terminal,
   // pentaloom_files 下的 file_read / file_write 等
   "mcp__pentaloom_files__file_read": FileText,
 };
@@ -127,6 +130,7 @@ export function oneLineSummary(
   if (name === BROWSER_USE_TOOL_NAME && typeof input.command === "string")
     return browserCommandSummary(input.command, 56);
   if (name === BROWSER_BRIDGE_TOOL_NAME) return browserBridgeSummary(input, 56);
+  if (name === COMPUTER_USE_TOOL_NAME) return computerUseSummary(input, 56);
   if (typeof input.path === "string") return input.path;
   if (typeof input.url === "string") return input.url;
   return "";

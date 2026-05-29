@@ -23,6 +23,7 @@ import {
   BASH_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
+  COMPUTER_USE_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/types";
 import { parseBrowserBridgeInput } from "@/lib/browser-bridge";
 import { parseBrowserCommand } from "@/lib/browser-command";
+import { parseComputerUseInput } from "@/lib/computer-use";
 import { truncate } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -296,6 +298,35 @@ export function ApprovalInfo({
     );
   }
 
+  if (name === COMPUTER_USE_TOOL_NAME) {
+    const info = parseComputerUseInput(input);
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Action">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {info?.action ?? String(input.action ?? "(empty)")}
+            </span>
+          </FieldBlock>
+          {info?.target && (
+            <FieldBlock label="Target">
+              <span className="break-all font-mono text-[12.5px] text-[color:var(--color-paper)]">
+                {truncate(info.target, 160)}
+              </span>
+            </FieldBlock>
+          )}
+        </div>
+        {info?.detail && info.action === "set_value" && (
+          <FieldBlock label="Value">
+            <pre className="max-h-[180px] overflow-y-auto whitespace-pre-wrap break-all font-mono text-[12.5px] leading-relaxed text-[color:var(--color-paper)]">
+              {info.detail}
+            </pre>
+          </FieldBlock>
+        )}
+      </div>
+    );
+  }
+
   if (name === RUN_SCRIPT_TOOL_NAME) {
     const scriptPath = String(input.script_path ?? "");
     const rawArgs = input.args;
@@ -447,6 +478,10 @@ export function InlineApprovalBar({
       // 后整个会话所有 bridge 调用免审 (用户真实浏览器, 默认信任).
       return !!String(input.action ?? "").trim();
     }
+    if (toolName === COMPUTER_USE_TOOL_NAME) {
+      // computer 同 bridge 单 key 模式 — 用户真实电脑, 看得见每一步, 默认信任.
+      return !!String(input.action ?? "").trim();
+    }
     return false;
   })();
 
@@ -463,7 +498,9 @@ export function InlineApprovalBar({
               ? "Allow same action (session)"
               : toolName === BROWSER_BRIDGE_TOOL_NAME
                 ? "Allow browser bridge (session)"
-                : "Allow (session)";
+                : toolName === COMPUTER_USE_TOOL_NAME
+                  ? "Allow computer-use (session)"
+                  : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -520,7 +557,9 @@ export function InlineApprovalBar({
                       ? "step 不合法, 无法加入白名单"
                       : toolName === BROWSER_BRIDGE_TOOL_NAME
                         ? "action 为空, 无法加入白名单"
-                        : "libs 为空, 无法加入白名单"
+                        : toolName === COMPUTER_USE_TOOL_NAME
+                          ? "action 为空, 无法加入白名单"
+                          : "libs 为空, 无法加入白名单"
           }
           className={cn(
             "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",
