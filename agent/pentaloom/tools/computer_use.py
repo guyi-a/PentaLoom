@@ -3,15 +3,21 @@
 跟 browser_bridge 同一架构: 一个 `computer_use(action=...)` 工具, 内部按 action 分发.
 理由 — 工具卡片集中, 共享参数, 跟 browser_bridge 对称, 跟 capabilities/computer 解耦.
 
-8 个 action:
-  permissions  — 检查 AX 权限, 可选 prompt 触发系统弹窗
-  apps         — 列正在跑的常规 app
-  snapshot     — dump 指定 app 的 AX 树 (扁平化)
-  menu         — 按菜单路径执行 ["文件", "新建文件夹"]
-  press        — 对 snapshot 里的 index 元素执行 AXPress
-  set_value    — 给 index 元素设值 (textfield 等)
-  focus        — 把指定 app 切前台
-  key          — 发键盘组合 (cmd+s / escape 等)
+12 个 action:
+  M8 (AX 路径):
+    permissions  — 检查 Accessibility + Screen Recording 双权限, 可 prompt 触发弹窗
+    apps         — 列正在跑的常规 app
+    snapshot     — dump 指定 app 的 AX 树 (扁平化)
+    menu         — 按菜单路径执行 ["文件", "新建文件夹"]
+    press        — 对 snapshot 里的 index 元素执行 AXPress
+    set_value    — 给 index 元素设值 (textfield 等)
+    focus        — 把指定 app 切前台
+    key          — 发键盘组合 (cmd+s / escape 等)
+  M9 (视觉 + 鼠标 + 粘贴, Electron 主区兜底):
+    screenshot   — 全屏 / 单 app 截图 (默认 jpeg q70 + 0.33x, ~1.1k vision token)
+    mouse_move   — 把鼠标移到逻辑像素 (x, y)
+    mouse_click  — 在 (x, y) 点击 (kind: single/double/right; 自动触发 overlay 涟漪)
+    paste        — NSPasteboard + Cmd+V; 自动备份/恢复用户剪贴板
 
 HITL: 单 key "enabled" allowlist (跟 bridge 一致). 首次任何 action 弹审批,
 allow session 后整会话所有 computer 操作免审 (用户真实电脑, 默认信任).
@@ -31,6 +37,15 @@ from loguru import logger
 
 from pentaloom.capabilities.computer import service
 from pentaloom.capabilities.computer._platform import is_macos
+from pentaloom.capabilities.computer.mouse import mouse_click, mouse_move
+from pentaloom.capabilities.computer.paste import paste_text
+from pentaloom.capabilities.computer.screenshot import (
+    DEFAULT_FORMAT,
+    DEFAULT_QUALITY,
+    DEFAULT_SCALE,
+    take_screenshot,
+)
+from pentaloom.infra import cursor_overlay
 
 # ── 命名 ─────────────────────────────────────────────────────
 
@@ -41,9 +56,14 @@ COMPUTER_USE_FULL_NAME = (
 )
 
 VALID_ACTIONS = frozenset({
+    # M8
     "permissions", "apps", "snapshot", "menu",
     "press", "set_value", "focus", "key",
+    # M9
+    "screenshot", "mouse_move", "mouse_click", "paste",
 })
+
+VALID_MOUSE_KINDS = frozenset({"single", "double", "right"})
 
 # ── snapshot 缓存 ────────────────────────────────────────────
 # snapshot_id → (pid, raw_elements). 给 press/set_value 按 index 反查 AXUIElement.
@@ -124,6 +144,22 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
         return _err("computer-use 仅 macOS 支持, 当前不是 Darwin 平台.")
 
     action = str(args.get("action", "")).strip()
+
+    # 给 dev / 用户能看清 agent 在调什么. 过滤掉 SDK schema 默认填的 falsy 字段
+    # (0 / '' / None / False / []), 只 log LLM 真传的; text 截 30 字.
+    hints = []
+    for k, v in args.items():
+        if k == "action":
+            continue
+        if v is None or v == "" or v == 0 or v is False or v == []:
+            continue
+        if k == "text":
+            s = str(v)
+            hints.append(f"text={s[:30]!r}{'…' if len(s) > 30 else ''}")
+        else:
+            hints.append(f"{k}={v!r}")
+    logger.info(f"computer_use action={action} " + " ".join(hints))
+
     if action not in VALID_ACTIONS:
         return _err(
             f"action 必须是: {', '.join(sorted(VALID_ACTIONS))}; 收到 {action!r}"
@@ -132,7 +168,7 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
     try:
         if action == "permissions":
             prompt = bool(args.get("prompt", False))
-            r = service.check_permission(prompt=prompt)
+            r = service.check_permissions(prompt=prompt)
             return _ok(_result_to_text(r))
 
         if action == "apps":
@@ -221,6 +257,78 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
             r = service.send_key(combo)
             return _ok(_result_to_text(r))
 
+        # ── M9: 视觉 + 鼠标 + 粘贴 ────────────────────────────
+
+        if action == "screenshot":
+            target = str(args.get("target", "screen")).strip() or "screen"
+            scale = float(args.get("scale", DEFAULT_SCALE))
+            quality = int(args.get("quality", DEFAULT_QUALITY))
+            fmt = str(args.get("format", DEFAULT_FORMAT)).strip().lower()
+            try:
+                r = take_screenshot(target, scale=scale, quality=quality, format=fmt)
+            except ValueError as e:
+                msg = str(e)
+                if target != "screen" and "找不到 app" in msg:
+                    return _err(msg + _candidates_hint(target))
+                return _err(msg)
+            # 返 MCP image content + text metadata: LLM 直接 see 图, 不用绕弯路解码
+            import json
+            meta = {
+                "format": r.format,
+                "quality": r.quality,
+                "scale_applied": r.scale_applied,
+                "target": r.target,
+                "physical_px": r.physical_px.model_dump(),
+                "logical_px": r.logical_px.model_dump(),
+                "scaled_px": r.scaled_px.model_dump(),
+                "note": r.note,
+            }
+            return {
+                "content": [
+                    {
+                        "type": "image",
+                        "data": r.image_b64,
+                        "mimeType": f"image/{r.format}",
+                    },
+                    {"type": "text", "text": json.dumps(meta, ensure_ascii=False)},
+                ],
+            }
+
+        if action == "mouse_move":
+            x = args.get("x")
+            y = args.get("y")
+            if x is None or y is None:
+                return _err("mouse_move 需要 x, y (逻辑像素, 跟 screenshot.logical_px 同空间)")
+            r = mouse_move(int(x), int(y))
+            return _ok(_result_to_text(r))
+
+        if action == "mouse_click":
+            x = args.get("x")
+            y = args.get("y")
+            kind = str(args.get("kind", "single")).strip().lower() or "single"
+            if x is None or y is None:
+                return _err("mouse_click 需要 x, y (逻辑像素)")
+            if kind not in VALID_MOUSE_KINDS:
+                return _err(
+                    f"kind 必须是 {', '.join(sorted(VALID_MOUSE_KINDS))} 之一; 收到 {kind!r}"
+                )
+            # 先触发 overlay 涟漪 (fire-and-forget; helper 死 / 没起静默 skip)
+            try:
+                await cursor_overlay.show_click(
+                    cursor_overlay.get_active_client(), int(x), int(y), kind
+                )
+            except Exception:  # noqa: BLE001
+                pass  # overlay 是辅助, 永不阻断主功能
+            r = mouse_click(int(x), int(y), kind=kind)
+            return _ok(_result_to_text(r))
+
+        if action == "paste":
+            text = args.get("text")
+            if text is None:
+                return _err("paste 需要 text")
+            r = await paste_text(str(text))
+            return _ok(_result_to_text(r))
+
         return _err(f"未处理 action: {action}")
 
     except RuntimeError as e:
@@ -237,19 +345,23 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     COMPUTER_USE_TOOL_NAME,
     (
-        "macOS 桌面自动化 (Accessibility API + CGEvent). 用户首次调任意 action 弹审批, "
-        "allow session 后整个会话免审. action 列表 (按典型流程): "
-        "permissions (首次决策, 看是否需要让用户去开权限) → apps (列正在跑的 app) → "
-        "snapshot(target=app名) (拿 AX 树 + 元素 index) → "
-        "menu(target=app, path=['文件','新建']) 走菜单 / "
-        "press(snapshot_id, index) 点元素 / type 类用 set_value(snapshot_id, index, value) / "
-        "key(combo='cmd+s') 发快捷键 / focus(target=app) 切前台. "
-        "menu 是任何 app 通用最稳; 主内容操作只在原生 app (Finder/系统设置/备忘录/Music 等) 有效, "
-        "Electron app (VSCode/Chrome) 主区是黑盒, 编辑器/网页内容不要在这工具里操作 — "
-        "走 file 能力 / browser_bridge."
+        "macOS 桌面自动化 (Accessibility API + CGEvent + Quartz 截图). 用户首次调任意 "
+        "action 弹审批, allow session 后整个会话免审. 12 个 action — AX 路径 (M8): "
+        "permissions (检 Accessibility + Screen Recording 双权限) → apps → "
+        "snapshot(target=app名) → menu(target, path=['文件','新建']) / "
+        "press(snapshot_id, index) / set_value(snapshot_id, index, value) / "
+        "focus(target) / key(combo='cmd+s'). "
+        "视觉路径 (M9, Electron 主区兜底): "
+        "screenshot(target='screen' 或 app名, scale=0.33, quality=70, format='jpeg') 默认 ~1.1k vision token; "
+        "mouse_move(x, y) / mouse_click(x, y, kind='single'|'double'|'right'); "
+        "paste(text=...) (自动备份/恢复用户剪贴板, CJK + emoji 完美). "
+        "坐标系: mouse/paste 用逻辑像素 (跟 screenshot.logical_px 同空间), "
+        "截图返物理像素 + scale_applied, LLM 自己换算 logical = image * (logical_w / scaled_w). "
+        "menu 是任何 app 通用最稳; AX 主区拿不到时 (Electron / Canvas) → screenshot + mouse_click + paste 兜底."
     ),
     {
         "action": str,
+        # 通用 / M8
         "target": str,
         "path": list[str],
         "snapshot_id": str,
@@ -259,6 +371,16 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
         "depth": int,
         "max_children": int,
         "prompt": bool,
+        # M9 鼠标 / overlay 坐标 (逻辑像素)
+        "x": int,
+        "y": int,
+        "kind": str,             # mouse_click: single/double/right
+        # M9 截图
+        "scale": float,          # 0.05-1.0, 默认 0.33
+        "quality": int,          # JPEG 1-100, 默认 70
+        "format": str,           # "jpeg" / "png", 默认 "jpeg"
+        # M9 paste
+        "text": str,
     },
 )
 async def _computer_use_tool(args: dict[str, Any]) -> dict[str, Any]:

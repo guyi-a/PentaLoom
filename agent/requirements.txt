@@ -42,3 +42,9 @@ pymupdf>=1.27.0
 # 非 macOS 平台 pip 装这俩会失败 — 用 sys_platform 约束让 Linux/Windows 跳过.
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
 pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
+
+# ---------- M9 视觉 + 鼠标 + 粘贴 (macOS only) ----------
+# Quartz: CGDisplayCreateImage / CGWindowListCreateImage 截图 + CGEvent 鼠标事件.
+# pillow: 截图编码前缩放 (默认 jpeg q70 + 0.33x ≈ 94 KB base64 / ~1.1k vision token).
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pillow>=11.0

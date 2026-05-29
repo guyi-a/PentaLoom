@@ -14,8 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from pentaloom import __version__
+from pentaloom.capabilities.computer import is_macos
 from pentaloom.config import get_settings
-from pentaloom.infra import python_env
+from pentaloom.infra import cursor_overlay, python_env
 from pentaloom.infra.db import Base, engine
 from pentaloom.infra.loom_pool import LoomPool
 from pentaloom.routers import browser_bridge, chat, fs, health, sessions
@@ -29,6 +30,8 @@ async def lifespan(app: FastAPI):
     LoomPool 管 per-session PentaLoom 实例 (多会话并发不互阻).
     python_env.prewarm 在后台跑 (uv sync + uv add 一批预装包), 不阻塞 server 启动 —
     没装完之前 install_python_libs 也能用 (uv add 自己会按需建 venv), 只是装包慢.
+    cursor_overlay helper 在 macOS 上起一个常驻 subprocess, 给鼠标操作画浮层 —
+    失败仅 warning, 主功能 (mouse_click / paste / screenshot) 静默继续.
     """
     settings = get_settings()
     settings.ensure_dirs()
@@ -42,6 +45,16 @@ async def lifespan(app: FastAPI):
     prewarm_task = asyncio.create_task(python_env.prewarm(settings))
     # 不 await — 任由后台跑. 失败 prewarm 内部已 logger.warning, 不抛.
     app.state.prewarm_task = prewarm_task
+
+    # cursor_overlay helper: 仅 macOS 起. helper 失败 / 超时不阻断 server 启动.
+    overlay_client = None
+    if is_macos():
+        overlay_client = await cursor_overlay.start_helper(timeout_s=5.0)
+        if overlay_client is not None:
+            cursor_overlay.set_active_client(overlay_client)
+    else:
+        logger.info("cursor_overlay skipped (not macOS)")
+    app.state.cursor_overlay = overlay_client
 
     logger.info(
         f"PentaLoom v{__version__} 启动 — host={settings.host} port={settings.port} "
@@ -57,6 +70,9 @@ async def lifespan(app: FastAPI):
                 await prewarm_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if overlay_client is not None:
+            await cursor_overlay.shutdown_helper(overlay_client)
+            cursor_overlay.set_active_client(None)
         await pool.shutdown()
         logger.info("PentaLoom 关闭")
 

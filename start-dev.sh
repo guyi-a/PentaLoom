@@ -86,12 +86,13 @@ for i in $(seq 1 60); do
 done
 
 # ── Frontend (Vite) ───────────────────────────────────────────────────
+# Vite 默认绑 IPv6 [::1] — curl 用 localhost 走系统 DNS, 自动 fallback v6
 if [ "$WITH_FRONTEND" = "1" ]; then
   echo "🎨 启动前端 (Vite, 固定端口 ${FRONTEND_PORT})..."
 
   FRONTEND_REUSED=0
-  if curl -sf "http://127.0.0.1:${FRONTEND_PORT}" >/dev/null 2>&1; then
-    echo "  ✓ http://127.0.0.1:${FRONTEND_PORT} 已有前端服务, 直接复用"
+  if curl -sf "http://localhost:${FRONTEND_PORT}" >/dev/null 2>&1; then
+    echo "  ✓ http://localhost:${FRONTEND_PORT} 已有前端服务, 直接复用"
     FRONTEND_REUSED=1
   elif [ -n "$(port_pids "$FRONTEND_PORT")" ]; then
     echo "  ✗ 端口 ${FRONTEND_PORT} 已被占用, 但不是可访问的前端服务"
@@ -107,16 +108,17 @@ if [ "$WITH_FRONTEND" = "1" ]; then
     npm install --silent
   fi
   npm run dev > "../${LOG_DIR}/frontend.log" 2>&1 &
-  PIDS+=($!)
+  FRONTEND_PID=$!
+  PIDS+=($FRONTEND_PID)
   popd > /dev/null
 
-  echo "  ⏳ 等待 http://127.0.0.1:${FRONTEND_PORT} ..."
+  echo "  ⏳ 等待 http://localhost:${FRONTEND_PORT} ..."
   for i in $(seq 1 60); do
-    if curl -sf "http://127.0.0.1:${FRONTEND_PORT}" >/dev/null 2>&1; then
+    if curl -sf "http://localhost:${FRONTEND_PORT}" >/dev/null 2>&1; then
       echo "  ✓ 前端就绪"
       break
     fi
-    if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
       echo "  ✗ 前端进程已退出, 看 ${LOG_DIR}/frontend.log 排查"
       cleanup
     fi
