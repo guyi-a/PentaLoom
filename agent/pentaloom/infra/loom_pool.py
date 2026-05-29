@@ -168,6 +168,12 @@ class LoomPool:
         # StreamBuffer 也清掉 — 子进程没了, 后台 task 跑的 pl.query 会拿到管道
         # 异常, 不 cancel 反而会卡; 顺便释放订阅者.
         stream_buffers.remove(session_id)
+        # browser-use CLI 后台 Chrome 进程跟 PentaLoom 子进程是两条独立生命周期,
+        # 不清 evict 后浏览器残留. best-effort, 失败吞.
+        # 延迟 import 防循环 (tools 模块在启动时间链上).
+        from pentaloom.tools.browser import close_browser_use_session
+
+        await close_browser_use_session(self._settings, session_id)
         await entry.pl.__aexit__(None, None, None)
         logger.info(f"LoomPool evicted session={session_id}")
 
