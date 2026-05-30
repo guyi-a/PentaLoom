@@ -48,11 +48,11 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
   }
 
   return (
-    <section className="border-b border-[color:var(--color-line)] px-3 py-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.15em] text-[color:var(--color-ink-dim)]">
-        <Layers size={11} />
-        <span>workspace</span>
-        <span className="ml-auto font-mono text-[10px] tracking-normal text-[color:var(--color-ink)]">
+    <section className="border-b border-[color:var(--color-line-soft)] px-3 py-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Layers size={11} className="shrink-0 text-[color:var(--color-ink-dim)]" />
+        <span className="font-display text-[12px] italic text-[color:var(--color-ink)]">Workspace</span>
+        <span className="tabular ml-auto font-mono text-[10.5px] text-[color:var(--color-ink)]">
           {mountedDirs.length} mount{mountedDirs.length === 1 ? "" : "s"}
         </span>
         <button
@@ -72,8 +72,8 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
       </div>
 
       {mountedDirs.length === 0 ? (
-        <div className="px-1 py-2 text-[11px] italic text-[color:var(--color-ink)]">
-          No directories mounted. Click <FolderPlus size={10} className="inline" /> to add one.
+        <div className="px-1 py-2 font-display text-[12px] italic text-[color:var(--color-ink)]">
+          No directories mounted yet.
         </div>
       ) : (
         <ul className="space-y-0.5">
