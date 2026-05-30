@@ -34,9 +34,11 @@ from claude_agent_sdk import AgentDefinition
 from loguru import logger
 
 from pentaloom.app import PentaLoom
+from pentaloom.capabilities.weaver import assemble_weaver
 from pentaloom.config import get_settings
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import PERMISSION_REGISTRY, make_can_use_tool
+from pentaloom.tools.weaver import WEAVER_MCP_SERVER_NAME, build_weaver_mcp_server
 
 
 def _validate_sid(session_id: str) -> None:
@@ -60,6 +62,12 @@ class _Entry:
     # 引用共享, 不需要 rebuild client. Entry evict 时随 dataclass 一起 gc, 不持久化.
     # 例: {"Bash": {"ls -al"}, "mcp__pentaloom_env__install_python_libs": {"numpy\nopenpyxl"}}
     hitl_allowlists: dict[str, set[str]] = field(default_factory=dict)
+    # weaver hot reload (Spike 1+2+3 verified): weave_* / edit_weaver / delete_weaver
+    # 成功时设 True, 当前 turn 的 stream_end 之后 chat router 调 pool.evict(sid).
+    # 用户下条 message 触发 LoomPool.get → resume rebuild, 新 weaver 内容生效.
+    # 必须**推迟到 stream_end** 而不是 weave_* 返回那一刻 — 否则 SIGTERM SDK 子进程
+    # turn 卡死 (Spike 笔记 docs/spikes/01-02-infra.md "evict 时机" 段).
+    pending_rebuild: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = field(default_factory=time.monotonic)
 
@@ -123,8 +131,20 @@ class LoomPool:
         # dict 必须先建好再传给 make_can_use_tool, 让 closure 跟 _Entry 持同一引用 —
         # 之后 router add_hitl_allowed 改 dict 才能立刻被 can_use_tool 读到.
         allowlists = hitl_allowlists if hitl_allowlists is not None else {}
+
+        # weaver: 启动 sync skill symlinks + 注入 mcp_server / agents / skills.
+        # weave_* 工具完成时回调 mark_pending_rebuild — closure 持 sid + self.
+        weaver_subagents, weaver_skill_names = await assemble_weaver(self._settings)
+        weaver_server = build_weaver_mcp_server(
+            self._settings,
+            mark_rebuild=lambda sid=session_id: self.mark_pending_rebuild(sid),
+        )
+
         pl = PentaLoom(
             agents=self._agents,
+            extra_mcp_servers={WEAVER_MCP_SERVER_NAME: weaver_server},
+            extra_agents=weaver_subagents,
+            extra_skills=weaver_skill_names,
             session_id=None if resume else session_id,
             resume=session_id if resume else None,
             cwd=sandbox,
@@ -137,7 +157,8 @@ class LoomPool:
         projected_size = len(self._registry) if resume else len(self._registry) + 1
         logger.info(
             f"LoomPool built session={session_id} sandbox={sandbox} "
-            f"mounts={mounted_dirs} resume={resume} (size={projected_size})"
+            f"mounts={mounted_dirs} resume={resume} (size={projected_size}) "
+            f"weaver_skills={weaver_skill_names}"
         )
         return _Entry(
             pl=pl, mounted_dirs=list(mounted_dirs), hitl_allowlists=allowlists
@@ -157,6 +178,21 @@ class LoomPool:
             return False
         entry.hitl_allowlists.setdefault(tool_name, set()).add(key)
         return True
+
+    def mark_pending_rebuild(self, session_id: str) -> bool:
+        """weaver 工具完成时调. 当前 turn 不动 client, stream_end 后 chat router 调 evict.
+
+        没什么并发风险: 工具是 in-process, mark flag 是同步 dict 读写.
+        """
+        entry = self._registry.get(session_id)
+        if entry is None:
+            return False
+        entry.pending_rebuild = True
+        return True
+
+    def peek_entry(self, session_id: str) -> _Entry | None:
+        """给 chat router stream_end hook 读 pending_rebuild flag 用. 不更新 last_used."""
+        return self._registry.get(session_id)
 
     async def evict(self, session_id: str) -> None:
         entry = self._registry.pop(session_id, None)

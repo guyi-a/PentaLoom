@@ -191,6 +191,17 @@ export const COMPUTER_USE_TOOL_NAME =
 export const WEB_SEARCH_TOOL_NAME =
   "mcp__pentaloom_search__web_search";
 
+// weaver 元工具 — 沉淀 / 改 / 删 / 跑产物 (内联审批, **每次单审**, 不进 ALLOW_SESSION_TOOLS).
+// 长期资产改动应该每次过目; list/inspect/tail_logs 是只读不审, 不在这里.
+export const WEAVE_SKILL_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_skill";
+export const EDIT_WEAVER_TOOL_NAME =
+  "mcp__pentaloom_weaver__edit_weaver";
+export const DELETE_WEAVER_TOOL_NAME =
+  "mcp__pentaloom_weaver__delete_weaver";
+export const RUN_WEAVER_TOOL_NAME =
+  "mcp__pentaloom_weaver__run_weaver";
+
 export const BASH_TOOL_NAME = "Bash";
 
 // 需要 HITL 审批的工具名全集. 必须跟后端 pentaloom.tools.HITL_TOOL_NAMES 对齐.
@@ -207,6 +218,10 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   BROWSER_BRIDGE_TOOL_NAME,
   COMPUTER_USE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
+  WEAVE_SKILL_TOOL_NAME,
+  EDIT_WEAVER_TOOL_NAME,
+  DELETE_WEAVER_TOOL_NAME,
+  RUN_WEAVER_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -259,6 +274,23 @@ export interface BrowseResponse {
 // POST /fs/open 的回执. 失败走 throw, 200 时只回实际打开的规范化路径.
 export interface OpenFileResp {
   opened: string;
+}
+
+// weaver 4 个产物里 M14 唯一实装的是 Skill. 其他 3 类用空 list 占位, M16/M17/M18 上线.
+// 工具调用走 SDK in-process MCP, 不走 REST; REST 只给 sidebar / 设置页面读 source.
+export type WeaverSource = "builtin" | "agent_woven" | "user_imported" | "user_handwritten";
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  source: WeaverSource;
+}
+
+export interface WeaverProductsResponse {
+  skills: SkillSummary[];
+  subagents: unknown[];  // M17
+  workflows: unknown[];  // M16
+  apps: unknown[];       // M18
 }
 
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.

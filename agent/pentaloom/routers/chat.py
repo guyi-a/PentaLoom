@@ -248,7 +248,9 @@ async def _resolve_session(req: ChatRequest) -> tuple[str, list[str]]:
         return sid, db_mounted
 
 
-async def _run_query_and_fill_buffer(pl, prompt: str, sid: str, lock: asyncio.Lock) -> None:
+async def _run_query_and_fill_buffer(
+    pl, prompt: str, sid: str, lock: asyncio.Lock, pool
+) -> None:
     """后台 task: 跑一轮 pl.query(prompt), 把每帧 append 到 stream_buffer.
 
     锁: per-session lock 串行化 turn (LoomPool 给的); 同 sid 同时只跑一轮.
@@ -259,6 +261,12 @@ async def _run_query_and_fill_buffer(pl, prompt: str, sid: str, lock: asyncio.Lo
     current_msg_id, 传给 _serialize 让 thinking_delta / text_delta 帧都带上
     稳定的 (msg_uuid=message.id, index) — 前端 reducer 才能把同 message 的所有
     delta 合并成一个 thinking / text 块, 不会切碎. message_stop 后清空.
+
+    weaver hot reload (Spike 1+2+3 verified): 本 turn 跑过 weave_skill /
+    edit_weaver / delete_weaver, _Entry.pending_rebuild 被 mark True; 在
+    stream_end 之后 (确保 SSE 已优雅关闭) 调 pool.evict(sid), 下条 user
+    message 触发 LoomPool.get → resume rebuild, 新 weaver 内容立即生效.
+    必须**在 stream_end 之后** — 不然 SDK 子进程在 stream 中被 SIGTERM, turn 卡死.
     """
     buf = stream_buffers.get(sid)
     assert buf is not None, f"stream_buffer should exist for {sid}"
@@ -291,6 +299,13 @@ async def _run_query_and_fill_buffer(pl, prompt: str, sid: str, lock: asyncio.Lo
         finally:
             buf.append(_sse({"type": "stream_end"}))
             buf.finish()
+            entry = pool.peek_entry(sid) if pool is not None else None
+            if entry is not None and entry.pending_rebuild:
+                logger.info(f"weaver rebuild pending — evict session={sid}")
+                try:
+                    await pool.evict(sid)
+                except Exception:
+                    logger.exception(f"weaver post-turn evict failed (session={sid})")
 
 
 @router.post("/chat", summary="向 PentaLoom 发一条消息, SSE 流回 (支持后续 GET /resume 重连)")
@@ -310,7 +325,7 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     # 轮没结束就排队), buffer 在前的 chunks 会保留, 重连仍能拿到.
     buf = stream_buffers.create_for_turn(sid)
     buf.set_user_prompt(req.prompt)
-    task = asyncio.create_task(_run_query_and_fill_buffer(pl, req.prompt, sid, lock))
+    task = asyncio.create_task(_run_query_and_fill_buffer(pl, req.prompt, sid, lock, pool))
     buf.set_task(task)
 
     return StreamingResponse(

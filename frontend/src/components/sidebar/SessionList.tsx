@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { LoomMark } from "@/components/brand/LoomMark";
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
+import { WeaverGroup } from "@/components/sidebar/WeaverGroup";
 import { api } from "@/lib/api";
 import type { SessionMeta } from "@/lib/types";
 import {
@@ -64,7 +65,7 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
   if (sessions.length === 0) {
     return (
       <>
-        <ProjectsPlaceholder />
+        <WeaverGroup />
         <EmptyState />
       </>
     );
@@ -72,7 +73,7 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
 
   return (
     <>
-      <ProjectsPlaceholder />
+      <WeaverGroup />
       <SidebarGroup label="Threads">
         <div className="space-y-3">
           {TIME_GROUP_ORDER.map((group) => {
@@ -100,19 +101,6 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
         </div>
       </SidebarGroup>
     </>
-  );
-}
-
-// Projects 分组占位 — 后端 Project 模型 + app_gen 能力上 M12 时这里换成真渲染.
-// 默认折叠克制, 用户展开能看到 "coming with app_gen" 提示, 不假装有"New project"按钮.
-function ProjectsPlaceholder() {
-  return (
-    <SidebarGroup label="Projects" defaultExpanded={false}>
-      <div className="mx-2 rounded-[6px] px-3 py-2 text-[11px] leading-relaxed text-[color:var(--color-ink-dim)]">
-        <p className="font-display italic">No projects yet.</p>
-        <p className="mt-0.5">Coming with app_gen capability.</p>
-      </div>
-    </SidebarGroup>
   );
 }
 

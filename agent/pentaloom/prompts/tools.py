@@ -116,6 +116,9 @@ COMPUTER_PROMPT_INSTRUCTIONS: str = (
 
 # capabilities.render 收的就是这个 list. 顺序决定段在 system prompt 里出现的顺序.
 # search 放在 browser 前面, 强调"找信息先搜, 浏览器是兜底"的决策优先级.
+# weaver 放最后, 是元能力 — 用其他能力做事的过程中沉淀方法论.
+from pentaloom.prompts.weaver import WEAVER_PROMPT_INSTRUCTIONS
+
 TOOL_PROMPT_INSTRUCTIONS: list[str] = [
     WORKSPACE_PROMPT_INSTRUCTIONS,
     FILES_PROMPT_INSTRUCTIONS,
@@ -123,6 +126,7 @@ TOOL_PROMPT_INSTRUCTIONS: list[str] = [
     SEARCH_PROMPT_INSTRUCTIONS,
     BROWSER_PROMPT_INSTRUCTIONS,
     COMPUTER_PROMPT_INSTRUCTIONS,
+    WEAVER_PROMPT_INSTRUCTIONS,
 ]
 
 __all__ = [
@@ -132,5 +136,6 @@ __all__ = [
     "PYTHON_ENV_PROMPT_INSTRUCTIONS",
     "SEARCH_PROMPT_INSTRUCTIONS",
     "TOOL_PROMPT_INSTRUCTIONS",
+    "WEAVER_PROMPT_INSTRUCTIONS",
     "WORKSPACE_PROMPT_INSTRUCTIONS",
 ]
