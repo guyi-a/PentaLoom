@@ -24,6 +24,13 @@ class Settings(BaseSettings):
         "https://api.novita.ai/anthropic", alias="ANTHROPIC_BASE_URL"
     )
 
+    # --- 联网搜索 (capabilities/search) ---
+    # 不必填; 缺时 web_search 工具直接抛 SearchError 引导用户去注册, agent 看见后
+    # 可建议走浏览器兜底. Tavily 免费 1000/月 (海外源), Bocha 免费试用 1000 (国内源).
+    # 两个都配 → region=both 时并发合并, 中英文双覆盖.
+    tavily_api_key: str = Field("", alias="TAVILY_API_KEY")
+    bocha_api_key: str = Field("", alias="BOCHA_API_KEY")
+
     # --- 模型 ---
     model: str = Field("pa/claude-opus-4-7", alias="PENTALOOM_MODEL")
 

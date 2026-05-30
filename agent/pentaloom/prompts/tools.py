@@ -24,6 +24,7 @@ from pentaloom.tools.python_env import (
     INSTALL_LIBS_FULL_NAME,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.search import WEB_SEARCH_FULL_NAME
 from pentaloom.tools.workspace import FULL_TOOL_NAME as REQUEST_WORKSPACE_DIR_FULL_NAME
 
 WORKSPACE_PROMPT_INSTRUCTIONS: str = (
@@ -54,6 +55,10 @@ PYTHON_ENV_PROMPT_INSTRUCTIONS: str = (
 
 BROWSER_PROMPT_INSTRUCTIONS: str = (
     "### 浏览器自动化\n"
+    "- **决策前置**: 任务只是\"找信息 / 查事实 / 看新闻 / 取最新数据\" → 先用 "
+    f"{WEB_SEARCH_FULL_NAME}, 别为了找信息开浏览器. 浏览器只在以下场景才用: "
+    "(a) 用户明确说\"打开 X 网站 / 登录 / 点 X / 截图 X\"; (b) 搜索返回不足或需要看完整页面 "
+    "(把 href 给 browser_bridge open_tab 而不是开新搜索); (c) 必须在网页里交互 (填表/提交/下载).\n"
     "- 任何浏览器任务**先决策走哪条路径**: 调 "
     f"{BROWSER_BRIDGE_FULL_NAME}(action='extension_status'), 看返回 `ready` 字段:\n"
     "  - `ready=true` → load `browser-bridge` skill, 走真实浏览器 (扩展桥接). **首选**.\n"
@@ -66,6 +71,27 @@ BROWSER_PROMPT_INSTRUCTIONS: str = (
     f"跑命令用 {BROWSER_USE_FULL_NAME}(command='...'), 命令体跟 browser-use CLI 一致.\n"
     f"- 生成可复用 Python 脚本前调 {BROWSER_SESSION_INFO_FULL_NAME}() 拿 session_name / "
     "profile / cookies_path 当常量 (仅 use 路径需要)."
+)
+
+SEARCH_PROMPT_INSTRUCTIONS: str = (
+    "### 联网搜索\n"
+    f"- 找信息 / 查事实 / 看新闻 / 取最新数据 / 查文档 — 一律先调 {WEB_SEARCH_FULL_NAME}"
+    "(query=..., region=...), 返 [{title, href, body}, ...]. 这是浏览器的**上游**, 别跳过它直接开浏览器搜.\n"
+    "- **region 三档** (默认 both, 拿不准就 both):\n"
+    "  - `cn` (Bocha 国内源): 明显只关国内 — 国内政策 / 中国本土公司 / 国内活动 / "
+    "中文文学 / 国内法规 / 中国地名地物等.\n"
+    "  - `global` (Tavily 海外源): 明显只关海外 — OpenAI/Anthropic/Google 等海外公司 / "
+    "英文论文 / 海外政策 / 国际赛事英文报道等.\n"
+    "  - `both` (两路并发合并, 默认): 跨域话题 / 双边都重要 — AI/科技/全球新闻/"
+    "跨境业务/对比国内外做法等. 无把握时默认走 both, 比单边漏掉重要源安全.\n"
+    "- 拿到结果后:\n"
+    "  - body 摘要够回答 → 直接用, 不开浏览器.\n"
+    "  - 需要看完整页面 → 把 href 给 browser_bridge(action='open_tab') 或 Read (PDF 类直链).\n"
+    f"- 什么时候**不要**调 {WEB_SEARCH_FULL_NAME}:\n"
+    "  - 用户明确\"打开 X 网站\" / \"登录\" / \"在 X 上点 Y\" — 那是交互任务, 直接走浏览器.\n"
+    "  - 任务是操作页面 (填表 / 提交 / 截图特定 URL) 而非找信息.\n"
+    f"- {WEB_SEARCH_FULL_NAME} 报错 (如 key 未配 / 限流) 或返空 → 退到浏览器手动搜.\n"
+    "- 首次调用弹审批, Allow session 后整会话所有搜索免审."
 )
 
 COMPUTER_PROMPT_INSTRUCTIONS: str = (
@@ -89,10 +115,12 @@ COMPUTER_PROMPT_INSTRUCTIONS: str = (
 )
 
 # capabilities.render 收的就是这个 list. 顺序决定段在 system prompt 里出现的顺序.
+# search 放在 browser 前面, 强调"找信息先搜, 浏览器是兜底"的决策优先级.
 TOOL_PROMPT_INSTRUCTIONS: list[str] = [
     WORKSPACE_PROMPT_INSTRUCTIONS,
     FILES_PROMPT_INSTRUCTIONS,
     PYTHON_ENV_PROMPT_INSTRUCTIONS,
+    SEARCH_PROMPT_INSTRUCTIONS,
     BROWSER_PROMPT_INSTRUCTIONS,
     COMPUTER_PROMPT_INSTRUCTIONS,
 ]
@@ -102,6 +130,7 @@ __all__ = [
     "COMPUTER_PROMPT_INSTRUCTIONS",
     "FILES_PROMPT_INSTRUCTIONS",
     "PYTHON_ENV_PROMPT_INSTRUCTIONS",
+    "SEARCH_PROMPT_INSTRUCTIONS",
     "TOOL_PROMPT_INSTRUCTIONS",
     "WORKSPACE_PROMPT_INSTRUCTIONS",
 ]

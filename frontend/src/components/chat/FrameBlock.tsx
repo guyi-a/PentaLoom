@@ -29,6 +29,7 @@ import {
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "@/lib/types";
 import { parseBrowserBridgeInput } from "@/lib/browser-bridge";
@@ -482,6 +483,11 @@ export function InlineApprovalBar({
       // computer 同 bridge 单 key 模式 — 用户真实电脑, 看得见每一步, 默认信任.
       return !!String(input.action ?? "").trim();
     }
+    if (toolName === WEB_SEARCH_TOOL_NAME) {
+      // web_search 同 bridge 单 key 模式 — 任何非空 query 都算 "enabled",
+      // 首次后整个会话所有搜索免审.
+      return !!String(input.query ?? "").trim();
+    }
     return false;
   })();
 
@@ -500,7 +506,9 @@ export function InlineApprovalBar({
                 ? "Allow browser bridge (session)"
                 : toolName === COMPUTER_USE_TOOL_NAME
                   ? "Allow computer-use (session)"
-                  : "Allow (session)";
+                  : toolName === WEB_SEARCH_TOOL_NAME
+                    ? "Allow web search (session)"
+                    : "Allow (session)";
 
   async function decide(decision: "allow_once" | "allow_session" | "deny") {
     if (busy) return;
@@ -559,7 +567,9 @@ export function InlineApprovalBar({
                         ? "action 为空, 无法加入白名单"
                         : toolName === COMPUTER_USE_TOOL_NAME
                           ? "action 为空, 无法加入白名单"
-                          : "libs 为空, 无法加入白名单"
+                          : toolName === WEB_SEARCH_TOOL_NAME
+                            ? "query 为空, 无法加入白名单"
+                            : "libs 为空, 无法加入白名单"
           }
           className={cn(
             "rounded-[5px] border px-3 py-1.5 text-[12px] font-medium transition-colors",
