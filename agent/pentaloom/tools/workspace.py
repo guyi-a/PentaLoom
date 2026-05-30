@@ -55,6 +55,7 @@ from pentaloom.tools.python_env import (
     PYTHON_ENV_TOOLS,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.search import WEB_SEARCH_FULL_NAME
 from pentaloom.tools.system_resources import (
     INSTALL_NOTO_SANS_SC_FULL_NAME,
     SYSTEM_RESOURCES_TOOLS,
@@ -82,14 +83,15 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     BROWSER_USE_FULL_NAME,
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
+    WEB_SEARCH_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
 # run_python_script 脚本内容每次都变, 给"会话级免审"没意义 — 这两个 allow_session
-# 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_* / computer_use)
-# 才真正走会话级缓存.
-# browser_bridge / computer_use 用单 key "enabled" — 任何 action 第一次审批后
-# 整个会话所有调用免审 (用户的真实浏览器 / 真实电脑, 默认信任).
+# 退化为 allow_once. 其余 (Bash / install_libs / file_verify / browser_* / computer_use /
+# web_search) 才真正走会话级缓存.
+# browser_bridge / computer_use / web_search 用单 key "enabled" — 任何 action 第一次
+# 审批后整个会话所有调用免审 (用户的真实浏览器 / 真实电脑 / 搜索, 默认信任).
 ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BASH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
@@ -98,6 +100,7 @@ ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BROWSER_USE_FULL_NAME,
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
+    WEB_SEARCH_FULL_NAME,
 })
 
 
@@ -260,6 +263,12 @@ def _normalize_computer_use(_tool_input: dict[str, Any]) -> str:
     return "enabled"
 
 
+def _normalize_web_search(_tool_input: dict[str, Any]) -> str:
+    """web_search 同 browser_bridge 单 key 模式 — 搜索本身没破坏性, 按 query 细审
+    会打断节奏; 首次审完整个会话所有 web_search 免审."""
+    return "enabled"
+
+
 def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
     if tool_name == BASH_TOOL_NAME:
@@ -281,6 +290,8 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return _normalize_browser_bridge(tool_input)
     if tool_name == COMPUTER_USE_FULL_NAME:
         return _normalize_computer_use(tool_input)
+    if tool_name == WEB_SEARCH_FULL_NAME:
+        return _normalize_web_search(tool_input)
     return None
 
 
@@ -382,6 +393,12 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
                 return PermissionResultDeny(
                     message=f"action 不合法; 合法值: {', '.join(sorted(COMPUTER_VALID_ACTIONS))}"
                 )
+
+        # web_search 必须给非空 query.
+        if tool_name == WEB_SEARCH_FULL_NAME:
+            q = str(tool_input.get("query", "")).strip()
+            if not q:
+                return PermissionResultDeny(message="query 不能为空")
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input

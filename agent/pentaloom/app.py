@@ -38,6 +38,9 @@ from pentaloom.tools import (
     PYTHON_ENV_MCP_SERVER_NAME,
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
     RUN_SCRIPT_FULL_NAME,
+    SEARCH_MCP_SERVER,
+    SEARCH_MCP_SERVER_NAME,
+    WEB_SEARCH_FULL_NAME,
     WORKSPACE_MCP_SERVER,
     WORKSPACE_MCP_SERVER_NAME,
     build_hitl_hooks,
@@ -89,6 +92,7 @@ DEFAULT_TOOLS: list[str] = [
     BROWSER_SESSION_INFO_FULL_NAME,
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
+    WEB_SEARCH_FULL_NAME,
 ]
 
 # 不需要 prompt 的工具 (auto-approve). HITL 工具 (Bash + request_workspace_dir)
@@ -167,6 +171,8 @@ class PentaLoom:
                 BROWSER_BRIDGE_MCP_SERVER_NAME: BROWSER_BRIDGE_MCP_SERVER,
                 # computer-use 也 user-scoped (一台机器), 模块级 singleton.
                 COMPUTER_MCP_SERVER_NAME: COMPUTER_MCP_SERVER,
+                # search 是 stateless HTTP 调用, 模块级 singleton 即可.
+                SEARCH_MCP_SERVER_NAME: SEARCH_MCP_SERVER,
             },
             can_use_tool=can_use_tool,
             # PreToolUse hook 把 Bash 标成 "ask" 路由到 can_use_tool. SDK 文档里

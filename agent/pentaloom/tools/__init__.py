@@ -11,6 +11,11 @@ from pentaloom.tools.python_env import (
     PYTHON_ENV_MCP_SERVER_NAME,
     RUN_SCRIPT_FULL_NAME,
 )
+from pentaloom.tools.search import (
+    SEARCH_MCP_SERVER,
+    SEARCH_MCP_SERVER_NAME,
+    WEB_SEARCH_FULL_NAME,
+)
 from pentaloom.tools.system_resources import INSTALL_NOTO_SANS_SC_FULL_NAME
 from pentaloom.tools.workspace import (
     ALLOW_SESSION_TOOLS,
@@ -44,6 +49,9 @@ __all__ = [
     "PYTHON_ENV_MCP_SERVER_NAME",
     "REQUEST_WORKSPACE_DIR_TOOL_NAME",
     "RUN_SCRIPT_FULL_NAME",
+    "SEARCH_MCP_SERVER",
+    "SEARCH_MCP_SERVER_NAME",
+    "WEB_SEARCH_FULL_NAME",
     "WORKSPACE_MCP_SERVER",
     "WORKSPACE_MCP_SERVER_NAME",
     "WORKSPACE_REGISTRY",

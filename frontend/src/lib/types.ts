@@ -187,6 +187,9 @@ export const BROWSER_BRIDGE_TOOL_NAME =
 // macOS 桌面自动化 (内联审批, 单 key — 同 bridge 模式, 首次后整个会话免审).
 export const COMPUTER_USE_TOOL_NAME =
   "mcp__pentaloom_computer__computer_use";
+// 联网搜索 (内联审批, 单 key — 同 bridge 模式, 首次后整个会话免审).
+export const WEB_SEARCH_TOOL_NAME =
+  "mcp__pentaloom_search__web_search";
 
 export const BASH_TOOL_NAME = "Bash";
 
@@ -203,6 +206,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   BROWSER_USE_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
   COMPUTER_USE_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -215,6 +219,7 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   BROWSER_USE_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
   COMPUTER_USE_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {
