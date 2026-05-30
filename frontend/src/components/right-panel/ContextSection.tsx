@@ -56,18 +56,18 @@ export function ContextSection({ sessionId, history, liveFrames }: Props) {
 
   return (
     <section className="px-3 py-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.15em] text-[color:var(--color-ink-dim)]">
-        <Files size={11} />
-        <span>context</span>
+      <div className="mb-2 flex items-center gap-1.5">
+        <Files size={11} className="shrink-0 text-[color:var(--color-ink-dim)]" />
+        <span className="font-display text-[12px] italic text-[color:var(--color-ink)]">Context</span>
         {paths.length > 0 && (
-          <span className="ml-auto font-mono text-[10px] tracking-normal text-[color:var(--color-ink)]">
+          <span className="tabular ml-auto font-mono text-[10.5px] text-[color:var(--color-ink)]">
             {paths.length} file{paths.length === 1 ? "" : "s"}
           </span>
         )}
       </div>
 
       {paths.length === 0 ? (
-        <div className="px-1 py-2 text-[11px] italic text-[color:var(--color-ink)]">
+        <div className="px-1 py-2 font-display text-[12px] italic text-[color:var(--color-ink)]">
           Files touched by tools will appear here.
         </div>
       ) : (

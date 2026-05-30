@@ -56,7 +56,7 @@ export function PromptInput({ onSend, disabled, placeholder }: Props) {
             textareaRef.current?.focus();
           }}
           className={cn(
-            "cursor-text rounded-[12px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-shadow focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_rgba(61,90,128,0.12)]",
+            "cursor-text rounded-[16px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-all hover:shadow-[0_4px_16px_rgba(20,30,50,0.06)] focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_rgba(61,90,128,0.12)]",
             disabled && "opacity-70",
           )}
         >
@@ -68,18 +68,18 @@ export function PromptInput({ onSend, disabled, placeholder }: Props) {
             }
             onKeyDown={onKeyDown}
             disabled={disabled}
-            placeholder={placeholder ?? "Ask anything (Shift+Enter for new line)"}
+            placeholder={placeholder ?? "Continue the thread…"}
             rows={2}
-            className="block w-full resize-none rounded-t-[12px] bg-transparent px-4 pt-3 pb-2 text-[14px] leading-relaxed text-[color:var(--color-paper)] placeholder:text-[color:var(--color-ink-dim)] focus:outline-none disabled:cursor-not-allowed"
+            className="block w-full resize-none rounded-t-[16px] bg-transparent px-5 pt-5 pb-3 text-[15px] leading-relaxed text-[color:var(--color-paper)] placeholder:font-display placeholder:italic placeholder:text-[color:var(--color-ink-dim)] focus:outline-none disabled:cursor-not-allowed"
           />
-          <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5 pt-1">
+          <div className="flex items-center justify-between gap-3 border-t border-[color:var(--color-line-soft)] px-3 py-2.5">
             <button
               type="button"
               onClick={() =>
                 toast.info("Attachments coming soon — backend pipeline not wired yet")
               }
               title="Attach files (coming soon)"
-              className="flex h-9 w-9 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+              className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
             >
               <Paperclip size={17} />
             </button>
@@ -89,7 +89,7 @@ export function PromptInput({ onSend, disabled, placeholder }: Props) {
               disabled={!canSend}
               title="Send (Enter)"
               className={cn(
-                "flex h-9 w-9 items-center justify-center rounded-[8px] transition-colors",
+                "flex h-10 w-10 items-center justify-center rounded-[8px] transition-colors",
                 canSend
                   ? "bg-[color:var(--color-accent)] text-white hover:opacity-90"
                   : "cursor-not-allowed bg-[color:var(--color-bg-raised)] text-[color:var(--color-ink)]",

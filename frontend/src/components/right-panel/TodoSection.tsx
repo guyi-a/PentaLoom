@@ -67,12 +67,12 @@ export function TodoSection({ history, liveFrames }: Props) {
   }, [todos]);
 
   return (
-    <section className="border-b border-[color:var(--color-line)] px-3 py-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.15em] text-[color:var(--color-ink-dim)]">
-        <ListChecks size={11} />
-        <span>todo</span>
+    <section className="border-b border-[color:var(--color-line-soft)] px-3 py-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <ListChecks size={11} className="shrink-0 text-[color:var(--color-ink-dim)]" />
+        <span className="font-display text-[12px] italic text-[color:var(--color-ink)]">Todo</span>
         {counts && (
-          <span className="ml-auto font-mono text-[10px] tracking-normal text-[color:var(--color-ink)]">
+          <span className="tabular ml-auto font-mono text-[10.5px] text-[color:var(--color-ink)]">
             {counts.done}/{counts.total}
             {counts.active > 0 && (
               <span className="ml-1 text-[color:var(--color-accent)]">
@@ -84,7 +84,7 @@ export function TodoSection({ history, liveFrames }: Props) {
       </div>
 
       {!todos || todos.length === 0 ? (
-        <div className="px-1 py-2 text-[11px] italic text-[color:var(--color-ink)]">
+        <div className="px-1 py-2 font-display text-[12px] italic text-[color:var(--color-ink)]">
           {todos === null
             ? "No todo list yet."
             : "Todo list is empty."}

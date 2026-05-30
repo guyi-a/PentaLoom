@@ -1,15 +1,20 @@
 @import "tailwindcss";
 
+/* 字体 — bunny.net 是 Google Fonts 的隐私镜像 (不发跟踪头). 套 Electron 前应该
+   切 self-host woff2 (放 public/fonts/), 离线场景才不会拉空白. */
+@import url("https://fonts.bunny.net/css?family=fraunces:300i,400,400i,500,500i,600|geist:300,400,500,600|jetbrains-mono:400,500&display=swap");
+
 /* ────────────────────────────────────────────────────────────────
-   PentaLoom 设计 tokens — Nordic Light
+   PentaLoom 设计 tokens — Atelier Nordic
    ────────────────────────────────────────────────────────────────
-   雾白底 + 石墨字 + 一抹钢蓝. Linear / Notion / Vercel 风的克制极简.
+   雾白底 + 石墨字 + 一抹钢蓝 + 衬线展示字 + 经纬纹背景.
    原则:
-   - 留白替代边框, 边框替代背景色块
-   - 颜色不超过 5 个 + 4 级灰阶
-   - 没有任何装饰纹理 (网格 / 噪点 / 阴影晕 全去)
-   - 五瓣 agent 色保留, 但全部冷调化 (一抹暖橙做对比)
-   注意: 变量名延续上一版 (paper/ink/bg-soft 等), 仅值重新定义.
+   - display 用 Fraunces (柔和现代衬线, SOFT 轴), 给品牌门面 / 标题装腔调
+   - body  用 Geist (Vercel 几何无衬线), UI / 段落 / 标签
+   - mono  用 JetBrains Mono, 代码 / 路径 / tabular 数字
+   - 五瓣丝线色保留, 一抹暖橙 (computer) 做对比
+   - 经纬纹是装饰底纹, 1px 细线 4% 不透明, 32px 网格, 不能抢戏
+   注意: --font-serif 别名指向 --font-body, 不破坏 50 处既有引用.
    "paper" 现在指页面主文字色 (深石墨), "ink" 指注释级浅灰.
    ──────────────────────────────────────────────────────────────── */
 @theme {
@@ -46,9 +51,12 @@
   --color-error:       #c0453f;
   --color-success:     #5a8068;
 
-  /* ── 字体 (Nordic 全 sans, mono 留给代码) ───────────────────── */
-  --font-serif: "Inter", "PingFang SC", system-ui, sans-serif;
-  --font-mono:  "JetBrains Mono", "SF Mono", Menlo, monospace;
+  /* ── 字体 (display 衬线 / body 几何无衬线 / mono 代码) ─────── */
+  --font-display: "Fraunces", "Songti SC", "Noto Serif SC", Georgia, serif;
+  --font-body:    "Geist", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* 别名: 旧 --font-serif 全局散在 50 处, 别名指 body 不破坏 (历史 token 名). */
+  --font-serif:   var(--font-body);
 
   /* ── 圆角 (Linear 风: 4-6px, 不要 0, 不要 12) ────────────────── */
   --radius-sm: 3px;
@@ -69,22 +77,45 @@ body,
   height: 100%;
   background: var(--color-bg);
   color: var(--color-paper);
-  font-family: var(--font-serif);   /* Nordic 默认 sans */
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* weave-grid: 之前是装饰网格, Nordic 主题下去掉.
-   保留 class 选择器但置空, 避免改 jsx 又遗漏. */
+/* weave-grid: 之前是装饰网格, Atelier Nordic 主题用 weave-texture 替, 保留空 class. */
 .weave-grid {
   background-image: none;
 }
 
+/* 经纬线肌理 — 32px 网格 4% 不透明的 1px 横竖线, 呼应"织"主题, 不抢戏.
+   用在 EmptyPage 主区域底; 之后想全局加再说. */
+.weave-texture {
+  background-image:
+    linear-gradient(to right, rgba(28, 31, 38, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(28, 31, 38, 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: center center;
+}
+
+/* 长列表收口 — 顶/底 8px gradient mask, 滚动时内容淡入淡出, 不被横线生硬切断.
+   用在 sidebar SessionList 容器, 避免会话条被边界切. */
+.scroll-fade-y {
+  mask-image: linear-gradient(to bottom, transparent 0, black 8px, black calc(100% - 8px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 8px, black calc(100% - 8px), transparent 100%);
+}
+
 /* ────────────── 排版工具类 ────────────── */
+.font-display {
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "ss02";  /* Fraunces 的 stylistic set: 老式数字 + 单层 a */
+}
+.font-body {
+  font-family: var(--font-body);
+}
 .font-serif {
-  font-family: var(--font-serif);
+  font-family: var(--font-body);  /* 旧别名, 别破坏 */
 }
 .font-mono {
   font-family: var(--font-mono);
@@ -124,7 +155,7 @@ select:focus-visible {
 }
 
 /* ────────────── 线动画 (LoomMark active 状态用) ─────────────
-   pulse: 五根线轻轻明灭. 比之前的 weave-pull 节制. */
+   pulse: 五根线轻轻明灭. */
 @keyframes thread-pulse {
   0%, 100% { opacity: 0.55; }
   50%      { opacity: 1; }
@@ -148,7 +179,7 @@ select:focus-visible {
 
 /* ────────────── markdown 内排版 ────────────── */
 .prose-loom {
-  font-family: var(--font-serif);
+  font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.7;
   color: var(--color-paper);
@@ -188,15 +219,15 @@ select:focus-visible {
 .prose-loom h1,
 .prose-loom h2,
 .prose-loom h3 {
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
   color: var(--color-paper);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 500;
+  letter-spacing: -0.015em;
   margin: 1.1em 0 0.4em;
 }
-.prose-loom h1 { font-size: 20px; }
-.prose-loom h2 { font-size: 17px; }
-.prose-loom h3 { font-size: 15px; }
+.prose-loom h1 { font-size: 22px; }
+.prose-loom h2 { font-size: 18px; }
+.prose-loom h3 { font-size: 16px; }
 .prose-loom ul,
 .prose-loom ol {
   padding-left: 1.4em;
@@ -210,6 +241,9 @@ select:focus-visible {
   padding-left: 12px;
   color: var(--color-paper-dim);
   margin: 0.6em 0;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 16px;
 }
 .prose-loom hr {
   border: none;

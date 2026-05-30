@@ -10,7 +10,7 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
-import { ArrowUp, Briefcase, ChevronDown, Folder, Paperclip, X } from "lucide-react";
+import { ArrowUp, Folder, FolderPlus, Paperclip, X } from "lucide-react";
 
 import { LoomMark } from "@/components/brand/LoomMark";
 import { ChatStream } from "@/components/chat/ChatStream";
@@ -100,24 +100,30 @@ export function EmptyPage() {
 
   return (
     <>
-      <div className="relative h-full overflow-y-auto">
+      <div className="weave-texture relative h-full overflow-y-auto">
         <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-6 py-16">
-          {/* 标题区 */}
-          <div className="mb-8 flex items-center gap-3">
-            <LoomMark size={28} active={false} />
-            <h1 className="text-[26px] font-semibold leading-tight tracking-tight text-[color:var(--color-paper)]">
-              Let's start a new thread
+          {/* 标题区 — LoomMark 大版 + Fraunces italic 标语 + body 副标语 */}
+          <div className="mb-10">
+            <LoomMark size={48} active className="mb-6" />
+            <h1 className="font-display text-[40px] italic font-normal leading-[1.05] tracking-[-0.015em] text-[color:var(--color-paper)]">
+              Five threads,
+              <br />
+              one weave.
             </h1>
+            <p className="mt-4 max-w-[420px] text-[14px] leading-relaxed text-[color:var(--color-ink)]">
+              Tell PentaLoom what to read, browse, run, search, or build —
+              one prompt, five capabilities weaving in concert.
+            </p>
           </div>
 
-          {/* 输入卡片 */}
+          {/* 输入卡片 — 16px 大圆角, focus 时钢蓝光圈, hover 微 lift */}
           <form
             onSubmit={onSubmit}
             onClick={(e) => {
               if ((e.target as HTMLElement).closest("button, textarea")) return;
               textareaRef.current?.focus();
             }}
-            className="cursor-text rounded-[12px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-shadow focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_rgba(61,90,128,0.12)]"
+            className="cursor-text rounded-[16px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-all hover:shadow-[0_4px_16px_rgba(20,30,50,0.06)] focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_rgba(61,90,128,0.12)]"
           >
             <textarea
               ref={textareaRef}
@@ -133,11 +139,11 @@ export function EmptyPage() {
                 }
               }}
               rows={2}
-              placeholder="How can PentaLoom help you today?"
-              className="block w-full resize-none rounded-t-[12px] bg-transparent px-4 pt-4 pb-2 text-[14px] leading-relaxed text-[color:var(--color-paper)] placeholder:text-[color:var(--color-ink-dim)] focus:outline-none"
+              placeholder="Begin a thread…"
+              className="block w-full resize-none rounded-t-[16px] bg-transparent px-5 pt-5 pb-3 text-[15px] leading-relaxed text-[color:var(--color-paper)] placeholder:font-display placeholder:italic placeholder:text-[color:var(--color-ink-dim)] focus:outline-none"
             />
 
-            <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5 pt-1">
+            <div className="flex items-center justify-between gap-3 border-t border-[color:var(--color-line-soft)] px-3 py-2.5">
               {/* 附件 — 后端 /chat 还没接 multipart, 先 stub */}
               <button
                 type="button"
@@ -145,7 +151,7 @@ export function EmptyPage() {
                   toast.info("Attachments coming soon — backend pipeline not wired yet")
                 }
                 title="Attach files (coming soon)"
-                className="flex h-9 w-9 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+                className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
               >
                 <Paperclip size={17} />
               </button>
@@ -155,7 +161,7 @@ export function EmptyPage() {
                 disabled={!canSend}
                 title="Send (⌘/Ctrl + Enter)"
                 className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-[8px] transition-colors",
+                  "flex h-10 w-10 items-center justify-center rounded-[8px] transition-colors",
                   canSend
                     ? "bg-[color:var(--color-accent)] text-white hover:opacity-90"
                     : "cursor-not-allowed bg-[color:var(--color-bg-raised)] text-[color:var(--color-ink)]",
@@ -166,29 +172,36 @@ export function EmptyPage() {
             </div>
           </form>
 
-          {/* 卡片下方: 项目选择器 + 已挂载目录 chips */}
+          {/* 卡片下方: 挂载入口 (白底 chip, 跟大输入卡片视觉同家族) + 已挂载目录 chips */}
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
               disabled={mounts.length >= MAX_MOUNTS}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-[8px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] py-1.5 pl-2.5 pr-2 text-[12px] transition-colors",
+                "inline-flex items-center gap-2 rounded-[8px] border bg-[color:var(--color-bg-card)] px-3 py-1.5 text-[12px] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-all",
                 mounts.length >= MAX_MOUNTS
-                  ? "cursor-not-allowed text-[color:var(--color-ink-dim)]"
-                  : "text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]",
+                  ? "cursor-not-allowed border-[color:var(--color-line)] text-[color:var(--color-ink-dim)]"
+                  : "border-[color:var(--color-line)] text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)] hover:shadow-[0_2px_8px_rgba(20,30,50,0.06)]",
               )}
-              title="Choose folders PentaLoom can read & write"
+              title="Mount folders for PentaLoom to read & write"
             >
-              <Briefcase size={13} className="text-[color:var(--color-paper-dim)]" />
-              <span>Work in a project</span>
-              <ChevronDown size={12} className="text-[color:var(--color-ink)]" />
+              <FolderPlus
+                size={13}
+                className="shrink-0 text-[color:var(--color-ink)]"
+              />
+              <span>Mount folders</span>
+              {mounts.length > 0 && (
+                <span className="tabular font-mono text-[10.5px] text-[color:var(--color-ink-dim)]">
+                  · {mounts.length}/{MAX_MOUNTS}
+                </span>
+              )}
             </button>
 
             {mounts.map((m) => (
               <span
                 key={m}
-                className="inline-flex items-center gap-1.5 rounded-[8px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] py-1.5 pl-2 pr-1 font-mono text-[11px] text-[color:var(--color-paper-dim)]"
+                className="inline-flex items-center gap-1.5 rounded-[6px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] py-1 pl-2 pr-1 font-mono text-[11px] text-[color:var(--color-paper-dim)]"
               >
                 <Folder
                   size={11}
@@ -207,12 +220,6 @@ export function EmptyPage() {
                 </button>
               </span>
             ))}
-
-            {mounts.length > 0 && (
-              <span className="ml-1 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
-                {mounts.length}/{MAX_MOUNTS}
-              </span>
-            )}
           </div>
         </div>
       </div>

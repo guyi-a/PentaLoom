@@ -255,11 +255,7 @@ export function ChatStream({
       <PromptInput
         onSend={onUserSend}
         disabled={inputDisabled}
-        placeholder={
-          inputDisabled
-            ? "Sending…"
-            : "Ask anything (Shift+Enter for new line)"
-        }
+        placeholder={inputDisabled ? "Sending…" : "Continue the thread…"}
       />
     </div>
   );
