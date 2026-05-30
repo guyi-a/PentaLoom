@@ -10,7 +10,7 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
-import { ArrowUp, Briefcase, ChevronDown, Folder, Paperclip, X } from "lucide-react";
+import { ArrowUp, Folder, FolderPlus, Paperclip, X } from "lucide-react";
 
 import { LoomMark } from "@/components/brand/LoomMark";
 import { ChatStream } from "@/components/chat/ChatStream";
@@ -172,29 +172,36 @@ export function EmptyPage() {
             </div>
           </form>
 
-          {/* 卡片下方: 项目选择器 + 已挂载目录 chips */}
+          {/* 卡片下方: 挂载入口 (ghost 风跟 sidebar 同款) + 已挂载目录 chips */}
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
               disabled={mounts.length >= MAX_MOUNTS}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-[8px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] py-1.5 pl-2.5 pr-2 text-[12px] transition-colors",
+                "inline-flex items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-[12px] transition-colors",
                 mounts.length >= MAX_MOUNTS
                   ? "cursor-not-allowed text-[color:var(--color-ink-dim)]"
-                  : "text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]",
+                  : "text-[color:var(--color-paper-dim)] hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]",
               )}
-              title="Choose folders PentaLoom can read & write"
+              title="Mount folders for PentaLoom to read & write"
             >
-              <Briefcase size={13} className="text-[color:var(--color-paper-dim)]" />
-              <span>Work in a project</span>
-              <ChevronDown size={12} className="text-[color:var(--color-ink)]" />
+              <FolderPlus
+                size={13}
+                className="shrink-0 text-[color:var(--color-ink)]"
+              />
+              <span>Mount folders</span>
+              {mounts.length > 0 && (
+                <span className="tabular font-mono text-[10.5px] text-[color:var(--color-ink-dim)]">
+                  · {mounts.length}/{MAX_MOUNTS}
+                </span>
+              )}
             </button>
 
             {mounts.map((m) => (
               <span
                 key={m}
-                className="inline-flex items-center gap-1.5 rounded-[8px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] py-1.5 pl-2 pr-1 font-mono text-[11px] text-[color:var(--color-paper-dim)]"
+                className="inline-flex items-center gap-1.5 rounded-[6px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] py-1 pl-2 pr-1 font-mono text-[11px] text-[color:var(--color-paper-dim)]"
               >
                 <Folder
                   size={11}
@@ -213,12 +220,6 @@ export function EmptyPage() {
                 </button>
               </span>
             ))}
-
-            {mounts.length > 0 && (
-              <span className="ml-1 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
-                {mounts.length}/{MAX_MOUNTS}
-              </span>
-            )}
           </div>
         </div>
       </div>
