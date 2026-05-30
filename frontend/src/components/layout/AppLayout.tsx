@@ -1,6 +1,6 @@
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, SquarePen } from "lucide-react";
 import useSWR from "swr";
 
 import { SessionList } from "@/components/sidebar/SessionList";
@@ -118,16 +118,17 @@ export function AppLayout() {
 
         {sidebarOpen && (
           <>
-            {/* 新建会话按钮 */}
+            {/* 新建会话按钮 — ghost 风, 不抢戏; hover 才显 bg, 跟下面分组标题节奏一致 */}
             <button
               type="button"
               onClick={() => navigate("/")}
-              className="mx-3 mt-1 flex items-center justify-between rounded-[5px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-3 py-1.5 text-left text-[13px] text-[color:var(--color-paper-dim)] transition-colors hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]"
+              className="mx-2 mt-2 flex items-center gap-2 rounded-[6px] px-3 py-1.5 text-left text-[13px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
             >
+              <SquarePen
+                size={13}
+                className="shrink-0 text-[color:var(--color-ink)]"
+              />
               <span>New thread</span>
-              <span className="text-[15px] leading-none text-[color:var(--color-ink)]">
-                +
-              </span>
             </button>
 
             {/* 列表 */}
