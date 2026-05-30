@@ -1,13 +1,12 @@
 import { useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
-import { PanelLeftClose, PanelLeftOpen, Search, SquarePen, X } from "lucide-react";
+import { PanelLeftClose, Search, SquarePen, X } from "lucide-react";
 import useSWR from "swr";
 
 import { SessionList } from "@/components/sidebar/SessionList";
 import { LoomMark } from "@/components/brand/LoomMark";
 import { api } from "@/lib/api";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
-import { cn } from "@/lib/utils";
 
 const SIDEBAR_OPEN_KEY = "pentaloom:left-sidebar:open";
 const SIDEBAR_WIDTH_KEY = "pentaloom:left-sidebar:width";
@@ -113,28 +112,42 @@ export function AppLayout() {
         className="relative flex h-full shrink-0 flex-col border-r border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] transition-[width] duration-150"
         style={{ width: sidebarOpen ? sidebarWidth : SIDEBAR_COLLAPSED }}
       >
-        {/* brand */}
-        <div
-          className={cn(
-            "flex items-center gap-2.5 py-4",
-            sidebarOpen ? "px-5" : "justify-center px-2",
-          )}
-        >
-          <LoomMark size={22} active={false} />
-          {sidebarOpen && (
-            <div className="font-display min-w-0 flex-1 text-[18px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)]">
-              PentaLoom
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
-          >
-            {sidebarOpen ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
-          </button>
-        </div>
+        {/* brand — 展开态: 整块 LoomMark + 标题点回首页, 右侧独立折叠按钮.
+            折叠态: 只 LoomMark, 点它 = 展开 sidebar (替代展开按钮职责, 避免两个 icon 挤). */}
+        {sidebarOpen ? (
+          <div className="flex items-center gap-1 px-3 py-4">
+            <button
+              type="button"
+              onClick={() => navigate("/")}
+              title="Back to start"
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[6px] px-2 py-1 transition-colors hover:bg-[color:var(--color-bg-raised)]"
+            >
+              <LoomMark size={22} active={false} />
+              <span className="font-display min-w-0 flex-1 text-left text-[18px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)]">
+                PentaLoom
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              title="Collapse sidebar"
+              className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
+            >
+              <PanelLeftClose size={13} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex justify-center px-2 py-4">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              title="Expand sidebar"
+              className="rounded-[6px] p-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
+            >
+              <LoomMark size={22} active={false} />
+            </button>
+          </div>
+        )}
 
         {sidebarOpen && (
           <>

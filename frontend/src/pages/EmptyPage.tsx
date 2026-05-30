@@ -172,17 +172,17 @@ export function EmptyPage() {
             </div>
           </form>
 
-          {/* 卡片下方: 挂载入口 (dashed border chip, 比 ghost 强 affordance) + 已挂载目录 chips */}
+          {/* 卡片下方: 挂载入口 (白底 chip, 跟大输入卡片视觉同家族) + 已挂载目录 chips */}
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
               disabled={mounts.length >= MAX_MOUNTS}
               className={cn(
-                "inline-flex items-center gap-2 rounded-[6px] border border-dashed px-2.5 py-1.5 text-[12px] transition-colors",
+                "inline-flex items-center gap-2 rounded-[8px] border bg-[color:var(--color-bg-card)] px-3 py-1.5 text-[12px] shadow-[0_1px_2px_rgba(20,30,50,0.03)] transition-all",
                 mounts.length >= MAX_MOUNTS
                   ? "cursor-not-allowed border-[color:var(--color-line)] text-[color:var(--color-ink-dim)]"
-                  : "border-[color:var(--color-line-strong)] text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-accent)] hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]",
+                  : "border-[color:var(--color-line)] text-[color:var(--color-paper-dim)] hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)] hover:shadow-[0_2px_8px_rgba(20,30,50,0.06)]",
               )}
               title="Mount folders for PentaLoom to read & write"
             >
