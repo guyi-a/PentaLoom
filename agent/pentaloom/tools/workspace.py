@@ -60,6 +60,12 @@ from pentaloom.tools.system_resources import (
     INSTALL_NOTO_SANS_SC_FULL_NAME,
     SYSTEM_RESOURCES_TOOLS,
 )
+from pentaloom.tools.weaver import (
+    DELETE_WEAVER_FULL_NAME,
+    EDIT_WEAVER_FULL_NAME,
+    RUN_WEAVER_FULL_NAME,
+    WEAVE_SKILL_FULL_NAME,
+)
 
 WORKSPACE_MCP_SERVER_NAME = "pentaloom"
 REQUEST_TOOL_NAME = "request_workspace_dir"
@@ -84,6 +90,12 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
+    # weaver: 沉淀 / 改 / 删 / 跑产物 都审; list / inspect / tail_logs 免审 (只读).
+    # 设计文档 §8.1-8.3: 每次单审, 不进 ALLOW_SESSION_TOOLS — 长期资产改动应该每次过目.
+    WEAVE_SKILL_FULL_NAME,
+    EDIT_WEAVER_FULL_NAME,
+    DELETE_WEAVER_FULL_NAME,
+    RUN_WEAVER_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
@@ -399,6 +411,30 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             q = str(tool_input.get("query", "")).strip()
             if not q:
                 return PermissionResultDeny(message="query 不能为空")
+
+        # weaver 4 工具参数校验 (设计文档 §8.1-8.3; 跨 kind 不允许重名 / 名字 kebab-case).
+        if tool_name == WEAVE_SKILL_FULL_NAME:
+            name = str(tool_input.get("name", "")).strip()
+            desc = str(tool_input.get("description", "")).strip()
+            content = str(tool_input.get("content", "")).strip()
+            if not name or not desc or not content:
+                return PermissionResultDeny(message="weave_skill 需要 name + description + content")
+        if tool_name == EDIT_WEAVER_FULL_NAME:
+            kind = str(tool_input.get("kind", "")).strip()
+            name = str(tool_input.get("name", "")).strip()
+            new_content = str(tool_input.get("new_content", "")).strip()
+            if not kind or not name or not new_content:
+                return PermissionResultDeny(message="edit_weaver 需要 kind + name + new_content")
+        if tool_name == DELETE_WEAVER_FULL_NAME:
+            kind = str(tool_input.get("kind", "")).strip()
+            name = str(tool_input.get("name", "")).strip()
+            if not kind or not name:
+                return PermissionResultDeny(message="delete_weaver 需要 kind + name")
+        if tool_name == RUN_WEAVER_FULL_NAME:
+            kind = str(tool_input.get("kind", "")).strip()
+            name = str(tool_input.get("name", "")).strip()
+            if not kind or not name:
+                return PermissionResultDeny(message="run_weaver 需要 kind + name")
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input

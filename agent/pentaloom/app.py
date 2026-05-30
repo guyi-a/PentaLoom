@@ -27,6 +27,7 @@ from pentaloom.infra import SQLiteSessionStore
 from pentaloom.prompts import assemble_main_prompt
 from pentaloom.prompts.skills import ENABLED_SKILLS
 from pentaloom.tools import (
+    ALL_WEAVER_FULL_NAMES,
     FILE_READ_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
     FILES_MCP_SERVER,
@@ -93,6 +94,10 @@ DEFAULT_TOOLS: list[str] = [
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
+    # weaver 7 个工具 (1 weave_skill + 6 meta-tool). 工具 server 在 LoomPool._build
+    # 时 per-session 构造 (因为要捕获 sid 回调 mark_pending_rebuild), 不在 app.py
+    # 模块顶层 singleton — 跟 BROWSER_MCP_SERVER 同款 per-session 模式.
+    *ALL_WEAVER_FULL_NAMES,
 ]
 
 # 不需要 prompt 的工具 (auto-approve). HITL 工具 (Bash + request_workspace_dir)
@@ -106,6 +111,9 @@ class PentaLoom:
         system_prompt: str | None = None,
         agents: dict[str, AgentDefinition] | None = None,
         extra_tools: list[str] | None = None,
+        extra_mcp_servers: dict[str, Any] | None = None,
+        extra_agents: dict[str, AgentDefinition] | None = None,
+        extra_skills: list[str] | None = None,
         session_id: str | None = None,
         resume: str | None = None,
         cwd: str | Path | None = None,
@@ -140,16 +148,44 @@ class PentaLoom:
             if system_prompt is not None
             else assemble_main_prompt(mounted_dirs=add_dirs)
         )
+
+        # 内置 + extra (e.g., LoomPool 注入的 weaver) 合并. extra 不能覆盖内置.
+        merged_mcp_servers: dict[str, Any] = {
+            WORKSPACE_MCP_SERVER_NAME: WORKSPACE_MCP_SERVER,
+            PYTHON_ENV_MCP_SERVER_NAME: PYTHON_ENV_MCP_SERVER,
+            FILES_MCP_SERVER_NAME: FILES_MCP_SERVER,
+            BROWSER_MCP_SERVER_NAME: browser_server,
+            # bridge 是 user-scoped (一个用户 Chrome 通常就一个), 模块级 singleton
+            # 跨 PentaLoom session 共享同一组扩展连接.
+            BROWSER_BRIDGE_MCP_SERVER_NAME: BROWSER_BRIDGE_MCP_SERVER,
+            # computer-use 也 user-scoped (一台机器), 模块级 singleton.
+            COMPUTER_MCP_SERVER_NAME: COMPUTER_MCP_SERVER,
+            # search 是 stateless HTTP 调用, 模块级 singleton 即可.
+            SEARCH_MCP_SERVER_NAME: SEARCH_MCP_SERVER,
+        }
+        if extra_mcp_servers:
+            for k, v in extra_mcp_servers.items():
+                if k in merged_mcp_servers:
+                    raise ValueError(f"extra_mcp_servers key {k!r} 跟内置同名")
+                merged_mcp_servers[k] = v
+
+        merged_agents = {**(agents or {}), **(extra_agents or {})}
+
+        # ENABLED_SKILLS (内置) + extra_skills (weaver 织的) 合并; 空 list 退化 None.
+        all_skill_names = list(ENABLED_SKILLS) + list(extra_skills or [])
+        skills_for_options = all_skill_names if all_skill_names else None
+
         self._options = ClaudeAgentOptions(
             model=self._settings.model,
             tools=tools,
             allowed_tools=allowed,
-            agents=agents or {},
+            agents=merged_agents,
             system_prompt=resolved_prompt,
-            skills=list(ENABLED_SKILLS) if ENABLED_SKILLS else None,
+            skills=skills_for_options,
             # "project" → CLI 从 cwd (= sandbox 目录) 往上找 .claude/, 命中
-            # agent/.claude/skills/<name>/SKILL.md. 不读 user 全局 .claude/,
-            # 避免跟用户自己的 Claude Code 配置串味.
+            # repo-root .claude/skills/<name>/SKILL.md (内置) +
+            # data_dir/.claude/skills/<name>/ (weaver symlink, Spike 3 extras Test 1 verified).
+            # 不读 user 全局 .claude/, 避免跟用户自己的 Claude Code 配置串味.
             # 关键: skills= 传 list 时, SDK 的 _apply_skills_defaults 只在
             # setting_sources is None 时才默认填 ["user","project"]; 显式 [] 会
             # 跳过自动填, 导致 CLI 根本不扫 skill 目录 — 必须显式设 project.
@@ -161,19 +197,7 @@ class PentaLoom:
             resume=resume,
             cwd=cwd,
             add_dirs=list(add_dirs) if add_dirs else [],
-            mcp_servers={
-                WORKSPACE_MCP_SERVER_NAME: WORKSPACE_MCP_SERVER,
-                PYTHON_ENV_MCP_SERVER_NAME: PYTHON_ENV_MCP_SERVER,
-                FILES_MCP_SERVER_NAME: FILES_MCP_SERVER,
-                BROWSER_MCP_SERVER_NAME: browser_server,
-                # bridge 是 user-scoped (一个用户 Chrome 通常就一个), 模块级 singleton
-                # 跨 PentaLoom session 共享同一组扩展连接.
-                BROWSER_BRIDGE_MCP_SERVER_NAME: BROWSER_BRIDGE_MCP_SERVER,
-                # computer-use 也 user-scoped (一台机器), 模块级 singleton.
-                COMPUTER_MCP_SERVER_NAME: COMPUTER_MCP_SERVER,
-                # search 是 stateless HTTP 调用, 模块级 singleton 即可.
-                SEARCH_MCP_SERVER_NAME: SEARCH_MCP_SERVER,
-            },
+            mcp_servers=merged_mcp_servers,
             can_use_tool=can_use_tool,
             # PreToolUse hook 把 Bash 标成 "ask" 路由到 can_use_tool. SDK 文档里
             # can_use_tool "not invoked for tool calls already permitted by

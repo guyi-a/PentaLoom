@@ -9,6 +9,7 @@ import type {
   PermissionDecisionBody,
   PermissionDecisionResp,
   SessionMeta,
+  WeaverProductsResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -69,6 +70,8 @@ export const api = {
   // 改 session 的 mounted_dirs. 后端 evict LoomPool entry, 下条消息触发 client 重建.
   patchMounts: (sid: string, body: PatchMountsBody) =>
     http<SessionMeta>(`/sessions/${sid}/mounts`, { method: "PATCH", json: body }),
+  // weaver 产物列表 (内置 + 用户织的). M14 只 skills 有数据.
+  listWeaverProducts: () => http<WeaverProductsResponse>("/weaver/products"),
 };
 
 // ──── chat SSE ───────────────────────────────────────────────

@@ -24,11 +24,15 @@ import {
   BROWSER_BRIDGE_TOOL_NAME,
   BROWSER_USE_TOOL_NAME,
   COMPUTER_USE_TOOL_NAME,
+  DELETE_WEAVER_TOOL_NAME,
+  EDIT_WEAVER_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
+  RUN_WEAVER_TOOL_NAME,
+  WEAVE_SKILL_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "@/lib/types";
@@ -397,6 +401,115 @@ export function ApprovalInfo({
     );
   }
 
+  if (name === WEAVE_SKILL_TOOL_NAME) {
+    const skillName = String(input.name ?? "").trim();
+    const desc = String(input.description ?? "").trim();
+    const content = String(input.content ?? "");
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Name">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {skillName || "(empty)"}
+            </span>
+          </FieldBlock>
+          <FieldBlock label="Source">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper-dim)]">
+              agent_woven · new skill
+            </span>
+          </FieldBlock>
+        </div>
+        <FieldBlock label="Description">{desc || "(empty)"}</FieldBlock>
+        <FieldBlock label="SKILL.md preview">
+          <pre className="max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[color:var(--color-paper)]">
+            {content || "(empty)"}
+          </pre>
+        </FieldBlock>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          允许后写盘到 data_dir/weaver/skills/, 下条对话起 agent 自动加载.
+        </div>
+      </div>
+    );
+  }
+
+  if (name === EDIT_WEAVER_TOOL_NAME) {
+    const kind = String(input.kind ?? "").trim();
+    const targetName = String(input.name ?? "").trim();
+    const newContent = String(input.new_content ?? "");
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Kind">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {kind || "(empty)"}
+            </span>
+          </FieldBlock>
+          <FieldBlock label="Name">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {targetName || "(empty)"}
+            </span>
+          </FieldBlock>
+        </div>
+        <FieldBlock label="New content (full replacement)">
+          <pre className="max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[color:var(--color-paper)]">
+            {newContent || "(empty)"}
+          </pre>
+        </FieldBlock>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          覆盖现有内容, 下条对话起新版本生效.
+        </div>
+      </div>
+    );
+  }
+
+  if (name === DELETE_WEAVER_TOOL_NAME) {
+    const kind = String(input.kind ?? "").trim();
+    const targetName = String(input.name ?? "").trim();
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Kind">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {kind || "(empty)"}
+            </span>
+          </FieldBlock>
+          <FieldBlock label="Name">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {targetName || "(empty)"}
+            </span>
+          </FieldBlock>
+        </div>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          软删 — 整个目录搬到 weaver/.trash/ (30 天后清理), 不会立即丢失.
+        </div>
+      </div>
+    );
+  }
+
+  if (name === RUN_WEAVER_TOOL_NAME) {
+    const kind = String(input.kind ?? "").trim();
+    const targetName = String(input.name ?? "").trim();
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Kind">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {kind || "(empty)"}
+            </span>
+          </FieldBlock>
+          <FieldBlock label="Name">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {targetName || "(empty)"}
+            </span>
+          </FieldBlock>
+        </div>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          M14 阶段 run_weaver 占位 — workflow 在 M16 才能跑.
+        </div>
+      </div>
+    );
+  }
+
   // 兜底 — 不在 HITL_TOOL_NAMES 集合里, 不该走到这里, 但别挂掉
   return (
     <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-deep)] p-2.5 font-mono text-[12px] leading-relaxed text-[color:var(--color-paper-dim)]">
@@ -443,13 +556,21 @@ export function InlineApprovalBar({
     null | "allow_once" | "allow_session" | "deny"
   >(null);
 
-  // 主按钮文案: workspace/script "Allow" / "Run", 其它 "Allow once"
+  // 主按钮文案: workspace/script "Allow" / "Run", weaver 各自描述, 其它 "Allow once"
   const primaryLabel =
     toolName === WORKSPACE_PERMISSION_TOOL_NAME
       ? "Allow"
       : toolName === RUN_SCRIPT_TOOL_NAME
         ? "Run"
-        : "Allow once";
+        : toolName === WEAVE_SKILL_TOOL_NAME
+          ? "Weave & rebuild"
+          : toolName === EDIT_WEAVER_TOOL_NAME
+            ? "Save & rebuild"
+            : toolName === DELETE_WEAVER_TOOL_NAME
+              ? "Delete"
+              : toolName === RUN_WEAVER_TOOL_NAME
+                ? "Run"
+                : "Allow once";
 
   // allow_session 仅 Bash / install_libs / file_verify 支持; 其它工具隐藏该按钮.
   const supportsAllowSession = ALLOW_SESSION_TOOLS.includes(toolName);
