@@ -1,6 +1,6 @@
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
-import { PanelLeftClose, PanelLeftOpen, SquarePen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Search, SquarePen, X } from "lucide-react";
 import useSWR from "swr";
 
 import { SessionList } from "@/components/sidebar/SessionList";
@@ -37,9 +37,29 @@ export function AppLayout() {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpenRaw] = useState(initialSidebarOpen);
   const [sidebarWidth, setSidebarWidthRaw] = useState(initialSidebarWidth);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const { data: sessions, mutate } = useSWR("sessions", () =>
     api.listSessions(),
   );
+
+  // client-side title 过滤. sessions 规模化后 (>200 条? 还要看真实) 再考虑加后端
+  // GET /sessions?q=... 全文搜接口. 当前 LRU 8 + DB 历史不大, 拉全量足够.
+  const filteredSessions = useMemo(() => {
+    if (!searchOpen || !searchQuery.trim()) return sessions ?? [];
+    const q = searchQuery.trim().toLowerCase();
+    return (sessions ?? []).filter((s) =>
+      (s.title ?? s.session_id).toLowerCase().includes(q),
+    );
+  }, [sessions, searchOpen, searchQuery]);
+
+  const searching = searchOpen && searchQuery.trim().length > 0;
+  const noMatches = searching && filteredSessions.length === 0;
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }
 
   function setSidebarOpen(next: boolean) {
     setSidebarOpenRaw(next);
@@ -131,13 +151,68 @@ export function AppLayout() {
               <span>New thread</span>
             </button>
 
+            {/* 搜索按钮 / 展开后变 input — 跟 New thread 同款 ghost, 上下排.
+                client-side 过滤 title, sessions 规模化后再加后端 q 参数. */}
+            {searchOpen ? (
+              <div className="mx-2 mt-px flex items-center gap-2 rounded-[6px] bg-[color:var(--color-bg-raised)] px-3 py-1.5">
+                <Search
+                  size={13}
+                  className="shrink-0 text-[color:var(--color-ink)]"
+                />
+                <input
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeSearch();
+                    }
+                  }}
+                  placeholder="Search threads…"
+                  className="min-w-0 flex-1 bg-transparent text-[13px] text-[color:var(--color-paper)] placeholder:text-[color:var(--color-ink-dim)] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={closeSearch}
+                  title="Close search (Esc)"
+                  className="shrink-0 rounded-[3px] p-0.5 text-[color:var(--color-ink)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                className="mx-2 mt-px flex items-center gap-2 rounded-[6px] px-3 py-1.5 text-left text-[13px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+              >
+                <Search
+                  size={13}
+                  className="shrink-0 text-[color:var(--color-ink)]"
+                />
+                <span>Search threads</span>
+              </button>
+            )}
+
             {/* 列表 */}
             <div className="scrollbar-hidden scroll-fade-y mt-3 flex-1 overflow-y-auto">
-              <SessionList
-                sessions={sessions ?? []}
-                currentSid={sid}
-                onChanged={() => mutate()}
-              />
+              {noMatches ? (
+                <div className="px-5 py-10 text-center">
+                  <p className="font-display text-[13px] italic text-[color:var(--color-paper-dim)]">
+                    No threads match
+                  </p>
+                  <p className="mt-1 font-mono text-[11px] text-[color:var(--color-ink)]">
+                    "{searchQuery.trim()}"
+                  </p>
+                </div>
+              ) : (
+                <SessionList
+                  sessions={filteredSessions}
+                  currentSid={sid}
+                  onChanged={() => mutate()}
+                />
+              )}
             </div>
 
             {/* 底部 footer */}
