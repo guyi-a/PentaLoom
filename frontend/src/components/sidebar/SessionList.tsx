@@ -62,34 +62,55 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
   }, [sessions]);
 
   if (sessions.length === 0) {
-    return <EmptyState />;
+    return (
+      <>
+        <ProjectsPlaceholder />
+        <EmptyState />
+      </>
+    );
   }
 
   return (
-    <SidebarGroup label="Threads">
-      <div className="space-y-3">
-        {TIME_GROUP_ORDER.map((group) => {
-          const items = grouped.get(group);
-          if (!items || items.length === 0) return null;
-          return (
-            <div key={group}>
-              {/* 时间子分组标题 — Fraunces italic 跟主标题同款, 缩进一点 */}
-              <div className="mb-1 px-4 font-display text-[11px] italic text-[color:var(--color-ink-dim)]">
-                {group}
+    <>
+      <ProjectsPlaceholder />
+      <SidebarGroup label="Threads">
+        <div className="space-y-3">
+          {TIME_GROUP_ORDER.map((group) => {
+            const items = grouped.get(group);
+            if (!items || items.length === 0) return null;
+            return (
+              <div key={group}>
+                {/* 时间子分组标题 — Fraunces italic 跟主标题同款, 缩进一点 */}
+                <div className="mb-1 px-4 font-display text-[11px] italic text-[color:var(--color-ink-dim)]">
+                  {group}
+                </div>
+                <ul className="space-y-0.5 px-2">
+                  {items.map((s) => (
+                    <SessionRow
+                      key={s.session_id}
+                      session={s}
+                      active={s.session_id === currentSid}
+                      onChanged={onChanged}
+                    />
+                  ))}
+                </ul>
               </div>
-              <ul className="space-y-0.5 px-2">
-                {items.map((s) => (
-                  <SessionRow
-                    key={s.session_id}
-                    session={s}
-                    active={s.session_id === currentSid}
-                    onChanged={onChanged}
-                  />
-                ))}
-              </ul>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+      </SidebarGroup>
+    </>
+  );
+}
+
+// Projects 分组占位 — 后端 Project 模型 + app_gen 能力上 M12 时这里换成真渲染.
+// 默认折叠克制, 用户展开能看到 "coming with app_gen" 提示, 不假装有"New project"按钮.
+function ProjectsPlaceholder() {
+  return (
+    <SidebarGroup label="Projects" defaultExpanded={false}>
+      <div className="mx-2 rounded-[6px] px-3 py-2 text-[11px] leading-relaxed text-[color:var(--color-ink-dim)]">
+        <p className="font-display italic">No projects yet.</p>
+        <p className="mt-0.5">Coming with app_gen capability.</p>
       </div>
     </SidebarGroup>
   );
