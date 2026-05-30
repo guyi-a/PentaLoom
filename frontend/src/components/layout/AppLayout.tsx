@@ -102,7 +102,7 @@ export function AppLayout() {
         >
           <LoomMark size={22} active={false} />
           {sidebarOpen && (
-            <div className="min-w-0 flex-1 text-[15px] font-semibold tracking-tight text-[color:var(--color-paper)]">
+            <div className="font-display min-w-0 flex-1 text-[18px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)]">
               PentaLoom
             </div>
           )}
@@ -131,7 +131,7 @@ export function AppLayout() {
             </button>
 
             {/* 列表 */}
-            <div className="scrollbar-hidden mt-3 flex-1 overflow-y-auto">
+            <div className="scrollbar-hidden scroll-fade-y mt-3 flex-1 overflow-y-auto">
               <SessionList
                 sessions={sessions ?? []}
                 currentSid={sid}

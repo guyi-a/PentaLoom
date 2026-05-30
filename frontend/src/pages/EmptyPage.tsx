@@ -100,14 +100,20 @@ export function EmptyPage() {
 
   return (
     <>
-      <div className="relative h-full overflow-y-auto">
+      <div className="weave-texture relative h-full overflow-y-auto">
         <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-6 py-16">
-          {/* 标题区 */}
-          <div className="mb-8 flex items-center gap-3">
-            <LoomMark size={28} active={false} />
-            <h1 className="text-[26px] font-semibold leading-tight tracking-tight text-[color:var(--color-paper)]">
-              Let's start a new thread
+          {/* 标题区 — LoomMark 大版 + Fraunces italic 标语 + body 副标语 */}
+          <div className="mb-10">
+            <LoomMark size={48} active className="mb-6" />
+            <h1 className="font-display text-[40px] italic font-normal leading-[1.05] tracking-[-0.015em] text-[color:var(--color-paper)]">
+              Five threads,
+              <br />
+              one weave.
             </h1>
+            <p className="mt-4 max-w-[420px] text-[14px] leading-relaxed text-[color:var(--color-ink)]">
+              Tell PentaLoom what to read, browse, run, search, or build —
+              one prompt, five capabilities weaving in concert.
+            </p>
           </div>
 
           {/* 输入卡片 */}
@@ -133,7 +139,7 @@ export function EmptyPage() {
                 }
               }}
               rows={2}
-              placeholder="How can PentaLoom help you today?"
+              placeholder="Begin a thread…"
               className="block w-full resize-none rounded-t-[12px] bg-transparent px-4 pt-4 pb-2 text-[14px] leading-relaxed text-[color:var(--color-paper)] placeholder:text-[color:var(--color-ink-dim)] focus:outline-none"
             />
 

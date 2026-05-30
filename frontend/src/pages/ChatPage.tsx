@@ -428,13 +428,13 @@ function ChatHeader({
                 }
               }}
               placeholder="Name this thread…"
-              className="min-w-0 flex-1 rounded-[5px] border border-[color:var(--color-accent)] bg-[color:var(--color-bg-card)] px-2 py-1 text-[15px] font-medium text-[color:var(--color-paper)] focus:outline-none"
+              className="font-display min-w-0 flex-1 rounded-[5px] border border-[color:var(--color-accent)] bg-[color:var(--color-bg-card)] px-2 py-1 text-[16px] font-medium text-[color:var(--color-paper)] focus:outline-none"
             />
           ) : (
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="group flex min-w-0 items-center gap-2 truncate text-left text-[15px] font-medium tracking-tight text-[color:var(--color-paper)] hover:text-[color:var(--color-accent)]"
+              className="font-display group flex min-w-0 items-center gap-2 truncate text-left text-[16px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)] hover:text-[color:var(--color-accent)]"
               title="Click to rename"
             >
               <span className="truncate">
