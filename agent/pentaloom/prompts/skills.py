@@ -17,9 +17,17 @@ from __future__ import annotations
 
 # 启用 skill 名匹配 SKILL.md 的 name / 目录名.
 # 空列表时 app.py 会把 skills=None 传给 ClaudeAgentOptions, 跟 SDK 默认一致.
+#
+# 注意 .claude/ 整目录 gitignored — 内置 skill 文件不入 git, 别的 dev clone
+# 仓库后这里列的 skill 会 SDK warn skip (不挂, 但缺能力). 长期方案: 把内置
+# skill 挪到入 git 的位置 (e.g., agent/builtin_skills/), 启动 sync 到 .claude/.
 ENABLED_SKILLS: list[str] = [
     "report-generator",
     "browser-use",
     "browser-bridge",
     "computer-use",
+    # M16 Invocable App 三件套 (本地 only):
+    "app-generator",
+    "app-window",
+    "app-patterns",
 ]

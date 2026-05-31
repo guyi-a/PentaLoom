@@ -64,3 +64,6 @@ examples/
 
 # 测试 / SDK 探索脚本 (本地跑, 不入仓库)
 agent/tests/
+
+# Claude Code / built-in skills (local only — not distributed via git)
+.claude/

@@ -1,4 +1,4 @@
-"""weaver in-process MCP 工具 — 7 个: 1 个 weave_skill + 6 个 meta-tool.
+"""weaver in-process MCP 工具 — weave_skill / weave_app + 6 个 meta-tool.
 
 跟 search.py / browser.py 同款 @tool decorator + create_sdk_mcp_server. 区别:
 **per-session 构造** (不是 module-level singleton), 因为 weave_skill / edit_weaver /
@@ -21,12 +21,13 @@ from typing import Any, Callable
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from pentaloom.capabilities.weaver import WeaverError, meta_tools, skill
+from pentaloom.capabilities.weaver import WeaverError, app as app_biz, meta_tools, skill
 from pentaloom.config import Settings
 
 WEAVER_MCP_SERVER_NAME = "pentaloom_weaver"
 
 WEAVE_SKILL_TOOL_NAME = "weave_skill"
+WEAVE_APP_TOOL_NAME = "weave_app"
 LIST_WEAVER_TOOL_NAME = "list_weaver"
 INSPECT_WEAVER_TOOL_NAME = "inspect_weaver"
 EDIT_WEAVER_TOOL_NAME = "edit_weaver"
@@ -35,6 +36,7 @@ RUN_WEAVER_TOOL_NAME = "run_weaver"
 TAIL_WEAVER_LOGS_TOOL_NAME = "tail_weaver_logs"
 
 WEAVE_SKILL_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SKILL_TOOL_NAME}"
+WEAVE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_TOOL_NAME}"
 LIST_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{LIST_WEAVER_TOOL_NAME}"
 INSPECT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INSPECT_WEAVER_TOOL_NAME}"
 EDIT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{EDIT_WEAVER_TOOL_NAME}"
@@ -44,6 +46,7 @@ TAIL_WEAVER_LOGS_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{TAIL_WEAVER_LOGS_
 
 ALL_WEAVER_FULL_NAMES = (
     WEAVE_SKILL_FULL_NAME,
+    WEAVE_APP_FULL_NAME,
     LIST_WEAVER_FULL_NAME,
     INSPECT_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
@@ -111,6 +114,58 @@ def build_weaver_mcp_server(
         )
 
     @tool(
+        WEAVE_APP_TOOL_NAME,
+        (
+            "织一个 invocable app — 用户可见的产物 + agent 可调用的接口. "
+            "manifest_json 声明 agent invocations (必填 ≥1); "
+            "app_json 声明 runtime components (services/windows/scripts/schedules/watches, 可选, "
+            "Phase A 不写也 OK, Phase B+ runtime 起来时必须); "
+            "files 是 {relative_path: text}, 写到 weaver/apps/<name>/files/ 子目录, "
+            "不能覆盖 manifest.json / app.json / meta.json / runs / logs."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "manifest_json": {"type": "string"},
+                "app_json": {"type": "string"},
+                "files": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+            },
+            "required": ["name", "description", "manifest_json", "files"],
+        },
+    )
+    async def _weave_app(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            files = args.get("files") or {}
+            if not isinstance(files, dict):
+                return _err("files 必须是 {relative_path: content} dict")
+            meta = app_biz.weave_app(
+                settings,
+                name=str(args.get("name", "")),
+                description=str(args.get("description", "")),
+                manifest_json=str(args.get("manifest_json", "")),
+                files=files,
+                app_json=(
+                    str(args["app_json"])
+                    if args.get("app_json") is not None else None
+                ),
+            )
+        except WeaverError as e:
+            return _err(f"weave_app 失败: {e}")
+        except Exception as e:
+            return _err(f"weave_app 未预期错误 {type(e).__name__}: {e}")
+        mark_rebuild()
+        return _ok_text(
+            f"已沉淀 app {meta.name!r}. 写入 weaver/apps/{meta.name}/, "
+            "用 list_weaver / inspect_weaver 看. "
+            "M16 Phase A 只生成 app 包, invoke_app runtime 未实装 (Phase B+)."
+        )
+
+    @tool(
         LIST_WEAVER_TOOL_NAME,
         (
             "列用户织的 weaver 产物. 返 {counts, items}. items 是 [{name, kind, description, source, path}, ...]. "
@@ -147,13 +202,13 @@ def build_weaver_mcp_server(
         INSPECT_WEAVER_TOOL_NAME,
         (
             "读某产物的完整内容. skill 返 {name, kind, source, description, content (SKILL.md 全文), meta}. "
-            "M14 阶段只支持 kind='skill'; 其他 kind 抛错. "
+            "支持 kind='skill' 或 kind='app'. "
             "不能 inspect 内置 skill (那是出厂能力, 直接 Read agent/.claude/skills/<name>/SKILL.md)."
         ),
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "description": "现仅 'skill'."},
+                "kind": {"type": "string", "description": "'skill' | 'app'."},
                 "name": {"type": "string", "description": "产物名."},
             },
             "required": ["kind", "name"],
@@ -210,7 +265,7 @@ def build_weaver_mcp_server(
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "description": "现仅 'skill'."},
+                "kind": {"type": "string", "description": "'skill' | 'app'."},
                 "name": {"type": "string", "description": "产物名."},
             },
             "required": ["kind", "name"],
