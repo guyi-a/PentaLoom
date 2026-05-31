@@ -15,9 +15,10 @@ import { ArrowUp, Folder, FolderPlus, Paperclip, X } from "lucide-react";
 import { LoomMark } from "@/components/brand/LoomMark";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { FolderPicker } from "@/components/permission/FolderPicker";
+import { RightPanel } from "@/components/right-panel/RightPanel";
 import { chatStream } from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
-import type { Frame } from "@/lib/types";
+import type { Frame, SessionMeta } from "@/lib/types";
 import { cn, shortenPath } from "@/lib/utils";
 
 const MAX_MOUNTS = 10;
@@ -82,17 +83,39 @@ export function EmptyPage() {
   // sid 没回来前传空串, 反正这阶段不会触发 workspace 授权弹窗 (那是 SDK tool_use 才会推);
   // 拿到 sid 后下面的 stream 循环会 setLiveSid, 顺带刷视图.
   if (sending || liveSid) {
+    const now = new Date().toISOString();
+    const pendingMeta: SessionMeta = {
+      session_id: liveSid ?? "",
+      title: sentPrompt,
+      mounted_dirs: mounts,
+      created_at: now,
+      last_active_at: now,
+    };
+
     return (
-      <ChatStream
-        sessionId={liveSid ?? ""}
-        streamedFrames={liveFrames}
-        historyMessages={[]}
-        localUserPrompt={sentPrompt}
-        onUserSend={() => {
-          if (liveSid) navigate(`/s/${liveSid}`);
-        }}
-        inputDisabled
-      />
+      <div className="flex h-full min-h-0">
+        <div className="min-w-0 flex-1">
+          <ChatStream
+            sessionId={liveSid ?? ""}
+            streamedFrames={liveFrames}
+            historyMessages={[]}
+            localUserPrompt={sentPrompt}
+            onUserSend={() => {
+              if (liveSid) navigate(`/s/${liveSid}`);
+            }}
+            inputDisabled
+          />
+        </div>
+        <div className="hidden w-[340px] shrink-0 md:block">
+          <RightPanel
+            sessionId={liveSid ?? ""}
+            meta={pendingMeta}
+            history={[]}
+            liveFrames={liveFrames}
+            onMountsChanged={() => mutate("sessions")}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -100,16 +123,18 @@ export function EmptyPage() {
 
   return (
     <>
-      <div className="weave-texture relative h-full overflow-y-auto">
+      <div className="relative h-full overflow-y-auto">
         <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-6 py-16">
           {/* 标题区 — LoomMark 大版 + Fraunces italic 标语 + body 副标语 */}
           <div className="mb-10">
-            <LoomMark size={48} active className="mb-6" />
-            <h1 className="font-display text-[40px] italic font-normal leading-[1.05] tracking-[-0.015em] text-[color:var(--color-paper)]">
-              Five threads,
-              <br />
-              one weave.
-            </h1>
+            <div className="flex items-start gap-4">
+              <LoomMark size={44} active className="mt-1 shrink-0" />
+              <h1 className="font-display text-[40px] italic font-normal leading-[1.05] tracking-[-0.015em] text-[color:var(--color-paper)]">
+                Five threads,
+                <br />
+                <span className="inline-block translate-x-20">one weave.</span>
+              </h1>
+            </div>
             <p className="mt-4 max-w-[420px] text-[14px] leading-relaxed text-[color:var(--color-ink)]">
               Tell PentaLoom what to read, browse, run, search, or build —
               one prompt, five capabilities weaving in concert.

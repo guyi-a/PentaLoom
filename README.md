@@ -38,6 +38,7 @@ cp agent/.env.example agent/.env
 启动选项:
 ```bash
 ./start-dev.sh --no-frontend   # 只起 agent (调后端接口用)
+./start-dev.sh --electron      # 起 agent + frontend + Electron 桌面壳
 ./start-dev.sh --debug         # agent 开热重载
 ```
 
@@ -51,6 +52,8 @@ cp agent/.env.example agent/.env
 | http://localhost:8090/health | 健康检查 |
 
 **停止**: 在终端按 `Ctrl+C`, 脚本会自动 kill 所有子进程 (agent + frontend)。
+
+Electron 日志写入 `logs/dev/electron.log`。如果在受限沙盒/无 GUI 环境里直接运行 Electron，可能会看到底层 `SIGABRT`；请在普通 macOS 终端里运行 `./start-dev.sh --electron` 或 `cd electron && pnpm start`。
 
 ### 手动启动 (调试用)
 

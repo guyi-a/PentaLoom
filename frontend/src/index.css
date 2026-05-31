@@ -106,6 +106,30 @@ body,
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 8px, black calc(100% - 8px), transparent 100%);
 }
 
+.app-titlebar-spacer {
+  height: 38px;
+  -webkit-app-region: drag;
+}
+
+.app-window-drag-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  height: 72px;
+  -webkit-app-region: drag;
+}
+
+.app-drag-region {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag,
+.app-no-drag * {
+  -webkit-app-region: no-drag;
+}
+
 /* ────────────── 排版工具类 ────────────── */
 .font-display {
   font-family: var(--font-display);
