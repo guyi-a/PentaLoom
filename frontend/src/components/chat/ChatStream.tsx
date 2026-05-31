@@ -29,6 +29,8 @@ interface Props {
   localUserPrompt?: string | null;
   // 父组件实现的"再发一条" — ChatPage 会真的开新 SSE, EmptyPage 传 noop / 跳转
   onUserSend: (prompt: string) => void;
+  // 中断当前 turn 的回调 — 仅 ChatPage 提供, EmptyPage 没 sid 没法 stop, 不传.
+  onStop?: () => void;
   inputDisabled?: boolean;
 }
 
@@ -117,12 +119,27 @@ function isPureToolResultMessage(message: HistoryMessage): boolean {
   return hasResult && !hasText;
 }
 
+// SDK interrupt 后塞的 marker message — 整条 user message 文本是
+// "[Request interrupted by user for tool use]" 之类 SDK 内部 marker, 不是真用户输入,
+// 显示在对话流里是噪音. 同 message 里附带的 cancellation tool_result 走
+// buildHistoryResultMap 仍能附到对应 tool_use 卡片, 不会丢.
+function isInterruptMarkerMessage(message: HistoryMessage): boolean {
+  if (message.role !== "user") return false;
+  const text = message.frames
+    .filter((f): f is Frame & { type: "text"; text: string } => f.type === "text")
+    .map((f) => f.text)
+    .join("")
+    .trim();
+  return text.startsWith("[Request interrupted");
+}
+
 export function ChatStream({
   sessionId,
   historyMessages,
   streamedFrames,
   localUserPrompt,
   onUserSend,
+  onStop,
   inputDisabled,
 }: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -207,7 +224,7 @@ export function ChatStream({
               否则 assistant message 里的 tool_use 配不上紧跟 user message 里的
               tool_result, 全栈历史所有 chip 都停在 in-progress 转圈. */}
           {historyMessages.map((m) =>
-            isPureToolResultMessage(m) ? null : (
+            isPureToolResultMessage(m) || isInterruptMarkerMessage(m) ? null : (
               <MessageGroup
                 key={m.uuid}
                 message={m}
@@ -254,6 +271,7 @@ export function ChatStream({
       {/* 输入框 */}
       <PromptInput
         onSend={onUserSend}
+        onStop={onStop}
         disabled={inputDisabled}
         placeholder={inputDisabled ? "Sending…" : "Continue the thread…"}
       />

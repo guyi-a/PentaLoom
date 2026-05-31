@@ -15,7 +15,7 @@
 // 给用户一瞬间瞥到"哦, 审批通过了" 再自然收起来.
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, Loader2, ShieldAlert, XCircle } from "lucide-react";
+import { Check, ChevronRight, CircleStop, Loader2, ShieldAlert, XCircle } from "lucide-react";
 
 import { ApprovalInfo, InlineApprovalBar } from "./FrameBlock";
 import { BashExpansion } from "./tool-expansions/BashExpansion";
@@ -44,7 +44,7 @@ export interface ToolPair {
   result: ToolResultFrame | null;
 }
 
-type ToolStatus = "in-progress" | "hitl-pending" | "success" | "failed";
+type ToolStatus = "in-progress" | "hitl-pending" | "success" | "failed" | "stopped";
 
 interface Props {
   pair: ToolPair;
@@ -52,9 +52,42 @@ interface Props {
   sessionId?: string;
 }
 
+// 把 tool_result content 拍成纯字符串, 给"是否中断" 之类 marker 检测用.
+function resultContentText(result: ToolResultFrame): string {
+  const c = result.content;
+  if (typeof c === "string") return c;
+  if (!Array.isArray(c)) return "";
+  return c
+    .filter((x): x is Record<string, unknown> => x !== null && typeof x === "object")
+    .map((x) => String(x.text ?? ""))
+    .join("");
+}
+
+// SDK 给"用户主动拒绝"工具调用的 tool_result content marker — 该归 stopped 状态
+// (灰色 CircleStop, 不是红 XCircle). 实测三个触发源都用同一套"rejected" 引导文案:
+//   - stop 按钮 (SDK interrupt) — 给挂起的 tool_use 注 cancellation result
+//   - 审批 deny (SDK HITL)
+//   - 我们 can_use_tool 主动 deny — workspace.py 里写的 "用户拒绝执行 ..."
+// 小写子串匹配, 任一命中即 stopped. 真工具报错 (network / api key 等) 一般不含
+// 这些词, false positive 风险低. badge 文案统一用 "STOPPED" — 用户感受贴
+// "我停了" / "我没让它跑", 不用 "REFUSED" (容易跟审批 deny 混).
+const REFUSAL_MARKERS = [
+  "interrupted",
+  "rejected",
+  "doesn't want to proceed",
+  "用户拒绝",
+];
+
+function isRefusedResult(result: ToolResultFrame | null): boolean {
+  if (!result || !result.is_error) return false;
+  const text = resultContentText(result).toLowerCase();
+  return REFUSAL_MARKERS.some((k) => text.includes(k.toLowerCase()));
+}
+
 function computeStatus(pair: ToolPair, pendingApproval: boolean): ToolStatus {
   if (pendingApproval) return "hitl-pending";
   if (!pair.result) return "in-progress";
+  if (isRefusedResult(pair.result)) return "stopped";
   return pair.result.is_error ? "failed" : "success";
 }
 
@@ -106,6 +139,7 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
         status === "hitl-pending" && "ring-1 ring-[color:var(--color-warn)]/30",
         status === "success" && "bg-[color:var(--color-success)]/5",
         status === "failed" && "bg-[color:var(--color-error)]/5",
+        status === "stopped" && "opacity-70",
       )}
       style={{ borderLeftColor: threadColor }}
     >
@@ -204,6 +238,14 @@ function StatusBadge({ status }: { status: ToolStatus }) {
         className="text-[color:var(--color-error)]"
         aria-label="failed"
       />
+    );
+  }
+  if (status === "stopped") {
+    return (
+      <span className="flex items-center gap-1 rounded-[3px] bg-[color:var(--color-bg-raised)] px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide text-[color:var(--color-ink)]">
+        <CircleStop size={10} />
+        stopped
+      </span>
     );
   }
   return (
