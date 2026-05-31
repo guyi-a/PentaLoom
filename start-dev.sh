@@ -1,8 +1,9 @@
 #!/bin/bash
-# PentaLoom 开发模式一键启动 — agent (FastAPI) + frontend (Vite) 两进程
+# PentaLoom 开发模式一键启动 — agent (FastAPI) + frontend (Vite) + 可选 Electron
 # 用法: ./start-dev.sh
 # 选项:
 #   --no-frontend   只起 agent (调后端接口用)
+#   --electron      同时启动 Electron 桌面壳 (会自动确保 frontend 已启动)
 #   --debug         agent 开热重载 (PENTALOOM_DEBUG=true)
 
 set -e
@@ -10,12 +11,14 @@ set -e
 cd "$(dirname "$0")"
 
 WITH_FRONTEND=1
+WITH_ELECTRON=0
 DEBUG=0
 FRONTEND_PORT=5273
 LOG_DIR="logs/dev"
 for arg in "$@"; do
   case "$arg" in
     --no-frontend) WITH_FRONTEND=0 ;;
+    --electron) WITH_ELECTRON=1; WITH_FRONTEND=1 ;;
     --debug) DEBUG=1 ;;
   esac
 done
@@ -104,10 +107,10 @@ if [ "$WITH_FRONTEND" = "1" ]; then
   if [ "$FRONTEND_REUSED" = "0" ]; then
   pushd frontend > /dev/null
   if [ ! -d "node_modules" ]; then
-    echo "  → node_modules 不存在, 自动 npm install..."
-    npm install --silent
+    echo "  → node_modules 不存在, 自动 pnpm install..."
+    pnpm install --silent
   fi
-  npm run dev > "../${LOG_DIR}/frontend.log" 2>&1 &
+  pnpm dev > "../${LOG_DIR}/frontend.log" 2>&1 &
   FRONTEND_PID=$!
   PIDS+=($FRONTEND_PID)
   popd > /dev/null
@@ -130,6 +133,27 @@ if [ "$WITH_FRONTEND" = "1" ]; then
   fi
 fi
 
+# ── Electron (desktop shell) ─────────────────────────────────────────
+if [ "$WITH_ELECTRON" = "1" ]; then
+  echo "🪟 启动 Electron 桌面壳..."
+  pushd electron > /dev/null
+  if [ ! -d "node_modules" ]; then
+    echo "  → node_modules 不存在, 自动 pnpm install..."
+    pnpm install --silent
+  fi
+  pnpm start > "../${LOG_DIR}/electron.log" 2>&1 &
+  ELECTRON_PID=$!
+  PIDS+=($ELECTRON_PID)
+  popd > /dev/null
+
+  sleep 1
+  if ! kill -0 "$ELECTRON_PID" 2>/dev/null; then
+    echo "  ✗ Electron 进程已退出, 看 ${LOG_DIR}/electron.log 排查"
+    cleanup
+  fi
+  echo "  ✓ Electron 已启动"
+fi
+
 echo ""
 echo "✅ PentaLoom 已启动"
 echo ""
@@ -138,8 +162,11 @@ echo "  📖 API 文档    : http://localhost:8090/docs"
 if [ "$WITH_FRONTEND" = "1" ]; then
   echo "  🎨 前端        : http://localhost:${FRONTEND_PORT}"
 fi
+if [ "$WITH_ELECTRON" = "1" ]; then
+  echo "  🪟 Electron    : 已启动"
+fi
 echo ""
-echo "  🪵 日志目录    : ${LOG_DIR}/ (agent.log / frontend.log)"
+echo "  🪵 日志目录    : ${LOG_DIR}/ (agent.log / frontend.log / electron.log)"
 echo "  按 Ctrl+C 停止所有服务"
 echo ""
 

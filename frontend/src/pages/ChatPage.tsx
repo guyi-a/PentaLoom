@@ -1,5 +1,5 @@
 // 单个会话页 /s/:sid:
-// - 顶部: 会话标题 (可改) + 删除按钮 + PanelRight 切换
+// - 顶部: 会话标题 (可改) + PanelRight 切换
 // - 中部: 左 (ChatStream 历史 + 流帧 + 输入) + 右 (RightPanel: Todo/Workspace/Context)
 //
 // 数据加载 + resume:
@@ -19,10 +19,10 @@
 // - 用户手动 toggle 后写 localStorage, 优先级高于默认
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
-import { Check, PanelRightClose, PanelRightOpen, Pencil, Trash2 } from "lucide-react";
+import { Check, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
 
 import { ChatStream } from "@/components/chat/ChatStream";
 import { RightPanel } from "@/components/right-panel/RightPanel";
@@ -66,7 +66,6 @@ function initialPanelWidth(): number {
 
 export function ChatPage() {
   const { sid } = useParams();
-  const navigate = useNavigate();
   const { mutate: globalMutate } = useSWRConfig();
 
   const {
@@ -310,17 +309,6 @@ export function ChatPage() {
             toast.error(`Rename failed: ${String(err)}`);
           }
         }}
-        onDelete={async () => {
-          if (!confirm(`Delete thread ${meta.session_id.slice(0, 8)}?`)) return;
-          try {
-            await api.deleteSession(meta.session_id);
-            toast.success("Deleted");
-            globalMutate("sessions");
-            navigate("/");
-          } catch (err) {
-            toast.error(`Delete failed: ${String(err)}`);
-          }
-        }}
       />
       <div className="min-h-0 flex-1">
         {historyError ? (
@@ -396,7 +384,6 @@ function ChatHeader({
   panelOpen,
   onTogglePanel,
   onTitleChange,
-  onDelete,
 }: {
   sessionId: string;
   title: string | null;
@@ -404,7 +391,6 @@ function ChatHeader({
   panelOpen: boolean;
   onTogglePanel: () => void;
   onTitleChange: (next: string | null) => void;
-  onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
@@ -421,33 +407,35 @@ function ChatHeader({
   }
 
   return (
-    <div className="border-b border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-6 py-3">
+    <div className="app-drag-region relative z-20 border-b border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-6 py-3">
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {editing ? (
-            <input
-              autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={commit}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  (e.target as HTMLInputElement).blur();
-                }
-                if (e.key === "Escape") {
-                  setDraft(title ?? "");
-                  setEditing(false);
-                }
-              }}
-              placeholder="Name this thread…"
-              className="font-display min-w-0 flex-1 rounded-[5px] border border-[color:var(--color-accent)] bg-[color:var(--color-bg-card)] px-2 py-1 text-[16px] font-medium text-[color:var(--color-paper)] focus:outline-none"
-            />
+            <div className="app-no-drag flex min-w-0 max-w-[min(680px,70vw)] flex-1 items-center gap-2 rounded-[8px] border border-[color:var(--color-line-strong)] bg-[color:var(--color-bg-card)] px-2.5 py-1.5 shadow-[0_1px_2px_rgba(20,30,50,0.04)] focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_rgba(61,90,128,0.10)]">
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                  if (e.key === "Escape") {
+                    setDraft(title ?? "");
+                    setEditing(false);
+                  }
+                }}
+                placeholder="Name this thread…"
+                className="font-display min-w-0 flex-1 bg-transparent text-[16px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)] placeholder:text-[color:var(--color-ink-dim)] focus:outline-none"
+              />
+            </div>
           ) : (
             <button
               type="button"
               onClick={() => setEditing(true)}
-              className="font-display group flex min-w-0 items-center gap-2 truncate text-left text-[16px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)] hover:text-[color:var(--color-accent)]"
+              className="app-no-drag font-display group flex min-w-0 items-center gap-2 truncate text-left text-[16px] font-medium tracking-[-0.01em] text-[color:var(--color-paper)] hover:text-[color:var(--color-accent)]"
               title="Click to rename"
             >
               <span className="truncate">
@@ -468,7 +456,7 @@ function ChatHeader({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={commit}
-              className="shrink-0 text-[color:var(--color-accent)]"
+              className="app-no-drag shrink-0 text-[color:var(--color-accent)]"
             >
               <Check size={14} />
             </button>
@@ -481,7 +469,7 @@ function ChatHeader({
             type="button"
             onClick={onTogglePanel}
             title={`${mountedCount} mount${mountedCount === 1 ? "" : "s"} · Open panel`}
-            className="shrink-0 rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-paper-dim)] transition-colors hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]"
+            className="app-no-drag shrink-0 rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-paper-dim)] transition-colors hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]"
           >
             {mountedCount} mount{mountedCount === 1 ? "" : "s"}
           </button>
@@ -492,22 +480,13 @@ function ChatHeader({
           onClick={onTogglePanel}
           title={panelOpen ? "Hide panel" : "Show panel"}
           className={cn(
-            "shrink-0 rounded-[5px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1.5 transition-colors hover:border-[color:var(--color-line-strong)]",
+            "app-no-drag shrink-0 rounded-[5px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1.5 transition-colors hover:border-[color:var(--color-line-strong)]",
             panelOpen
               ? "text-[color:var(--color-paper-dim)]"
               : "text-[color:var(--color-ink)]",
           )}
         >
           {panelOpen ? <PanelRightClose size={12} /> : <PanelRightOpen size={12} />}
-        </button>
-
-        <button
-          type="button"
-          onClick={onDelete}
-          className="shrink-0 rounded-[5px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-error)] hover:text-[color:var(--color-error)]"
-          title="Delete thread"
-        >
-          <Trash2 size={12} className="inline" />
         </button>
       </div>
     </div>

@@ -26,6 +26,7 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
   const [busyAdd, setBusyAdd] = useState(false);
 
   async function addMount(path: string) {
+    if (!sessionId) return;
     setBusyAdd(true);
     setPickerOpen(false);
     try {
@@ -40,6 +41,7 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
   }
 
   async function revealInFinder(path: string) {
+    if (!sessionId) return;
     try {
       await api.openFile({ sessionId, path, reveal: true });
     } catch (err) {
@@ -58,11 +60,11 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
         <button
           type="button"
           onClick={() => setPickerOpen(true)}
-          disabled={busyAdd}
-          title="Add mount"
+          disabled={busyAdd || !sessionId}
+          title={sessionId ? "Add mount" : "Workspace will be editable once the thread starts"}
           className={cn(
             "ml-1 rounded-[4px] p-1 text-[color:var(--color-ink)] transition-colors",
-            busyAdd
+            busyAdd || !sessionId
               ? "cursor-not-allowed opacity-50"
               : "hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]",
           )}
@@ -94,6 +96,7 @@ export function WorkspaceSection({ sessionId, mountedDirs, onMountsChanged }: Pr
                   type="button"
                   onClick={() => revealInFinder(d)}
                   title="Open in Finder/Explorer"
+                  disabled={!sessionId}
                   className="shrink-0 rounded-[3px] p-0.5 text-[color:var(--color-ink)] opacity-0 transition-opacity hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)] group-hover:opacity-100"
                 >
                   <FolderOpen size={11} />
