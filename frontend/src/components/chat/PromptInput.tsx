@@ -6,8 +6,12 @@
 //   Shift+Enter   → 换行        (浏览器默认, 不拦)
 //   ⌘/Ctrl+Enter  → 也发送      (兼容老习惯)
 //
+// 主按钮三态:
+//   - 有输入 (idle)     → accent 底 + ArrowUp, 点击 submit
+//   - 无输入 (idle)     → 灰底 + ArrowUp, disabled
+//   - sending + onStop  → paper 反相底 + Square, 点击 onStop (中断当前 turn)
+//
 // 附件 + 号还没接后端 multipart 管线, 点了出 toast 占位.
-// "Send" 文字按钮 -> ArrowUp icon button, 跟 EmptyPage 视觉对齐.
 
 import {
   useRef,
@@ -15,18 +19,21 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from "react";
-import { ArrowUp, Paperclip } from "lucide-react";
+import { ArrowUp, Paperclip, Square } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 
 interface Props {
   onSend: (prompt: string) => void;
+  // 父提供时 + disabled=true → 主按钮变 stop, 点击中断当前 turn.
+  // 父没提供时 disabled 走旧逻辑 (灰按钮 disabled).
+  onStop?: () => void;
   disabled?: boolean;
   placeholder?: string;
 }
 
-export function PromptInput({ onSend, disabled, placeholder }: Props) {
+export function PromptInput({ onSend, onStop, disabled, placeholder }: Props) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -46,6 +53,7 @@ export function PromptInput({ onSend, disabled, placeholder }: Props) {
   }
 
   const canSend = !disabled && value.trim().length > 0;
+  const showStop = !!disabled && !!onStop;
 
   return (
     <div className="border-t border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-6 py-4">
@@ -85,17 +93,23 @@ export function PromptInput({ onSend, disabled, placeholder }: Props) {
             </button>
             <button
               type="button"
-              onClick={submit}
-              disabled={!canSend}
-              title="Send (Enter)"
+              onClick={showStop ? onStop : submit}
+              disabled={!showStop && !canSend}
+              title={showStop ? "Stop generating" : "Send (Enter)"}
               className={cn(
                 "flex h-10 w-10 items-center justify-center rounded-[8px] transition-colors",
-                canSend
-                  ? "bg-[color:var(--color-accent)] text-white hover:opacity-90"
-                  : "cursor-not-allowed bg-[color:var(--color-bg-raised)] text-[color:var(--color-ink)]",
+                showStop
+                  ? "bg-[color:var(--color-paper)] text-[color:var(--color-bg-card)] hover:opacity-85"
+                  : canSend
+                    ? "bg-[color:var(--color-accent)] text-white hover:opacity-90"
+                    : "cursor-not-allowed bg-[color:var(--color-bg-raised)] text-[color:var(--color-ink)]",
               )}
             >
-              <ArrowUp size={17} />
+              {showStop ? (
+                <Square size={13} className="fill-current" />
+              ) : (
+                <ArrowUp size={17} />
+              )}
             </button>
           </div>
         </div>

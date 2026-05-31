@@ -72,6 +72,10 @@ export const api = {
     http<SessionMeta>(`/sessions/${sid}/mounts`, { method: "PATCH", json: body }),
   // weaver 产物列表 (内置 + 用户织的). M14 只 skills 有数据.
   listWeaverProducts: () => http<WeaverProductsResponse>("/weaver/products"),
+  // 中断当前 turn — 两步杀: SDK interrupt + 本地 stream task cancel.
+  // Idempotent, 重复调返 204; 跑完已经无 buffer 也返 204 不报错.
+  stopChat: (sid: string) =>
+    http<void>(`/chat/${sid}/stop`, { method: "POST" }),
 };
 
 // ──── chat SSE ───────────────────────────────────────────────

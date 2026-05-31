@@ -250,6 +250,18 @@ export function ChatPage() {
     }
   }
 
+  // 中断当前 turn — 后端两步杀 (SDK interrupt + stream task cancel).
+  // 不主动 setSending(false), 让 stream_end 帧自然走 for-await break → finally setSending(false),
+  // 跟正常 turn 结束同款路径. 失败 toast 一下, 用户能 retry / refresh.
+  async function stop() {
+    if (!sid || !sending) return;
+    try {
+      await api.stopChat(sid);
+    } catch (err) {
+      toast.error(`Stop failed: ${String(err)}`);
+    }
+  }
+
   // 给 RightPanel 用 — Workspace 改完调这里刷 meta + sidebar (mounted_dirs 是 SessionMeta 的字段)
   const onMountsChanged = useMemo(
     () => () => {
@@ -326,6 +338,7 @@ export function ChatPage() {
                 streamedFrames={liveFrames}
                 localUserPrompt={localUserPrompt}
                 onUserSend={send}
+                onStop={stop}
                 inputDisabled={sending}
               />
             </div>

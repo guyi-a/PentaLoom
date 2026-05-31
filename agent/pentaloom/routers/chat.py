@@ -451,3 +451,32 @@ async def chat_permission(
         "added_path": added_path,
         "added_allowlist_key": added_allowlist_key,
     }
+
+
+@router.post(
+    "/chat/{sid}/stop",
+    summary="中断当前 turn (用户主动停)",
+)
+async def stop_chat(sid: str, request: Request) -> Response:
+    """只发 SDK interrupt — 让 CLI 子进程主动停 + 给挂起的 tool_use 发 cancellation
+    tool_result + 推一条 [Request interrupted] marker message + ResultMessage,
+    stream task 自然走完 finally 段 (stream_end + finish).
+
+    **不要**提前 buf.cancel() — 那会把上面 SDK 的 cancellation message stream 吞掉,
+    前端只看到工具半截没了, 没"refused" 视觉信号, mutate history 还有 race.
+    Idempotent: 重复 stop 同 sid 不报错, 返 204.
+    """
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(500, "LoomPool not initialized")
+    entry = pool.peek_entry(sid)
+    if entry is None:
+        return Response(status_code=204)
+
+    try:
+        await entry.pl.client.interrupt()
+        logger.info(f"chat interrupt sent sid={sid}")
+    except Exception as e:
+        logger.warning(f"interrupt failed sid={sid}: {e}")
+
+    return Response(status_code=204)
