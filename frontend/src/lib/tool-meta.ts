@@ -32,7 +32,12 @@ import {
   INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
+  INVOKE_APP_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
+  WEAVE_APP_EDIT_FILE_TOOL_NAME,
+  WEAVE_APP_FINALIZE_TOOL_NAME,
+  WEAVE_APP_TOOL_NAME,
+  WEAVE_APP_WRITE_FILE_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "./types";
 import { browserCommandSummary } from "./browser-command";
@@ -63,6 +68,10 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   [COMPUTER_USE_TOOL_NAME]: Terminal,
   // pentaloom_files 下的 file_read / file_write 等
   "mcp__pentaloom_files__file_read": FileText,
+  // weaver app 递进式子工具 (Phase B.5)
+  "mcp__pentaloom_weaver__weave_app_write_file": FilePlus2,
+  "mcp__pentaloom_weaver__weave_app_edit_file": Pencil,
+  "mcp__pentaloom_weaver__weave_app_finalize": ShieldCheck,
 };
 
 export function toolIcon(name: string): LucideIcon {
@@ -106,6 +115,20 @@ export function oneLineSummary(
   input: Record<string, unknown>,
 ): string {
   const n = name.toLowerCase();
+  if (name === WEAVE_APP_WRITE_FILE_TOOL_NAME || name === WEAVE_APP_EDIT_FILE_TOOL_NAME) {
+    const appName = typeof input.app_name === "string" ? input.app_name : "";
+    const relPath = typeof input.rel_path === "string" ? input.rel_path : "";
+    return [appName, relPath].filter(Boolean).join("/");
+  }
+  if (name === WEAVE_APP_TOOL_NAME || name === WEAVE_APP_FINALIZE_TOOL_NAME) {
+    const appName = typeof input.name === "string" ? input.name : "";
+    return appName;
+  }
+  if (name === INVOKE_APP_TOOL_NAME) {
+    const appName = typeof input.name === "string" ? input.name : "";
+    const invocationId = typeof input.invocation_id === "string" ? input.invocation_id : "";
+    return [appName, invocationId].filter(Boolean).join(" · ");
+  }
   if (n.includes("read") && typeof input.file_path === "string")
     return input.file_path;
   if ((n.includes("write") || n.includes("edit")) && typeof input.file_path === "string")

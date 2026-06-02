@@ -198,19 +198,25 @@ async def _run(
     env: dict[str, str],
     timeout: int,
     timeout_message: str,
+    stdin_data: bytes | None = None,
 ) -> ScriptResult:
-    """跑子进程, 超时 kill process group, 永远返回 ScriptResult (不抛)."""
+    """跑子进程, 超时 kill process group, 永远返回 ScriptResult (不抛).
+
+    stdin_data: 非 None 时打开 PIPE 把它喂进去 (给 invocable app 走 stdin JSON 协议).
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd),
         env=env,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=stdin_data), timeout=timeout,
+        )
     except asyncio.TimeoutError:
         _kill_process_group(proc.pid)
         await proc.wait()
@@ -390,4 +396,40 @@ async def run_script(
         env=env,
         timeout=timeout,
         timeout_message="script execution timed out",
+    )
+
+
+async def run_app_script(
+    settings: Settings,
+    *,
+    cwd: Path,
+    command: list[str],
+    stdin_data: bytes,
+    timeout: int,
+) -> ScriptResult:
+    """Invocable App 的 script invocation runtime.
+
+    跟 run_script 不同: command 是 app.json 里 ScriptComponent.command 整段 (e.g.,
+    ['python', 'scripts/render.py']), cwd 是 app 的 files/ 目录, stdin 喂 JSON args,
+    stdout 出 JSON result. 不做 preflight_compile (script 可能不是 .py 文件; 真
+    syntax 错的话 spawn 自然 fail).
+
+    走 uv run --project 共享 python_env_dir, 复用 install_python_libs 装好的依赖.
+    """
+    env = build_env(settings)
+    # 第一个 token 是 "python" / "node" / "bash" 等. python 类的走 uv 隔离, 其他
+    # 直接 exec (PATH 走 env). M16 Phase B 只验 python; 其他类型留 Phase C+.
+    if command and command[0] == "python":
+        uv_cmd = [
+            uv_bin(env), "run", "--project", str(settings.python_env_dir),
+        ] + command
+    else:
+        uv_cmd = list(command)
+    return await _run(
+        uv_cmd,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        timeout_message="app invocation timed out",
+        stdin_data=stdin_data,
     )

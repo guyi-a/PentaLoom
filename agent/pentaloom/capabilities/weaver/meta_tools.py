@@ -1,21 +1,23 @@
 """6 个 meta-tool 的业务 logic. tools/weaver.py 的工具体只做参数解析 + 调这里.
 
-M14 实施范围:
-  - list_weaver / inspect_weaver / edit_weaver / delete_weaver  (skill 真实装)
-  - run_weaver / tail_weaver_logs                                 (注册但 NotImplementedError; M16 workflow 才支持)
+实施范围:
+  - list_weaver / inspect_weaver / edit_weaver / delete_weaver  (skill + app 实装)
+  - tail_weaver_logs                                             (app 实装, skill 仍 NotImplementedError)
+  - run_weaver                                                   (注册但 NotImplementedError; workflow milestone 才支持)
 
 **weaver = 用户私人产物**. 内置 skill (report-generator 等) 是 PentaLoom 出厂能力,
 不在任何 meta-tool 的视野里 — 用户视角 / agent 视角都一致, 防概念混淆.
 agent 想看内置 SKILL.md 直接 Read agent/.claude/skills/<name>/SKILL.md.
 
-list / inspect 是只读, 不弹 HITL; edit / delete 弹 HITL (设计文档 §8.2).
+list / inspect / tail_logs 是只读, 不弹 HITL; edit / delete 弹 HITL (设计文档 §8.2).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pentaloom.capabilities.weaver import index, skill
+from pentaloom.capabilities.weaver import app as app_biz
+from pentaloom.capabilities.weaver import app_runtime, index, skill
 from pentaloom.capabilities.weaver.models import WeaverKind
 from pentaloom.config import Settings
 
@@ -86,9 +88,24 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "content": skill.read_skill_md(settings, name),
             "meta": meta.model_dump(mode="json") if meta else None,
         }
-    # subagent / workflow / app — M14 没实装, inspect 抛
+    if k == "app":
+        entry = index.find_entry(settings, "app", name)
+        if entry is None:
+            raise index.WeaverError(f"app {name!r} 不存在")
+        meta = app_biz.read_meta(settings, name)
+        summary = app_biz.manifest_invocations_summary(settings, name)
+        return {
+            "name": name,
+            "kind": "app",
+            "source": entry.source,
+            "description": entry.description,
+            "summary": summary,
+            "meta": meta.model_dump(mode="json") if meta else None,
+        }
+    # subagent / workflow — 在后续里程碑实装
     raise index.WeaverError(
-        f"M14 阶段 inspect_weaver(kind={kind}) 只支持 skill; {kind} 在后续里程碑实装"
+        f"inspect_weaver(kind={kind}) 只支持 skill / app; "
+        f"{kind} 在后续里程碑实装"
     )
 
 
@@ -106,13 +123,27 @@ def edit_weaver(
 
 
 def delete_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
-    """软删. skill 是搬到 .trash/. 内置 skill 不在 weaver 内, 不会被点名."""
+    """软删. skill 是搬到 .trash/. 内置 skill 不在 weaver 内, 不会被点名.
+
+    trash_path 为 None 时表示孤儿条目 — index 有但物理目录已被外部清掉, 这次只清了 index.
+    """
     k = _check_kind(kind)
     if k == "skill":
         trash_path = skill.delete_skill_soft(settings, name)
-        return {"name": name, "kind": "skill", "deleted": True, "trash_path": str(trash_path)}
+        return {
+            "name": name, "kind": "skill", "deleted": True,
+            "trash_path": str(trash_path) if trash_path else None,
+            "was_orphan": trash_path is None,
+        }
+    if k == "app":
+        trash_path = app_biz.delete_app_soft(settings, name)
+        return {
+            "name": name, "kind": "app", "deleted": True,
+            "trash_path": str(trash_path) if trash_path else None,
+            "was_orphan": trash_path is None,
+        }
     raise index.WeaverError(
-        f"M14 阶段 delete_weaver(kind={kind}) 只支持 skill; {kind} 在后续里程碑实装"
+        f"delete_weaver(kind={kind}) 只支持 skill / app; {kind} 在后续里程碑实装"
     )
 
 
@@ -138,7 +169,20 @@ def run_weaver(
 def tail_weaver_logs(
     settings: Settings, kind: str, name: str, n: int = 20
 ) -> dict[str, Any]:
-    """读某产物运行历史. M14 没 DB / runs/ 目录, 暂返空."""
+    """读某产物运行历史. app 走 app_runtime.tail_run_logs (logs/runs.jsonl).
+    skill 没有运行语义, skill 调这条会抛.
+    """
+    k = _check_kind(kind)
+    if k == "app":
+        entry = index.find_entry(settings, "app", name)
+        if entry is None:
+            raise index.WeaverError(f"app {name!r} 不存在")
+        runs = app_runtime.tail_run_logs(settings, name, limit=max(1, n))
+        return {"name": name, "kind": "app", "runs": runs}
+    if k == "skill":
+        raise index.WeaverError(
+            "skill 是被动加载, 没有运行历史. 用 inspect_weaver 读 SKILL.md"
+        )
     raise NotImplementedError(
-        f"tail_weaver_logs M16 才实装 (依赖 workflow_runs); M14 占位"
+        f"tail_weaver_logs(kind={kind}) 在 workflow milestone 才实装"
     )

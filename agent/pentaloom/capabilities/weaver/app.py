@@ -60,13 +60,37 @@ def _validate_name(name: str) -> str:
 
 
 def _validate_relative_path(rel_path: str, *, label: str) -> str:
-    """禁 path traversal. POSIX 风格, 相对路径."""
+    """禁 path traversal. POSIX 风格, 相对路径.
+
+    字符串层面拒明显穿越. resolve 后再二次校验 (`_resolve_within_files`) 才是
+    最终防御 — 单靠字符串挡不住符号链接 / 大小写差异 / NUL 字节等. GPT 建议.
+    """
     rel_path = rel_path.strip()
     if not rel_path:
         raise index.WeaverError(f"{label} path 不能为空")
     if rel_path.startswith("/") or ".." in rel_path.split("/"):
         raise index.WeaverError(f"{label} path 不允许跳出 app 目录: {rel_path!r}")
+    if "\x00" in rel_path:
+        raise index.WeaverError(f"{label} path 含非法字符 (NUL)")
     return rel_path
+
+
+def _resolve_within_files(
+    files_root: Path, rel_path: str, *, label: str
+) -> Path:
+    """最终目标必须 resolve().is_relative_to(files_root.resolve()), 不要只靠字符串.
+
+    防 symlink / .. 残留 / 大小写规范化绕过 (GPT 强调).
+    """
+    target = (files_root / rel_path).resolve()
+    files_resolved = files_root.resolve()
+    try:
+        target.relative_to(files_resolved)
+    except ValueError as e:
+        raise index.WeaverError(
+            f"{label} path {rel_path!r} 越出 files/ 根 (路径穿越)"
+        ) from e
+    return target
 
 
 # ─── manifest.json (InvocableAppManifest) ───────────────────────────────────
@@ -206,24 +230,30 @@ def weave_app(
     name: str,
     description: str,
     manifest_json: str,
-    files: dict[str, str],
+    files: dict[str, str] | None = None,
     *,
     app_json: str | None = None,
     source: WeaverSource = "agent_woven",
 ) -> InvocableAppMeta:
-    """织一个 invocable app. 接口跟 plan §7.1 对齐.
+    """织一个 invocable app 骨架 (递进式 weave 入口, GPT 重设计后版本).
 
-    必填: name / description / manifest_json (含至少 1 个 invocation) / files
-    可选: app_json (Phase A 不写也行; Phase B+ runtime 需要)
+    必填: name / description / manifest_json
+    可选: app_json (没 app.json 后续 invoke_app 会拒); files (空 dict / None = 只建骨架)
 
-    跟 weave_skill 同款流程: 校验 → 名字冲突 check → 写盘 → 加 index.
+    新流程 (取代之前的 atomic):
+      weave_app(...)            ← 这步 HITL 一次, status=draft (空 files 也 OK)
+      weave_app_write_file(...) ← 多次, auto-pass, status 保持 draft
+      weave_app_finalize(...)   ← auto-pass, 4 项校验通过 → status=ready
+      invoke_app(...)           ← 只允许 status=ready
+
+    files 参数保留向后兼容 — atomic 风格的 caller (spike / 测试) 仍可一把传完.
+    传了 files 也只是写盘, status 仍是 draft, 用户必须显式 finalize 才能 invoke.
     """
     name = _validate_name(name)
     description = description.strip()
     if not description:
         raise index.WeaverError("description 不能为空")
-    if not files:
-        raise index.WeaverError("files 不能为空 — app 至少要 1 个源码文件")
+    files = files or {}
 
     manifest = parse_manifest(manifest_json)
     if manifest.name != name:
@@ -269,11 +299,13 @@ def weave_app(
         paths.app_definition(settings, name).write_text(
             app_def.model_dump_json(indent=2, exclude_none=True) + "\n"
         )
-    _write_files_tree(settings, name, files)
+    if files:
+        _write_files_tree(settings, name, files)
 
+    now = datetime.utcnow()
     meta = InvocableAppMeta(
         name=name, description=description, source=source,
-        created_at=datetime.utcnow(),
+        status="draft", created_at=now, updated_at=now,
     )
     paths.app_meta(settings, name).write_text(meta.model_dump_json(indent=2))
 
@@ -285,10 +317,240 @@ def weave_app(
         ),
     )
     logger.info(
-        f"weaved app: {name} ({len(manifest.invocations)} invocations, "
-        f"{len(files)} files, app.json={'yes' if app_def else 'no'})"
+        f"weaved app skeleton: {name} (status=draft, {len(manifest.invocations)} "
+        f"invocations, {len(files)} initial files, app.json={'yes' if app_def else 'no'})"
     )
     return meta
+
+
+# ─── 递进式 weave 子工具 (Fix 1, GPT 设计) ─────────────────────────────────
+
+_RESERVED_FILES_TOP_LEVEL = frozenset({
+    "manifest.json", "app.json", "meta.json",  # 系统维护文件
+})
+
+
+def _check_app_exists(settings: Settings, name: str) -> InvocableAppMeta:
+    """write/edit/finalize 入口共用 — 校 app 已在 index + 物理目录 + meta 存在.
+    返当前 meta (避免 caller 重复 read)."""
+    name = _validate_name(name)
+    entry = index.find_entry(settings, "app", name)
+    if entry is None:
+        raise index.WeaverError(
+            f"app {name!r} 不存在 — 先 weave_app 建骨架, 再 write_file / edit_file"
+        )
+    if not paths.app_dir(settings, name).exists():
+        raise index.WeaverError(
+            f"app {name!r} 物理目录已丢 — 用 delete_weaver 清理孤儿条目"
+        )
+    meta = read_meta(settings, name)
+    if meta is None:
+        raise index.WeaverError(f"app {name!r} 缺 meta.json (数据损坏)")
+    return meta
+
+
+def _save_meta(settings: Settings, meta: InvocableAppMeta) -> None:
+    """落 meta.json + 更新 updated_at."""
+    meta.updated_at = datetime.utcnow()
+    paths.app_meta(settings, meta.name).write_text(meta.model_dump_json(indent=2))
+
+
+def _demote_to_dirty_if_ready(meta: InvocableAppMeta) -> None:
+    """ready app 被改了 → 打回 dirty, 强制重 finalize (旧 schema + 新代码不一致风险, GPT)."""
+    if meta.status == "ready":
+        meta.status = "dirty"
+        meta.last_finalize_error = None  # 旧错误已不相关
+
+
+def _validate_write_target(
+    settings: Settings, name: str, rel_path: str, *, label: str
+) -> Path:
+    """write/edit 共用 — rel_path 校验 + reserved 拒 + resolve 防穿越."""
+    safe = _validate_relative_path(rel_path, label=label)
+    top = safe.split("/", 1)[0]
+    if top in _RESERVED_FILES_TOP_LEVEL:
+        raise index.WeaverError(
+            f"不能覆盖系统维护文件 {top!r} (改 manifest/app.json/meta 用 edit_weaver)"
+        )
+    if top in {"runs", "logs"}:
+        raise index.WeaverError(f"不能写入 runs/ 或 logs/ (系统目录): {safe}")
+    files_root = paths.app_files_dir(settings, name)
+    files_root.mkdir(parents=True, exist_ok=True)
+    return _resolve_within_files(files_root, safe, label=label)
+
+
+def write_app_file(
+    settings: Settings, app_name: str, rel_path: str, content: str
+) -> dict[str, Any]:
+    """写 files/<rel_path>. 增量 weave 主力, 自动放行 (app 已 HITL 过)."""
+    meta = _check_app_exists(settings, app_name)
+    target = _validate_write_target(settings, meta.name, rel_path, label="file")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existed = target.exists()
+    target.write_text(content)
+    _demote_to_dirty_if_ready(meta)
+    _save_meta(settings, meta)
+    logger.info(
+        f"wrote app file: {meta.name}/{rel_path} "
+        f"({'replaced' if existed else 'created'}, {len(content)} chars, "
+        f"status={meta.status})"
+    )
+    return {
+        "name": meta.name,
+        "rel_path": rel_path,
+        "bytes": len(content.encode("utf-8")),
+        "action": "replaced" if existed else "created",
+        "status": meta.status,
+    }
+
+
+def edit_app_file(
+    settings: Settings, app_name: str, rel_path: str,
+    old_string: str, new_string: str,
+) -> dict[str, Any]:
+    """改 files/<rel_path> 单段. 跟 SDK Edit 同款语义 (old 必须唯一存在).
+
+    替换 0 次抛 (找不到), >1 次也抛 (歧义, agent 给更长 context 重试).
+    """
+    meta = _check_app_exists(settings, app_name)
+    target = _validate_write_target(settings, meta.name, rel_path, label="file")
+    if not target.exists():
+        raise index.WeaverError(f"file 不存在: {rel_path} (先 write_file)")
+    if old_string == new_string:
+        raise index.WeaverError("old_string 跟 new_string 相同, 没意义")
+    if not old_string:
+        raise index.WeaverError("old_string 不能为空")
+    text = target.read_text()
+    count = text.count(old_string)
+    if count == 0:
+        raise index.WeaverError(
+            f"old_string 在 {rel_path} 里没找到 (检查空格 / 缩进 / 换行)"
+        )
+    if count > 1:
+        raise index.WeaverError(
+            f"old_string 在 {rel_path} 里出现 {count} 次 — 给更长 context 让它唯一"
+        )
+    new_text = text.replace(old_string, new_string, 1)
+    target.write_text(new_text)
+    _demote_to_dirty_if_ready(meta)
+    _save_meta(settings, meta)
+    logger.info(
+        f"edited app file: {meta.name}/{rel_path} "
+        f"(-{len(old_string)} +{len(new_string)} chars, status={meta.status})"
+    )
+    return {
+        "name": meta.name,
+        "rel_path": rel_path,
+        "old_chars": len(old_string),
+        "new_chars": len(new_string),
+        "status": meta.status,
+    }
+
+
+def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
+    """递进式 weave 的收口点 (GPT 建议). 4 项校验通过 → status=ready.
+
+    校验:
+      1. manifest.json 重新 parse + schema 通过
+      2. app.json 重新 parse + schema 通过 (没 app.json 拒 — Phase B+ 必须有)
+      3. target → component 全部存在 (跟 weave 时同款)
+      4. 每个 script invocation 的 command 入口文件存在
+         (e.g., ["python", "scripts/foo.py"] 检查 files/scripts/foo.py)
+
+    失败: status=failed + last_finalize_error 存原因, 抛 WeaverError 让 agent 看错.
+    """
+    meta = _check_app_exists(settings, app_name)
+    errors: list[str] = []
+
+    # 1. manifest
+    try:
+        manifest = read_manifest(settings, meta.name)
+        _validate_manifest_invocations(manifest)
+    except index.WeaverError as e:
+        errors.append(f"manifest: {e}")
+        manifest = None
+
+    # 2. app.json (Phase B+ 必填)
+    app_def = read_app_definition(settings, meta.name)
+    if app_def is None:
+        errors.append("缺 app.json (Phase B+ invoke_app 必须有 runtime declaration)")
+
+    # 3. target → component
+    if manifest is not None and app_def is not None:
+        try:
+            _validate_invocation_targets(manifest, app_def)
+        except index.WeaverError as e:
+            errors.append(f"invocation target: {e}")
+
+    # 4. script command 入口文件存在
+    if app_def is not None:
+        files_root = paths.app_files_dir(settings, meta.name)
+        for script in app_def.components.scripts:
+            entry_file = _script_entry_file(script.command, script.workdir)
+            if entry_file is None:
+                continue  # 非 path-like command (e.g., ["node"]), 跳过这条校验
+            wd = files_root
+            if script.workdir:
+                try:
+                    wd = _resolve_within_files(
+                        files_root, script.workdir, label=f"script.{script.name}.workdir"
+                    )
+                except index.WeaverError as e:
+                    errors.append(f"script.{script.name}.workdir: {e}")
+                    continue
+            target = (wd / entry_file).resolve()
+            if not target.exists():
+                errors.append(
+                    f"script.{script.name}.command 入口文件不存在: "
+                    f"{entry_file} (期望路径: {target.relative_to(files_root.resolve()) if target.is_relative_to(files_root.resolve()) else target})"
+                )
+
+    if errors:
+        msg = "; ".join(errors)
+        meta.status = "failed"
+        meta.last_finalize_error = msg[:500]
+        _save_meta(settings, meta)
+        logger.warning(f"finalize FAILED: {meta.name} → {msg}")
+        raise index.WeaverError(f"finalize 校验失败: {msg}")
+
+    # 通过
+    now = datetime.utcnow()
+    meta.status = "ready"
+    meta.last_finalized_at = now
+    meta.last_finalize_error = None
+    _save_meta(settings, meta)
+    logger.info(f"finalized app: {meta.name} → status=ready")
+    return {
+        "name": meta.name,
+        "status": "ready",
+        "finalized_at": now.isoformat() + "Z",
+    }
+
+
+def _script_entry_file(command: list[str], workdir: str | None) -> str | None:
+    """从 script.command 启发式找入口文件相对路径.
+
+    `["python", "scripts/h.py"]` → "scripts/h.py"
+    `["python", "-m", "pkg"]`     → None (module 入口, 不验)
+    `["node", "h.js"]`            → "h.js"
+    `["./bin/run"]`               → "bin/run"
+    `["custom-cli"]`              → None (PATH 上的 cli, 跳过)
+
+    保守: 只在能明确识别 path-like 时返, 其他返 None 跳过校验.
+    """
+    if not command:
+        return None
+    # case 1: interpreter + script (python/node/ruby/etc 都吃第二个 arg 为脚本路径)
+    if len(command) >= 2 and command[0] in {"python", "python3", "node", "ruby", "bash", "sh"}:
+        # 但要排除 -m / -c 这种 flag 模式
+        if command[1].startswith("-"):
+            return None
+        return command[1]
+    # case 2: 单 arg 但明显是相对路径 (含 / 或 .py/.js/.sh 后缀)
+    arg0 = command[0]
+    if "/" in arg0 or arg0.endswith((".py", ".js", ".sh", ".rb")):
+        return arg0.lstrip("./")
+    return None
 
 
 def read_manifest(settings: Settings, name: str) -> InvocableAppManifest:
@@ -333,8 +595,13 @@ def read_app_file(settings: Settings, name: str, rel_path: str) -> str:
     return target.read_text()
 
 
-def delete_app_soft(settings: Settings, name: str) -> Path:
-    """软删: 整个 apps/<name>/ 搬到 weaver/.trash/."""
+def delete_app_soft(settings: Settings, name: str) -> Path | None:
+    """软删: 整个 apps/<name>/ 搬到 weaver/.trash/.
+
+    若物理目录已不存在 (孤儿条目: index 有但目录被外部清掉了), 只清 index entry,
+    返 None — 不抛错. 否则 agent 会尝试 workaround (绕过 meta-tool 直接改 index),
+    这是 Fix 6 + Fix 8 一起防的攻击面.
+    """
     name = _validate_name(name)
     entry = index.find_entry(settings, "app", name)
     if entry is None:
@@ -342,7 +609,10 @@ def delete_app_soft(settings: Settings, name: str) -> Path:
 
     src = paths.app_dir(settings, name)
     if not src.exists():
-        raise index.WeaverError(f"app 物理目录已丢: {src}")
+        # 孤儿条目: 只清 index, 不搬 trash (没东西可搬)
+        index.remove_entry(settings, "app", name)
+        logger.info(f"deleted orphan app entry (no physical dir): {name}")
+        return None
 
     index.remove_entry(settings, "app", name)
     paths.trash_dir(settings).mkdir(parents=True, exist_ok=True)

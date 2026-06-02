@@ -10,17 +10,17 @@
 import { useState, type ReactNode } from "react";
 import useSWR from "swr";
 import {
+  AppWindow,
   BookOpen,
   Boxes,
   ChevronDown,
   ChevronRight,
-  Sparkles,
   Workflow,
 } from "lucide-react";
 
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
 import { api } from "@/lib/api";
-import type { SkillSummary, WeaverSource } from "@/lib/types";
+import type { AppStatus, AppSummary, SkillSummary, WeaverSource } from "@/lib/types";
 
 const sourceLabel: Record<WeaverSource, string> = {
   builtin: "builtin",
@@ -29,11 +29,24 @@ const sourceLabel: Record<WeaverSource, string> = {
   user_handwritten: "handwritten",
 };
 
+// status badge 视觉: 状态机 4 档对应 4 种颜色 + 文本
+// draft  = 灰 (写中)
+// ready  = 绿 (能 invoke)
+// dirty  = 黄 (改过没重 finalize)
+// failed = 红 (上次 finalize 校验挂)
+const statusBadge: Record<AppStatus, { label: string; cls: string }> = {
+  draft:  { label: "draft",  cls: "text-[color:var(--color-ink-dim)] bg-[color:var(--color-bg-raised)]" },
+  ready:  { label: "ready",  cls: "text-[#2d5a3d] bg-[#d4ead9]" },
+  dirty:  { label: "dirty",  cls: "text-[#6b5400] bg-[#f4e4a0]" },
+  failed: { label: "failed", cls: "text-[#7a2d2d] bg-[#f0c8c8]" },
+};
+
 export function WeaverGroup() {
   const { data, isLoading } = useSWR("weaver/products", () =>
     api.listWeaverProducts(),
   );
   const skills = data?.skills ?? [];
+  const apps = data?.apps ?? [];
 
   return (
     <SidebarGroup label="Weaver" defaultExpanded={true}>
@@ -52,6 +65,22 @@ export function WeaverGroup() {
           )}
         </SubSection>
 
+        <SubSection label="Apps" count={apps.length}>
+          {isLoading ? (
+            <PlaceholderText>Loading…</PlaceholderText>
+          ) : apps.length === 0 ? (
+            <PlaceholderText icon={<AppWindow size={10} />}>
+              No apps yet, weave one in chat.
+            </PlaceholderText>
+          ) : (
+            <ul className="space-y-0.5">
+              {apps.map((a) => (
+                <AppRow key={a.name} app={a} />
+              ))}
+            </ul>
+          )}
+        </SubSection>
+
         <SubSection label="Subagents">
           <PlaceholderText icon={<Boxes size={10} />}>
             Coming with M17.
@@ -60,13 +89,7 @@ export function WeaverGroup() {
 
         <SubSection label="Workflows">
           <PlaceholderText icon={<Workflow size={10} />}>
-            Coming with M16.
-          </PlaceholderText>
-        </SubSection>
-
-        <SubSection label="Apps">
-          <PlaceholderText icon={<Sparkles size={10} />}>
-            Coming with M18.
+            Coming with workflow milestone.
           </PlaceholderText>
         </SubSection>
       </div>
@@ -138,6 +161,54 @@ function SkillRow({ skill }: { skill: SkillSummary }) {
         }`}
       >
         {sourceLabel[skill.source]}
+      </span>
+    </li>
+  );
+}
+
+function AppRow({ app }: { app: AppSummary }) {
+  // component_counts 折成"3 scripts · 1 window" 这种 chip 文本, 0 的省略
+  const compParts = Object.entries(app.component_counts)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${n === 1 ? k.replace(/s$/, "") : k}`);
+  const tooltip = [
+    `${app.name} — ${app.description}`,
+    `status: ${app.status}`,
+    `${app.invocation_count} invocation${app.invocation_count === 1 ? "" : "s"}`,
+    compParts.length > 0 ? compParts.join(", ") : "no runtime components",
+    app.has_app_definition ? "" : "manifest only (no app.json)",
+  ].filter(Boolean).join(" · ");
+
+  // hover 时右侧显示 "N inv" chip — 跟 SkillRow 的 source chip 同款.
+  const invLabel = `${app.invocation_count} inv${app.invocation_count === 1 ? "" : "s"}`;
+  const badge = statusBadge[app.status] ?? statusBadge.draft;
+
+  return (
+    <li
+      title={tooltip}
+      className="group flex items-center gap-2 rounded-[6px] px-3 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
+    >
+      <AppWindow
+        size={11}
+        className="shrink-0 text-[color:var(--color-thread-file)] opacity-60"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[12.5px] leading-snug text-[color:var(--color-paper)]">
+          {app.name}
+        </div>
+        <div className="truncate text-[10.5px] leading-snug text-[color:var(--color-ink-dim)]">
+          {app.description}
+        </div>
+      </div>
+      {/* status badge 始终显示, 状态机一目了然 */}
+      <span
+        className={`tabular shrink-0 rounded-[3px] px-1 py-px font-mono text-[9px] uppercase tracking-wider ${badge.cls}`}
+      >
+        {badge.label}
+      </span>
+      {/* invocations chip — hover 显示 */}
+      <span className="tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[color:var(--color-thread-file)] opacity-0 transition-opacity group-hover:opacity-100">
+        {invLabel}
       </span>
     </li>
   );

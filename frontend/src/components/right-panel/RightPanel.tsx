@@ -29,6 +29,7 @@ export function RightPanel({
         <TodoSection history={history} liveFrames={liveFrames} />
         <WorkspaceSection
           sessionId={sessionId}
+          sandboxDir={meta.sandbox_dir}
           mountedDirs={meta.mounted_dirs}
           onMountsChanged={onMountsChanged}
         />

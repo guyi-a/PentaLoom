@@ -22,12 +22,17 @@ from typing import Any, Callable
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from pentaloom.capabilities.weaver import WeaverError, app as app_biz, meta_tools, skill
+from pentaloom.capabilities.weaver import app_runtime
 from pentaloom.config import Settings
 
 WEAVER_MCP_SERVER_NAME = "pentaloom_weaver"
 
 WEAVE_SKILL_TOOL_NAME = "weave_skill"
 WEAVE_APP_TOOL_NAME = "weave_app"
+WEAVE_APP_WRITE_FILE_TOOL_NAME = "weave_app_write_file"
+WEAVE_APP_EDIT_FILE_TOOL_NAME = "weave_app_edit_file"
+WEAVE_APP_FINALIZE_TOOL_NAME = "weave_app_finalize"
+INVOKE_APP_TOOL_NAME = "invoke_app"
 LIST_WEAVER_TOOL_NAME = "list_weaver"
 INSPECT_WEAVER_TOOL_NAME = "inspect_weaver"
 EDIT_WEAVER_TOOL_NAME = "edit_weaver"
@@ -37,6 +42,10 @@ TAIL_WEAVER_LOGS_TOOL_NAME = "tail_weaver_logs"
 
 WEAVE_SKILL_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SKILL_TOOL_NAME}"
 WEAVE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_TOOL_NAME}"
+WEAVE_APP_WRITE_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_WRITE_FILE_TOOL_NAME}"
+WEAVE_APP_EDIT_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_EDIT_FILE_TOOL_NAME}"
+WEAVE_APP_FINALIZE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_FINALIZE_TOOL_NAME}"
+INVOKE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INVOKE_APP_TOOL_NAME}"
 LIST_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{LIST_WEAVER_TOOL_NAME}"
 INSPECT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INSPECT_WEAVER_TOOL_NAME}"
 EDIT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{EDIT_WEAVER_TOOL_NAME}"
@@ -47,6 +56,10 @@ TAIL_WEAVER_LOGS_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{TAIL_WEAVER_LOGS_
 ALL_WEAVER_FULL_NAMES = (
     WEAVE_SKILL_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_APP_WRITE_FILE_FULL_NAME,
+    WEAVE_APP_EDIT_FILE_FULL_NAME,
+    WEAVE_APP_FINALIZE_FULL_NAME,
+    INVOKE_APP_FULL_NAME,
     LIST_WEAVER_FULL_NAME,
     INSPECT_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
@@ -116,12 +129,11 @@ def build_weaver_mcp_server(
     @tool(
         WEAVE_APP_TOOL_NAME,
         (
-            "织一个 invocable app — 用户可见的产物 + agent 可调用的接口. "
-            "manifest_json 声明 agent invocations (必填 ≥1); "
-            "app_json 声明 runtime components (services/windows/scripts/schedules/watches, 可选, "
-            "Phase A 不写也 OK, Phase B+ runtime 起来时必须); "
-            "files 是 {relative_path: text}, 写到 weaver/apps/<name>/files/ 子目录, "
-            "不能覆盖 manifest.json / app.json / meta.json / runs / logs."
+            "织一个 invocable app 骨架 — 这步只建 manifest + app.json + 空 files/ 目录, "
+            "**不**写源码. 写源码用 weave_app_write_file 增量写, 写完用 "
+            "weave_app_finalize 收口. status 初始为 'draft', invoke_app 拒 draft. "
+            "manifest_json 必填 (含至少 1 个 invocation); app_json 必填 (Phase B+ runtime 需要); "
+            "files 可选 (向后兼容老 caller, 给了也只是写盘, status 仍 draft)."
         ),
         {
             "type": "object",
@@ -133,9 +145,10 @@ def build_weaver_mcp_server(
                 "files": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
+                    "description": "可选, 向后兼容. 推荐留空, 用 weave_app_write_file 递增写.",
                 },
             },
-            "required": ["name", "description", "manifest_json", "files"],
+            "required": ["name", "description", "manifest_json"],
         },
     )
     async def _weave_app(args: dict[str, Any]) -> dict[str, Any]:
@@ -160,10 +173,141 @@ def build_weaver_mcp_server(
             return _err(f"weave_app 未预期错误 {type(e).__name__}: {e}")
         mark_rebuild()
         return _ok_text(
-            f"已沉淀 app {meta.name!r}. 写入 weaver/apps/{meta.name}/, "
-            "用 list_weaver / inspect_weaver 看. "
-            "M16 Phase A 只生成 app 包, invoke_app runtime 未实装 (Phase B+)."
+            f"已建 app {meta.name!r} 骨架 (status=draft). "
+            "下一步: 用 weave_app_write_file 写源码, 写完用 weave_app_finalize 收口. "
+            "invoke_app 只允许 status=ready."
         )
+
+    @tool(
+        WEAVE_APP_WRITE_FILE_TOOL_NAME,
+        (
+            "往已 weave 的 app 的 files/<rel_path> 写一个文件 (创建或覆盖). "
+            "自动放行 (app 已 HITL 通过). 路径必须相对 files/ 根, 不能 ../, "
+            "不能覆盖 manifest.json/app.json/meta.json/runs/logs. "
+            "若 app 是 ready 状态, 写完会打回 dirty (强制重 finalize). "
+            "参数: app_name (必填), rel_path (必填, 相对 files/), content (必填, 文件全文)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "rel_path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["app_name", "rel_path", "content"],
+        },
+    )
+    async def _weave_app_write_file(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = app_biz.write_app_file(
+                settings,
+                app_name=str(args.get("app_name", "")),
+                rel_path=str(args.get("rel_path", "")),
+                content=str(args.get("content", "")),
+            )
+        except WeaverError as e:
+            return _err(f"weave_app_write_file 失败: {e}")
+        except Exception as e:
+            return _err(f"weave_app_write_file 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
+
+    @tool(
+        WEAVE_APP_EDIT_FILE_TOOL_NAME,
+        (
+            "改 app 已有文件单段 (跟 SDK Edit 同款语义). 自动放行. "
+            "old_string 必须在文件里唯一出现 1 次 (找不到 / 多次出现都报错, "
+            "agent 给更长 context 重试). 改完 ready app 会打回 dirty. "
+            "参数: app_name, rel_path, old_string, new_string (全必填)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "rel_path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+            "required": ["app_name", "rel_path", "old_string", "new_string"],
+        },
+    )
+    async def _weave_app_edit_file(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = app_biz.edit_app_file(
+                settings,
+                app_name=str(args.get("app_name", "")),
+                rel_path=str(args.get("rel_path", "")),
+                old_string=str(args.get("old_string", "")),
+                new_string=str(args.get("new_string", "")),
+            )
+        except WeaverError as e:
+            return _err(f"weave_app_edit_file 失败: {e}")
+        except Exception as e:
+            return _err(f"weave_app_edit_file 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
+
+    @tool(
+        WEAVE_APP_FINALIZE_TOOL_NAME,
+        (
+            "递进式 weave 的收口点 — 4 项校验全过 → status=ready (invoke_app 可调). "
+            "校验: manifest schema + app.json schema + invocation.target → component 存在 + "
+            "每个 script.command 入口文件存在 (e.g., python scripts/h.py 必须有 files/scripts/h.py). "
+            "失败: status=failed + 错误信息存 last_finalize_error. 修完重 finalize 即可. "
+            "自动放行. 参数: app_name."
+        ),
+        {
+            "type": "object",
+            "properties": {"app_name": {"type": "string"}},
+            "required": ["app_name"],
+        },
+    )
+    async def _weave_app_finalize(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = app_biz.finalize_app(
+                settings, app_name=str(args.get("app_name", "")),
+            )
+        except WeaverError as e:
+            return _err(f"weave_app_finalize 校验失败: {e}")
+        except Exception as e:
+            return _err(f"weave_app_finalize 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
+
+    @tool(
+        INVOKE_APP_TOOL_NAME,
+        (
+            "调一个已 weave 的 invocable app 的 invocation, 拿 result. "
+            "当前只支持 target.component='script' (uv venv subprocess + "
+            "stdin JSON + stdout JSON + JSON Schema 双端校验); window / service "
+            "在后续 Phase 实装. "
+            "参数: name (app 名, 必填); invocation_id (manifest 里的 id, 必填); "
+            "args (input_schema 形态的 dict, 可选, 默认 {}). "
+            "返 {run_id, status, duration_ms, output} — output 是 handler 实际返的 "
+            "(已通过 output_schema 校验); run_id 可拿去 tail_weaver_logs(kind='app') 排查."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "invocation_id": {"type": "string"},
+                "args": {"type": "object"},
+            },
+            "required": ["name", "invocation_id"],
+        },
+    )
+    async def _invoke_app(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await app_runtime.invoke_app(
+                settings,
+                app_name=str(args.get("name", "")),
+                invocation_id=str(args.get("invocation_id", "")),
+                args=args.get("args") if isinstance(args.get("args"), dict) else {},
+            )
+        except app_runtime.InvokeError as e:
+            return _err(f"invoke_app 失败: {e}")
+        except WeaverError as e:
+            return _err(f"invoke_app 失败: {e}")
+        except Exception as e:
+            return _err(f"invoke_app 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
 
     @tool(
         LIST_WEAVER_TOOL_NAME,
@@ -348,6 +492,11 @@ def build_weaver_mcp_server(
         name=WEAVER_MCP_SERVER_NAME,
         tools=[
             _weave_skill,
+            _weave_app,
+            _weave_app_write_file,
+            _weave_app_edit_file,
+            _weave_app_finalize,
+            _invoke_app,
             _list_weaver,
             _inspect_weaver,
             _edit_weaver,

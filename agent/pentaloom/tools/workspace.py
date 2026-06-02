@@ -63,7 +63,9 @@ from pentaloom.tools.system_resources import (
 from pentaloom.tools.weaver import (
     DELETE_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
+    INVOKE_APP_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
+    WEAVE_APP_FULL_NAME,
     WEAVE_SKILL_FULL_NAME,
 )
 
@@ -75,12 +77,16 @@ FULL_TOOL_NAME = f"mcp__{WORKSPACE_MCP_SERVER_NAME}__{REQUEST_TOOL_NAME}"
 # Bash 在 app.py 的 allowed_tools 里被剔除 → 每次调用都会触发 can_use_tool.
 BASH_TOOL_NAME = "Bash"
 
+# SDK / CLI 内置 WebFetch. 跟 Bash 一样不带 mcp__ 前缀, 名字就是 "WebFetch".
+WEB_FETCH_TOOL_NAME = "WebFetch"
+
 # 这些名字以外的工具都自动放行. 列在这里方便前端用相同集合判断"哪些 tool_use 帧
 # 该渲染审批按钮". 若新增需要 HITL 的工具, 改这里 + 前端 TOOLS_NEEDING_APPROVAL.
 # file_verify 也在这里, 但 can_use_tool 内会按 input.autofix 判断: True 才审, False 直放.
 HITL_TOOL_NAMES: frozenset[str] = frozenset({
     FULL_TOOL_NAME,
     BASH_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     RUN_SCRIPT_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
@@ -90,12 +96,17 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
-    # weaver: 沉淀 / 改 / 删 / 跑产物 都审; list / inspect / tail_logs 免审 (只读).
+    # weaver: 沉淀 / 改 / 删 都审; list / inspect / tail_logs 免审 (只读).
     # 设计文档 §8.1-8.3: 每次单审, 不进 ALLOW_SESSION_TOOLS — 长期资产改动应该每次过目.
     WEAVE_SKILL_FULL_NAME,
+    WEAVE_APP_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
     DELETE_WEAVER_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
+    # invoke_app — 跑用户 weave 出来的 app. 走 ALLOW_SESSION 单 key 'enabled' 模式
+    # (跟 web_search / browser_bridge / computer_use 同款): 首次任何 app 任何 invocation
+    # 审批通过后整会话所有 invoke_app 调用免审. 用户自己 weave 的产物默认信任.
+    INVOKE_APP_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
@@ -106,6 +117,7 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
 # 审批后整个会话所有调用免审 (用户的真实浏览器 / 真实电脑 / 搜索, 默认信任).
 ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BASH_TOOL_NAME,
+    WEB_FETCH_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     FILE_VERIFY_FULL_NAME,
     INSTALL_BROWSER_USE_FULL_NAME,
@@ -113,6 +125,7 @@ ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
+    INVOKE_APP_FULL_NAME,
 })
 
 
@@ -281,6 +294,19 @@ def _normalize_web_search(_tool_input: dict[str, Any]) -> str:
     return "enabled"
 
 
+def _normalize_invoke_app(_tool_input: dict[str, Any]) -> str:
+    """invoke_app 同款单 key 模式 — 用户自己 weave 的产物默认信任,
+    首次审完整会话所有 invoke_app 调用免审 (不区分 app / invocation_id 粒度).
+    精细化以后做: e.g., 高 trust app permanent allow, 低 trust 每次审."""
+    return "enabled"
+
+
+def _normalize_web_fetch(_tool_input: dict[str, Any]) -> str:
+    """WebFetch 同款单 key 模式 — 拉单个 URL 跑小模型抽信息, 跟 web_search 一样
+    没破坏性. 按 URL 切碎审会打断节奏; 首次审完整会话所有 WebFetch 免审."""
+    return "enabled"
+
+
 def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """给 (tool_name, tool_input) 算个免审 key. None 表示该工具不支持 allow_session."""
     if tool_name == BASH_TOOL_NAME:
@@ -304,6 +330,10 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return _normalize_computer_use(tool_input)
     if tool_name == WEB_SEARCH_FULL_NAME:
         return _normalize_web_search(tool_input)
+    if tool_name == INVOKE_APP_FULL_NAME:
+        return _normalize_invoke_app(tool_input)
+    if tool_name == WEB_FETCH_TOOL_NAME:
+        return _normalize_web_fetch(tool_input)
     return None
 
 
@@ -412,6 +442,17 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             if not q:
                 return PermissionResultDeny(message="query 不能为空")
 
+        # WebFetch 必须给非空 url + prompt.
+        if tool_name == WEB_FETCH_TOOL_NAME:
+            url = str(tool_input.get("url", "")).strip()
+            prompt = str(tool_input.get("prompt", "")).strip()
+            if not url:
+                return PermissionResultDeny(message="url 不能为空")
+            if not prompt:
+                return PermissionResultDeny(message="prompt 不能为空")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                return PermissionResultDeny(message="url 必须是 http/https")
+
         # weaver 4 工具参数校验 (设计文档 §8.1-8.3; 跨 kind 不允许重名 / 名字 kebab-case).
         if tool_name == WEAVE_SKILL_FULL_NAME:
             name = str(tool_input.get("name", "")).strip()
@@ -435,6 +476,11 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             name = str(tool_input.get("name", "")).strip()
             if not kind or not name:
                 return PermissionResultDeny(message="run_weaver 需要 kind + name")
+        if tool_name == INVOKE_APP_FULL_NAME:
+            app_name = str(tool_input.get("name", "")).strip()
+            invocation_id = str(tool_input.get("invocation_id", "")).strip()
+            if not app_name or not invocation_id:
+                return PermissionResultDeny(message="invoke_app 需要 name + invocation_id")
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input
@@ -481,12 +527,82 @@ async def _bash_pre_tool_use_hook(
     }
 
 
+async def _weaver_path_guard_hook(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """硬护栏: 禁止 Read/Write/Edit/Glob/Grep 落在 data_dir/weaver/ 之下 (Fix 8).
+
+    weaver/ 是 weaver capability 的 single source of truth, 只能通过 weaver meta-tool
+    (inspect / edit / delete) 访问. 否则 agent 遇到 meta-tool 报错就会绕过抽象用
+    通用 fs 工具直接改 index.json, 绕过 .trash/ 软删保护 + 绕过 HITL.
+
+    返 permissionDecision='deny' 让 CLI 直接拒, 不进 can_use_tool (省得弹审 — 这是
+    架构性禁令, 用户审了也不应该放行).
+
+    一刀切整个 weaver/ deny (含 .trash/) — 想恢复 .trash 产物以后做 restore_weaver
+    meta-tool, 或让用户自己在 Finder 看. 加例外会留下绕过口子.
+    """
+    from pathlib import Path as _P
+
+    from pentaloom.capabilities.weaver.paths import weaver_root
+    from pentaloom.config import get_settings
+
+    # Read/Write/Edit 用 file_path; Glob/Grep 用 path. 都取一下, 空就放行.
+    raw = input_data.get("file_path") or input_data.get("path") or ""
+    if not raw:
+        return {}
+
+    # 用 .resolve() 同时 follow symlink + abspath; macOS /tmp -> /private/tmp 是常见坑.
+    # 路径不存在时 resolve() 也会 normalize, 不会抛.
+    try:
+        abs_path = str(_P(str(raw)).resolve())
+    except (OSError, ValueError):
+        return {}
+
+    settings = get_settings()
+    weaver_dir = str(weaver_root(settings).resolve())
+
+    if not abs_path.startswith(weaver_dir + "/") and abs_path != weaver_dir:
+        return {}  # 不在 weaver/ 之下, 不管
+
+    logger.warning(
+        f"weaver_path_guard: DENY path={abs_path} (weaver internals; use meta-tool)"
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "PentaLoom 禁止用 Read/Write/Edit/Glob/Grep 直接操作 weaver/ 内部. "
+                "改 weaver 产物用 edit_weaver, 删用 delete_weaver, "
+                "查内容用 inspect_weaver, 列产物用 list_weaver. "
+                "weaver/ 是 capability 的 single source of truth, 绕过 meta-tool "
+                "会破坏软删保护 + 跳过 HITL 审批."
+            ),
+        }
+    }
+
+
 def build_hitl_hooks():
-    """给 ClaudeAgentOptions.hooks 用. 当前仅给 Bash 加 ask 路由."""
+    """给 ClaudeAgentOptions.hooks 用.
+
+    PreToolUse 注册两组 hook:
+      1. Bash → ask 路由 (HITL 入口)
+      2. Read/Write/Edit/Glob/Grep → weaver_root 内 deny (硬护栏 Fix 8)
+    """
     from claude_agent_sdk import HookMatcher
 
     return {
         "PreToolUse": [
-            HookMatcher(matcher=BASH_TOOL_NAME, hooks=[_bash_pre_tool_use_hook])
+            HookMatcher(matcher=BASH_TOOL_NAME, hooks=[_bash_pre_tool_use_hook]),
+            # 一个 matcher 一组 hook, 但 SDK HookMatcher 不支持 list matcher,
+            # 所以每个工具各注册一遍. fileguard hook 内部按 tool name 分支.
+            HookMatcher(matcher="Read", hooks=[_weaver_path_guard_hook]),
+            HookMatcher(matcher="Write", hooks=[_weaver_path_guard_hook]),
+            HookMatcher(matcher="Edit", hooks=[_weaver_path_guard_hook]),
+            HookMatcher(matcher="Glob", hooks=[_weaver_path_guard_hook]),
+            HookMatcher(matcher="Grep", hooks=[_weaver_path_guard_hook]),
         ]
     }

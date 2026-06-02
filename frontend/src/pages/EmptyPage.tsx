@@ -88,6 +88,7 @@ export function EmptyPage() {
       session_id: liveSid ?? "",
       title: sentPrompt,
       mounted_dirs: mounts,
+      sandbox_dir: "",  // 真正 sandbox 路径在 sid 落地 + mutateMeta 后才知道; 此处占位
       created_at: now,
       last_active_at: now,
     };

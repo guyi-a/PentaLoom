@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 WeaverKind = Literal["skill", "subagent", "workflow", "app"]
 WeaverSource = Literal["agent_woven", "user_imported", "user_handwritten"]
@@ -76,6 +76,13 @@ class AppServiceSpec(BaseModel):
     restart: RestartPolicy = "on_failure"
     python_deps: list[str] | None = None
 
+    @field_validator("command")
+    @classmethod
+    def _command_non_empty(cls, v: list[str]) -> list[str]:
+        if not v or not any(str(x).strip() for x in v):
+            raise ValueError("command 不能为空 (至少一个非空 argv)")
+        return v
+
 
 class AppWindowSpec(BaseModel):
     """Desktop window component. entry is relative to files/."""
@@ -96,6 +103,13 @@ class AppScheduleSpec(BaseModel):
     workdir: str | None = None
     python_deps: list[str] | None = None
 
+    @field_validator("command")
+    @classmethod
+    def _command_non_empty(cls, v: list[str]) -> list[str]:
+        if not v or not any(str(x).strip() for x in v):
+            raise ValueError("command 不能为空 (至少一个非空 argv)")
+        return v
+
 
 class AppScriptParam(BaseModel):
     """Parameter definition for a manually triggered script."""
@@ -115,6 +129,13 @@ class AppScriptSpec(BaseModel):
     params: list[AppScriptParam] = Field(default_factory=list)
     workdir: str | None = None
     python_deps: list[str] | None = None
+
+    @field_validator("command")
+    @classmethod
+    def _command_non_empty(cls, v: list[str]) -> list[str]:
+        if not v or not any(str(x).strip() for x in v):
+            raise ValueError("command 不能为空 (至少一个非空 argv)")
+        return v
 
 
 class AppWatchSpec(BaseModel):
@@ -199,13 +220,24 @@ class InvocableAppManifest(BaseModel):
 
 class InvocableAppMeta(BaseModel):
     """weaver/apps/<slug>/meta.json — 跟 manifest.json 互补的运行时元数据
-    (跟 SkillMeta 同款 — 不在 manifest 里, 是 PentaLoom 维护的)."""
+    (跟 SkillMeta 同款 — 不在 manifest 里, 是 PentaLoom 维护的).
+
+    递进式 weave 状态机 (拆 atomic weave_app 后 GPT 建议的收口设计):
+      draft   → weave_app 刚建骨架, 还在写 files; invoke_app 拒
+      ready   → finalize 通过, 校验完整, 可以 invoke_app
+      dirty   → ready 后又改了 file, 需重新 finalize (旧 schema + 新代码不一致风险)
+      failed  → finalize 校验失败, 可继续 write/edit 修
+    """
 
     name: str
     kind: Literal["app"] = "app"
     description: str
     source: WeaverSource = "agent_woven"
+    status: Literal["draft", "ready", "dirty", "failed"] = "draft"
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_finalized_at: datetime | None = None
+    last_finalize_error: str | None = None  # failed 时存校验失败原因
     last_used_at: datetime | None = None
     use_count: int = 0
     is_trusted: bool = False

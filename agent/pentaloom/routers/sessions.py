@@ -44,6 +44,7 @@ class SessionMeta(BaseModel):
     session_id: str
     title: str | None
     mounted_dirs: list[str]
+    sandbox_dir: str  # agent 默认 cwd; 不持久化, 从 settings 算出来
     created_at: str
     last_active_at: str
 
@@ -51,10 +52,12 @@ class SessionMeta(BaseModel):
     def from_row(cls, row: ChatSession) -> "SessionMeta":
         # SQLite `func.now()` 写的是 UTC naive datetime, isoformat 不带时区 ->
         # JS new Date(iso) 会当成本地时间解析, 北京时区下差 8h. 补 "Z" 显式标 UTC.
+        settings = get_settings()
         return cls(
             session_id=row.session_id,
             title=row.title,
             mounted_dirs=list(row.mounted_dirs),
+            sandbox_dir=str(settings.sandbox_dir_for(row.session_id)),
             created_at=row.created_at.isoformat() + "Z",
             last_active_at=row.last_active_at.isoformat() + "Z",
         )
