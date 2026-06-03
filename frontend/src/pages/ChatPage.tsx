@@ -235,6 +235,9 @@ export function ChatPage() {
       // mounted_dirs 可能在本轮被 workspace 工具更新过 → 刷新 meta + sidebar
       await mutateMeta();
       globalMutate("sessions");
+      // weaver 产物 (skill / app) 可能在本轮被 weave / edit / delete 改过 → 刷 sidebar.
+      // 不扫帧判断, 直接 mutate — GET /weaver/products 廉价, 漏判反而麻烦.
+      globalMutate("weaver/products");
       setLiveFrames([]);
       setLocalUserPrompt(null);
     } catch (err) {

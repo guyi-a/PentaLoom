@@ -1,6 +1,7 @@
 // HTTP + SSE helpers. 后端在 vite proxy /api → 127.0.0.1:8090.
 
 import type {
+  AppDetailResponse,
   BrowseResponse,
   Frame,
   HistoryMessage,
@@ -72,6 +73,10 @@ export const api = {
     http<SessionMeta>(`/sessions/${sid}/mounts`, { method: "PATCH", json: body }),
   // weaver 产物列表 (内置 + 用户织的). M14 只 skills 有数据.
   listWeaverProducts: () => http<WeaverProductsResponse>("/weaver/products"),
+  // 单个 app 详情 — sidebar AppDetailPanel 用. 一次拉全: manifest summary +
+  // files (含 absolute_path 给 openFile 用) + meta + recent runs.
+  getAppDetail: (name: string) =>
+    http<AppDetailResponse>(`/weaver/apps/${encodeURIComponent(name)}/detail`),
   // 中断当前 turn — 两步杀: SDK interrupt + 本地 stream task cancel.
   // Idempotent, 重复调返 204; 跑完已经无 buffer 也返 204 不报错.
   stopChat: (sid: string) =>

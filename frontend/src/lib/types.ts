@@ -8,6 +8,7 @@ export interface SessionMeta {
   session_id: string;
   title: string | null;
   mounted_dirs: string[];
+  sandbox_dir: string;  // agent 默认 cwd, 后端从 settings 算出, 跟 mounted_dirs 互补
   created_at: string;
   last_active_at: string;
 }
@@ -195,20 +196,36 @@ export const WEB_SEARCH_TOOL_NAME =
 // 长期资产改动应该每次过目; list/inspect/tail_logs 是只读不审, 不在这里.
 export const WEAVE_SKILL_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_skill";
+export const WEAVE_APP_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_app";
+// 递进式 weave 子工具 (Phase B.5, auto-pass — app 主 weave HITL 通过后, 子操作免审).
+export const WEAVE_APP_WRITE_FILE_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_app_write_file";
+export const WEAVE_APP_EDIT_FILE_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_app_edit_file";
+export const WEAVE_APP_FINALIZE_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_app_finalize";
 export const EDIT_WEAVER_TOOL_NAME =
   "mcp__pentaloom_weaver__edit_weaver";
 export const DELETE_WEAVER_TOOL_NAME =
   "mcp__pentaloom_weaver__delete_weaver";
 export const RUN_WEAVER_TOOL_NAME =
   "mcp__pentaloom_weaver__run_weaver";
+// invoke_app — 调 weaver app 的 invocation. 单 key "enabled" 模式 (同 web_search /
+// browser_bridge / computer_use): 首次审完整会话所有 invoke_app 免审.
+export const INVOKE_APP_TOOL_NAME =
+  "mcp__pentaloom_weaver__invoke_app";
 
 export const BASH_TOOL_NAME = "Bash";
+// SDK / CLI 内置 WebFetch — 拉单个 URL 抽信息. 单 key "enabled" 模式同 web_search.
+export const WEB_FETCH_TOOL_NAME = "WebFetch";
 
 // 需要 HITL 审批的工具名全集. 必须跟后端 pentaloom.tools.HITL_TOOL_NAMES 对齐.
 // 全部走 FrameBlock 内联审批条 (卡片底部三按钮), 没有模态弹窗了.
 export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   WORKSPACE_PERMISSION_TOOL_NAME,
   BASH_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
@@ -219,15 +236,18 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   COMPUTER_USE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   WEAVE_SKILL_TOOL_NAME,
+  WEAVE_APP_TOOL_NAME,
   EDIT_WEAVER_TOOL_NAME,
   DELETE_WEAVER_TOOL_NAME,
   RUN_WEAVER_TOOL_NAME,
+  INVOKE_APP_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
 // UI 上对没在这里的工具隐藏 / 灰掉 "Allow session" 按钮.
 export const ALLOW_SESSION_TOOLS: readonly string[] = [
   BASH_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   FILE_VERIFY_TOOL_NAME,
   INSTALL_BROWSER_USE_TOOL_NAME,
@@ -235,6 +255,7 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   BROWSER_BRIDGE_TOOL_NAME,
   COMPUTER_USE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
+  INVOKE_APP_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {
@@ -286,11 +307,81 @@ export interface SkillSummary {
   source: WeaverSource;
 }
 
+export type AppStatus = "draft" | "ready" | "dirty" | "failed";
+
+export interface AppSummary {
+  name: string;
+  description: string;
+  source: WeaverSource;
+  status: AppStatus;  // 递进式 weave 状态机 (draft → ready → dirty / failed)
+  invocation_count: number;
+  has_app_definition: boolean;
+  component_counts: Record<string, number>;  // {scripts: 2, windows: 1, ...}
+}
+
 export interface WeaverProductsResponse {
   skills: SkillSummary[];
   subagents: unknown[];  // M17
-  workflows: unknown[];  // M16
-  apps: unknown[];       // M18
+  workflows: unknown[];  // workflow milestone
+  apps: AppSummary[];
+}
+
+// /weaver/apps/{name}/detail 返回. AppDetailPanel 用. 跟后端 read_app_detail 对齐.
+export interface AppInvocationSummary {
+  id: string;
+  description: string;
+  target: { component: string; name: string; handler?: string | null } | null;
+  input_keys: string[];
+  output_keys: string[];
+  timeout_ms: number;
+  example_count: number;
+}
+
+export interface AppManifestSummary {
+  name: string;
+  type: string;
+  version: string;
+  invocations: AppInvocationSummary[];
+  permissions: { network_hosts: string[]; file_paths: string[] };
+  files: string[];  // relative paths (用 AppDetailResponse.files 拿 absolute)
+  components?: Record<string, string[]>;  // {scripts: [...], windows: [...], ...}
+}
+
+export interface AppFileEntry {
+  rel_path: string;
+  absolute_path: string;
+  ext: string;
+  size: number;
+}
+
+export interface AppMeta {
+  name: string;
+  status: AppStatus;
+  description: string;
+  source: WeaverSource;
+  created_at: string;
+  updated_at: string;
+  last_finalized_at: string | null;
+  last_finalize_error: string | null;
+  last_used_at: string | null;  // invoke_app 成功后递增 use_count 时一并写
+  use_count: number;
+  is_trusted: boolean;
+}
+
+export interface AppRunLog {
+  run_id: string;
+  invocation_id: string;
+  status: string;
+  duration_ms: number;
+  started_at: string;
+  error?: string;
+}
+
+export interface AppDetailResponse {
+  summary: AppManifestSummary;
+  files: AppFileEntry[];
+  meta: AppMeta | null;
+  recent_runs: AppRunLog[];
 }
 
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.

@@ -6,7 +6,8 @@
   "main": "out/main/main.js",
   "scripts": {
     "build": "tsc",
-    "start": "tsc && electron ."
+    "start": "tsc && electron .",
+    "postinstall": "node scripts/patch-electron-bundle-id.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

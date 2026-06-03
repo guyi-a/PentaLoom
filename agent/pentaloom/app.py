@@ -82,6 +82,9 @@ DEFAULT_TOOLS: list[str] = [
     # 这条 LLM 拿不到 Skill 工具, 只能 ls/find 去翻 .claude/skills/ 找 SKILL.md
     # 自己读 — 实测过, 跟 SDK 原生 skill 加载语义对不上.
     "Skill",
+    # SDK / CLI 内置 WebFetch — 拉单个 URL 跑小模型抽信息. 跟 web_search 配合:
+    # web_search 找链接, WebFetch 读完整页. browser_bridge 留给需要登录/JS/截图.
+    "WebFetch",
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
     INSTALL_LIBS_FULL_NAME,
     INSTALL_NOTO_SANS_SC_FULL_NAME,

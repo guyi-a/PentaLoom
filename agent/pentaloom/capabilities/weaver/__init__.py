@@ -7,7 +7,21 @@ Workflow / Subagent / App 留给 M16-M18.
 from pentaloom.capabilities.weaver.index import WeaverError
 from pentaloom.capabilities.weaver.loader import assemble_weaver
 from pentaloom.capabilities.weaver.models import (
+    AppComponents,
+    AppDefinition,
+    AppScheduleSpec,
+    AppScriptParam,
+    AppScriptSpec,
+    AppServiceSpec,
+    AppWatchSpec,
+    AppWindowSpec,
     IndexEntry,
+    InvocableAppManifest,
+    InvocableAppMeta,
+    InvocationExample,
+    InvocationSpec,
+    InvocationTarget,
+    ManifestPermissions,
     SkillFrontmatter,
     SkillMeta,
     WeaverIndex,
@@ -16,7 +30,21 @@ from pentaloom.capabilities.weaver.models import (
 )
 
 __all__ = [
+    "AppComponents",
+    "AppDefinition",
+    "AppScheduleSpec",
+    "AppScriptParam",
+    "AppScriptSpec",
+    "AppServiceSpec",
+    "AppWatchSpec",
+    "AppWindowSpec",
     "IndexEntry",
+    "InvocableAppManifest",
+    "InvocableAppMeta",
+    "InvocationExample",
+    "InvocationSpec",
+    "InvocationTarget",
+    "ManifestPermissions",
     "SkillFrontmatter",
     "SkillMeta",
     "WeaverError",

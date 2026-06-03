@@ -191,8 +191,12 @@ def edit_skill(
     return meta
 
 
-def delete_skill_soft(settings: Settings, name: str) -> Path:
-    """软删: 整个目录搬到 weaver/.trash/skill-<name>-<ts>/, 同时撤 symlink 跟 index."""
+def delete_skill_soft(settings: Settings, name: str) -> Path | None:
+    """软删: 整个目录搬到 weaver/.trash/skill-<name>-<ts>/, 同时撤 symlink 跟 index.
+
+    若物理目录已不存在 (孤儿条目: index 有但目录被外部清掉了), 只清 index entry +
+    symlink, 返 None — 不抛错 (Fix 6, 防 agent 绕过 meta-tool 直接改 index).
+    """
     name = _validate_name(name)
     entry = index.find_entry(settings, "skill", name)
     if entry is None:
@@ -200,7 +204,11 @@ def delete_skill_soft(settings: Settings, name: str) -> Path:
 
     src = paths.skill_dir(settings, name)
     if not src.exists():
-        raise index.WeaverError(f"skill 物理目录已丢: {src}")
+        # 孤儿条目: 撤 symlink + 清 index, 不搬 trash (没东西可搬)
+        index.remove_skill_symlink(settings, name)
+        index.remove_entry(settings, "skill", name)
+        logger.info(f"deleted orphan skill entry (no physical dir): {name}")
+        return None
 
     index.remove_skill_symlink(settings, name)
     index.remove_entry(settings, "skill", name)

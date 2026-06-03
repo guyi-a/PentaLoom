@@ -65,7 +65,7 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
   if (sessions.length === 0) {
     return (
       <>
-        <WeaverGroup />
+        <WeaverGroup currentSid={currentSid} />
         <EmptyState />
       </>
     );
@@ -73,7 +73,7 @@ export function SessionList({ sessions, currentSid, onChanged }: Props) {
 
   return (
     <>
-      <WeaverGroup />
+      <WeaverGroup currentSid={currentSid} />
       <SidebarGroup label="Threads">
         <div className="space-y-3">
           {TIME_GROUP_ORDER.map((group) => {
