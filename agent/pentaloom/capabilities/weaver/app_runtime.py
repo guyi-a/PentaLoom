@@ -198,9 +198,12 @@ async def invoke_app(
         return await _invoke_window(
             settings, app_name, inv, args, run_id, started_at_ms,
         )
+    if target_kind == "service":
+        return await _invoke_service(
+            settings, app_name, inv, args, run_id, started_at_ms,
+        )
     raise InvokeError(
-        f"Phase B/C 支持 target.component='script' | 'window'; 收到 {target_kind!r} "
-        f"(service=Phase D)"
+        f"target.component 不合法 (script | window | service): 收到 {target_kind!r}"
     )
 
 
@@ -271,6 +274,97 @@ async def _invoke_window(
     # window invocation 也算 use, 跟 script 同款递增
     app_biz.bump_use_count(settings, app_name)
     logger.info(f"invoke_app(window) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
+    return {
+        "run_id": run_id,
+        "status": "success",
+        "duration_ms": duration_ms,
+        "output": output,
+    }
+
+
+async def _invoke_service(
+    settings: Settings,
+    app_name: str,
+    inv: InvocationSpec,
+    args: dict[str, Any],
+    run_id: str,
+    started_at_ms: int,
+) -> dict[str, Any]:
+    """target.component='service' 路径 — lazy spawn service + HTTP fetch.
+
+    跟 _invoke_script / _invoke_window 平级. service 没起 → ensure_service 起;
+    http 调失败 → InvokeError; 成功 → schema 校 → return.
+    """
+    import httpx
+
+    from pentaloom.capabilities.weaver.service_registry import (
+        ServiceError, service_registry,
+    )
+
+    _validate_input(args, inv.input_schema)
+
+    # target 必须含 method + path (path validator 已校 / 开头 + 拒 ://)
+    method = (inv.target.method or "POST").upper()
+    path = inv.target.path or "/"
+    if method not in ("GET", "POST"):
+        raise InvokeError(f"target.method 只支持 GET/POST, 收到 {method!r}")
+
+    reg = service_registry()
+    try:
+        rs = await reg.ensure_service(settings, app_name, inv.target.name)
+    except ServiceError as e:
+        raise InvokeError(f"service 起不来 (run {run_id}): {e}") from e
+
+    timeout_s = max(1, inv.timeout_ms // 1000)
+    url = f"{rs.base_url}{path}"
+    logger.info(
+        f"invoke_app(service): {app_name}/{inv.id} run={run_id} {method} {url} timeout={timeout_s}s"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            if method == "GET":
+                # GET 把 args 当 query (扁平 string 化)
+                params = {k: str(v) for k, v in args.items()}
+                http_resp = await client.get(url, params=params)
+            else:
+                http_resp = await client.post(url, json=args)
+    except httpx.TimeoutException as e:
+        duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+        err = f"service 超时 ({timeout_s}s): {e}"
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        raise InvokeError(f"{err} (run {run_id})") from e
+    except httpx.HTTPError as e:
+        duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+        err = f"service 连接失败: {e}"
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        raise InvokeError(f"{err} (run {run_id})") from e
+
+    duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+
+    if http_resp.status_code >= 400:
+        err = f"service {method} {path} → HTTP {http_resp.status_code}: {http_resp.text[:300]}"
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        raise InvokeError(f"{err} (run {run_id})")
+
+    try:
+        output = http_resp.json()
+        if not isinstance(output, dict):
+            raise ValueError(f"top-level 不是 object, 是 {type(output).__name__}")
+    except (ValueError, Exception) as e:
+        err = f"service response 不是合法 JSON object: {http_resp.text[:200]}"
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        raise InvokeError(f"{err} (run {run_id})") from e
+
+    try:
+        _validate_output(output, inv.output_schema)
+    except InvokeError as e:
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
+        raise InvokeError(f"{e} (run {run_id})") from e
+
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    app_biz.bump_use_count(settings, app_name)
+    logger.info(f"invoke_app(service) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
     return {
         "run_id": run_id,
         "status": "success",

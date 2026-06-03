@@ -462,14 +462,21 @@ def build_weaver_mcp_server(
     @tool(
         TAIL_WEAVER_LOGS_TOOL_NAME,
         (
-            "读某产物最近运行记录. M14 占位 — 依赖 workflow_runs (M16 才有), 当前调用抛 NotImplemented."
+            "读某 app 的运行记录 / service 日志. kind 当前只支持 'app'. "
+            "mode='runs' (默认) 返 invoke_app 历次 run jsonl; "
+            "mode='service:<svc_name>' 返该 service 的 stdout/stderr log (含 [stdout]/[stderr] 前缀). "
+            "想 debug uvicorn / fastapi 输出走 service mode, **不要** Read weaver/ 内 log file."
         ),
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string"},
-                "name": {"type": "string"},
-                "n": {"type": "integer", "description": "最多返多少条, 默认 20."},
+                "kind": {"type": "string", "description": "'app'."},
+                "name": {"type": "string", "description": "app 名."},
+                "n": {"type": "integer", "description": "最多返多少条 / 行, 默认 20."},
+                "mode": {
+                    "type": "string",
+                    "description": "'runs' (默认) 或 'service:<svc_name>' (e.g., 'service:api').",
+                },
             },
             "required": ["kind", "name"],
         },
@@ -481,6 +488,7 @@ def build_weaver_mcp_server(
                 kind=str(args.get("kind", "")),
                 name=str(args.get("name", "")),
                 n=int(args.get("n") or 20),
+                mode=str(args.get("mode") or "runs"),
             )
         except WeaverError as e:
             return _err(f"tail_weaver_logs 失败: {e}")

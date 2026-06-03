@@ -71,10 +71,12 @@ class AppServiceSpec(BaseModel):
 
     name: str
     command: list[str]
-    port: int | None = None
+    port: int | None = None  # None = runtime 动态分配; int = 写死端口 (冲突时 spawn 失败)
     workdir: str | None = None
     restart: RestartPolicy = "on_failure"
     python_deps: list[str] | None = None
+    # D-0 service runtime: spawn 后等多少 ms TCP probe 端口可连. 长启动 service 调大.
+    startup_timeout_ms: int = 5000
 
     @field_validator("command")
     @classmethod
@@ -173,6 +175,31 @@ class InvocationTarget(BaseModel):
     handler: str | None = None
     method: Literal["GET", "POST"] | None = None
     path: str | None = None
+
+    @field_validator("path")
+    @classmethod
+    def _path_safe(cls, v: str | None) -> str | None:
+        """target=service 的 path 必须是相对 HTTP path, 防 SSRF / 越权.
+
+        - 必须 `/` 开头
+        - 不能含 `://` (防完整 URL 注入)
+        - 不能含 `?` / `#` (query/fragment 走 args, 不在 path 里)
+        - 长度限制 1024 防 DoS
+        """
+        if v is None:
+            return None
+        if not v.startswith("/"):
+            raise ValueError(f"target.path 必须 / 开头 (相对 HTTP path): {v!r}")
+        if v.startswith("//"):
+            # `//host/x` 是 protocol-relative URL, 会被 httpx 解析成新 host. 拒.
+            raise ValueError(f"target.path 不能 // 开头 (protocol-relative URL): {v!r}")
+        if "://" in v:
+            raise ValueError(f"target.path 不能是完整 URL: {v!r}")
+        if "?" in v or "#" in v:
+            raise ValueError(f"target.path 不能含 query/fragment (走 args): {v!r}")
+        if len(v) > 1024:
+            raise ValueError(f"target.path 太长 (>1024)")
+        return v
 
 
 class InvocationExample(BaseModel):

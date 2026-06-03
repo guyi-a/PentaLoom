@@ -74,6 +74,13 @@ async def lifespan(app: FastAPI):
             await cursor_overlay.shutdown_helper(overlay_client)
             cursor_overlay.set_active_client(None)
         await pool.shutdown()
+        # D-2: 停所有 weaver app service (防孤儿 process). 必须在 pool.shutdown 后 —
+        # 万一某个 service 是 invoke_app 时 lazy 起的, 先 pool.shutdown 让 LLM session
+        # 干净退, 再清 service.
+        from pentaloom.capabilities.weaver.service_registry import service_registry
+        n = await service_registry().stop_all()
+        if n > 0:
+            logger.info(f"weaver: stopped {n} app service(s) on shutdown")
         logger.info("PentaLoom 关闭")
 
 

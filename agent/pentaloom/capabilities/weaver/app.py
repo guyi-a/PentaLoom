@@ -616,11 +616,27 @@ def delete_app_soft(settings: Settings, name: str) -> Path | None:
     若物理目录已不存在 (孤儿条目: index 有但目录被外部清掉了), 只清 index entry,
     返 None — 不抛错. 否则 agent 会尝试 workaround (绕过 meta-tool 直接改 index),
     这是 Fix 6 + Fix 8 一起防的攻击面.
+
+    Phase D: 删 app 前先 stop 它的所有 running services (防孤儿 process). stop 是
+    async, 这里 fire-and-forget 调度到当前 loop — 调用方 (meta_tools.delete_weaver)
+    走 sync API, 不该改成 async. service 没 stop 干净也只是孤儿 process, 不影响 fs
+    删除. 真要 stop 完再删的 caller 自己用 service_registry.stop_for_app().
     """
     name = _validate_name(name)
     entry = index.find_entry(settings, "app", name)
     if entry is None:
         raise index.WeaverError(f"app 不存在: {name}")
+
+    # 先调度 stop service (fire-and-forget, 防 fs 删除阻塞)
+    try:
+        import asyncio as _asyncio
+        from pentaloom.capabilities.weaver.service_registry import service_registry
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(service_registry().stop_for_app(name))
+    except RuntimeError:
+        # 没 event loop (e.g., pytest sync 调用), 跳过 — 没 service 在跑的可能
+        pass
 
     src = paths.app_dir(settings, name)
     if not src.exists():

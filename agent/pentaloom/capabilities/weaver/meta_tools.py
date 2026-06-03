@@ -94,6 +94,9 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             raise index.WeaverError(f"app {name!r} 不存在")
         meta = app_biz.read_meta(settings, name)
         summary = app_biz.manifest_invocations_summary(settings, name)
+        # D-3-min: 加 running services snapshot (lazy import 防循环)
+        from pentaloom.capabilities.weaver.service_registry import service_registry
+        running_services = service_registry().list_for_app(name)
         return {
             "name": name,
             "kind": "app",
@@ -101,6 +104,7 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "description": entry.description,
             "summary": summary,
             "meta": meta.model_dump(mode="json") if meta else None,
+            "running_services": running_services,  # [{name, port, alive, started_at, restart_count, log_file}]
         }
     # subagent / workflow — 在后续里程碑实装
     raise index.WeaverError(
@@ -167,9 +171,16 @@ def run_weaver(
 
 
 def tail_weaver_logs(
-    settings: Settings, kind: str, name: str, n: int = 20
+    settings: Settings, kind: str, name: str, n: int = 20,
+    mode: str = "runs",
 ) -> dict[str, Any]:
-    """读某产物运行历史. app 走 app_runtime.tail_run_logs (logs/runs.jsonl).
+    """读某产物运行历史 / 服务日志.
+
+    mode (kind=app 时):
+      - "runs" (默认): 读 logs/runs.jsonl — invoke_app 历次 run 记录
+      - "service:<svc_name>": 读 logs/service-<svc_name>.log — service stdout/stderr
+        (含 [stdout]/[stderr] 行首前缀). agent 想看 uvicorn / fastapi 真实输出走这.
+
     skill 没有运行语义, skill 调这条会抛.
     """
     k = _check_kind(kind)
@@ -177,8 +188,37 @@ def tail_weaver_logs(
         entry = index.find_entry(settings, "app", name)
         if entry is None:
             raise index.WeaverError(f"app {name!r} 不存在")
+        # service log mode
+        if mode.startswith("service:"):
+            svc_name = mode[len("service:"):].strip()
+            if not svc_name:
+                raise index.WeaverError(
+                    "mode='service:<name>' 必须指定 service name (e.g., 'service:api')"
+                )
+            from pentaloom.capabilities.weaver import paths
+            log_file = paths.app_logs_dir(settings, name) / f"service-{svc_name}.log"
+            if not log_file.exists():
+                return {
+                    "name": name, "kind": "app", "mode": mode,
+                    "log_file": str(log_file),
+                    "lines": [],
+                    "note": "log file 不存在 — service 没启动过",
+                }
+            # 读最后 n 行 (大文件高效写法应该 seek, 但 service log 一般小, 简单 splitlines OK)
+            text = log_file.read_text(errors="replace")
+            lines = text.splitlines()[-max(1, n):]
+            return {
+                "name": name, "kind": "app", "mode": mode,
+                "log_file": str(log_file),
+                "lines": lines,
+            }
+        # 默认 runs mode
+        if mode != "runs":
+            raise index.WeaverError(
+                f"mode={mode!r} 不合法 (支持 'runs' | 'service:<svc_name>')"
+            )
         runs = app_runtime.tail_run_logs(settings, name, limit=max(1, n))
-        return {"name": name, "kind": "app", "runs": runs}
+        return {"name": name, "kind": "app", "mode": "runs", "runs": runs}
     if k == "skill":
         raise index.WeaverError(
             "skill 是被动加载, 没有运行历史. 用 inspect_weaver 读 SKILL.md"
