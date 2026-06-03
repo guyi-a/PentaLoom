@@ -20,6 +20,7 @@ Phase C (window) / Phase D (service) 留后续, 各自走不同 runtime path.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -182,28 +183,120 @@ async def invoke_app(
             f"app {app_name!r} status={meta.status!r}, 不能 invoke. {hint}"
         )
 
-    # ─── 2. 找 invocation + target.component='script' ───
+    # ─── 2. 找 invocation + target dispatch (script / window) ───
     inv = _find_invocation(manifest, invocation_id)
     if inv.target is None:
         raise InvokeError(
             f"invocation {invocation_id!r} 缺 target (Phase B 必填 — Phase A 占位不再宽松)"
         )
-    if inv.target.component != "script":
-        raise InvokeError(
-            f"Phase B 只支持 target.component='script'; 收到 {inv.target.component!r} "
-            f"(window=Phase C, service=Phase D)"
+    target_kind = inv.target.component
+    if target_kind == "script":
+        return await _invoke_script(
+            settings, app_name, app_def, inv, args, run_id, started_at_ms,
         )
-    script = _find_script_component(app_def, inv.target.name)
+    if target_kind == "window":
+        return await _invoke_window(
+            settings, app_name, inv, args, run_id, started_at_ms,
+        )
+    raise InvokeError(
+        f"Phase B/C 支持 target.component='script' | 'window'; 收到 {target_kind!r} "
+        f"(service=Phase D)"
+    )
 
-    # ─── 3. JSON Schema 校 input ───
+
+async def _invoke_window(
+    settings: Settings,
+    app_name: str,
+    inv: InvocationSpec,
+    args: dict[str, Any],
+    run_id: str,
+    started_at_ms: int,
+) -> dict[str, Any]:
+    """target.component='window' 路径 — 走 WebSocket 推到 window registered handler.
+
+    跟 _invoke_script 平级. registry 找不到 ws → 拒"window not open"; 找得到 →
+    推 invoke 消息 + 等 result Future (with timeout) → 校 output_schema → return.
+    """
+    from pentaloom.capabilities.weaver.window_registry import window_registry
+
+    _validate_input(args, inv.input_schema)
+    reg = window_registry()
+    ws = reg.get_one(app_name)
+    if ws is None:
+        raise InvokeError(
+            f"app {app_name!r} 的 window 没打开 — agent 无法调 window invocation. "
+            f"让用户在 sidebar 点 Open 先开窗, 或后续 Phase 加 auto-open"
+        )
+
+    request_id, fut = reg.new_request()
+    timeout_s = max(1, inv.timeout_ms // 1000)
+    logger.info(
+        f"invoke_app(window): {app_name}/{inv.id} run={run_id} request={request_id} "
+        f"timeout={timeout_s}s"
+    )
+
+    try:
+        await ws.send_json({
+            "type": "invoke",
+            "request_id": request_id,
+            "invocation_id": inv.id,
+            "args": args,
+        })
+    except Exception as e:
+        reg.resolve(request_id, {})  # 清 pending
+        raise InvokeError(f"window ws send 失败 (run {run_id}): {e}") from e
+
+    try:
+        msg = await asyncio.wait_for(fut, timeout=timeout_s)
+    except asyncio.TimeoutError as e:
+        raise InvokeError(
+            f"window invocation {inv.id!r} 超时 ({timeout_s}s, run {run_id})"
+        ) from e
+
+    duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+
+    if msg.get("type") == "invoke_error":
+        err = str(msg.get("error", "unknown window error"))
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        raise InvokeError(f"{err} (run {run_id})")
+
+    output = msg.get("output") if isinstance(msg.get("output"), dict) else {}
+    try:
+        _validate_output(output, inv.output_schema)
+    except InvokeError as e:
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
+        raise InvokeError(f"{e} (run {run_id})") from e
+
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    # window invocation 也算 use, 跟 script 同款递增
+    app_biz.bump_use_count(settings, app_name)
+    logger.info(f"invoke_app(window) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
+    return {
+        "run_id": run_id,
+        "status": "success",
+        "duration_ms": duration_ms,
+        "output": output,
+    }
+
+
+async def _invoke_script(
+    settings: Settings,
+    app_name: str,
+    app_def: AppDefinition,
+    inv: InvocationSpec,
+    args: dict[str, Any],
+    run_id: str,
+    started_at_ms: int,
+) -> dict[str, Any]:
+    """target.component='script' 路径 — uv venv subprocess + stdin/stdout JSON.
+
+    原 invoke_app 的主体, 抽出来跟 _invoke_window 平级.
+    """
+    script = _find_script_component(app_def, inv.target.name)
     _validate_input(args, inv.input_schema)
 
-    # ─── 4. spawn ───
-    # stdin 协议: {invocation_id, args, run_id} 整包给 script, script 自己 dispatch.
-    # 跟 spike_app_manifest_loop 的 Node runner 同款约定. run_id 让 script 自己
-    # 写 artifact 时可用 (e.g., runs/<run_id>/output.png).
     stdin_payload = json.dumps(
-        {"invocation_id": invocation_id, "args": args, "run_id": run_id},
+        {"invocation_id": inv.id, "args": args, "run_id": run_id},
         ensure_ascii=False,
     ).encode("utf-8")
 
@@ -211,7 +304,7 @@ async def invoke_app(
     files_root = paths.app_files_dir(settings, app_name)
     cwd = _resolve_workdir(files_root, script.workdir)
     logger.info(
-        f"invoke_app: {app_name}/{invocation_id} run={run_id} "
+        f"invoke_app(script): {app_name}/{inv.id} run={run_id} "
         f"script={' '.join(script.command)} cwd={cwd} timeout={timeout_s}s"
     )
     result = await python_env.run_app_script(
@@ -224,28 +317,27 @@ async def invoke_app(
 
     duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
 
-    # ─── 5. parse + 校验 output ───
     if result.exit_code != 0:
         err = f"handler exit {result.exit_code}: {result.stderr[:400]}"
-        _append_run_log(settings, app_name, run_id, invocation_id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
         raise InvokeError(f"{err} (run {run_id})")
 
     try:
         output = json.loads(result.stdout)
     except json.JSONDecodeError as e:
         err = f"handler 输出不是合法 JSON: {result.stdout[:200]} (stderr: {result.stderr[:200]})"
-        _append_run_log(settings, app_name, run_id, invocation_id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
         raise InvokeError(f"{err} (run {run_id})") from e
 
     try:
         _validate_output(output, inv.output_schema)
     except InvokeError as e:
-        _append_run_log(settings, app_name, run_id, invocation_id, "failed", duration_ms, str(e))
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
         raise InvokeError(f"{e} (run {run_id})") from e
 
-    # ─── 6. 成功落日志 + 返带元信息 ───
-    _append_run_log(settings, app_name, run_id, invocation_id, "success", duration_ms)
-    logger.info(f"invoke_app success: {app_name}/{invocation_id} run={run_id} {duration_ms}ms")
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    app_biz.bump_use_count(settings, app_name)
+    logger.info(f"invoke_app(script) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
     return {
         "run_id": run_id,
         "status": "success",

@@ -18,9 +18,17 @@ import {
   Workflow,
 } from "lucide-react";
 
+import { AppDetailModal } from "@/components/sidebar/AppDetailModal";
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
 import { api } from "@/lib/api";
 import type { AppStatus, AppSummary, SkillSummary, WeaverSource } from "@/lib/types";
+
+interface Props {
+  // 当前活跃 session id — 给 AppDetailModal 内 openFile 用. sidebar 自身跨 session,
+  // 但点开 detail 看源码时需要 sid 走 fs 工具. 没活跃 session 时点击 modal 仍能开,
+  // 但 openFile 会 toast 提示先开 thread.
+  currentSid?: string;
+}
 
 const sourceLabel: Record<WeaverSource, string> = {
   builtin: "builtin",
@@ -41,14 +49,16 @@ const statusBadge: Record<AppStatus, { label: string; cls: string }> = {
   failed: { label: "failed", cls: "text-[#7a2d2d] bg-[#f0c8c8]" },
 };
 
-export function WeaverGroup() {
+export function WeaverGroup({ currentSid }: Props) {
   const { data, isLoading } = useSWR("weaver/products", () =>
     api.listWeaverProducts(),
   );
   const skills = data?.skills ?? [];
   const apps = data?.apps ?? [];
+  const [openAppName, setOpenAppName] = useState<string | null>(null);
 
   return (
+    <>
     <SidebarGroup label="Weaver" defaultExpanded={true}>
       <div className="space-y-0">
         <SubSection label="Skills" count={skills.length}>
@@ -75,7 +85,11 @@ export function WeaverGroup() {
           ) : (
             <ul className="space-y-0.5">
               {apps.map((a) => (
-                <AppRow key={a.name} app={a} />
+                <AppRow
+                  key={a.name}
+                  app={a}
+                  onOpen={() => setOpenAppName(a.name)}
+                />
               ))}
             </ul>
           )}
@@ -94,6 +108,14 @@ export function WeaverGroup() {
         </SubSection>
       </div>
     </SidebarGroup>
+    {openAppName && (
+      <AppDetailModal
+        appName={openAppName}
+        sessionId={currentSid ?? ""}
+        onClose={() => setOpenAppName(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -166,7 +188,13 @@ function SkillRow({ skill }: { skill: SkillSummary }) {
   );
 }
 
-function AppRow({ app }: { app: AppSummary }) {
+function AppRow({
+  app,
+  onOpen,
+}: {
+  app: AppSummary;
+  onOpen: () => void;
+}) {
   // component_counts 折成"3 scripts · 1 window" 这种 chip 文本, 0 的省略
   const compParts = Object.entries(app.component_counts)
     .filter(([, n]) => n > 0)
@@ -177,6 +205,7 @@ function AppRow({ app }: { app: AppSummary }) {
     `${app.invocation_count} invocation${app.invocation_count === 1 ? "" : "s"}`,
     compParts.length > 0 ? compParts.join(", ") : "no runtime components",
     app.has_app_definition ? "" : "manifest only (no app.json)",
+    "Click to open detail",
   ].filter(Boolean).join(" · ");
 
   // hover 时右侧显示 "N inv" chip — 跟 SkillRow 的 source chip 同款.
@@ -184,32 +213,36 @@ function AppRow({ app }: { app: AppSummary }) {
   const badge = statusBadge[app.status] ?? statusBadge.draft;
 
   return (
-    <li
-      title={tooltip}
-      className="group flex items-center gap-2 rounded-[6px] px-3 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
-    >
-      <AppWindow
-        size={11}
-        className="shrink-0 text-[color:var(--color-thread-file)] opacity-60"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12.5px] leading-snug text-[color:var(--color-paper)]">
-          {app.name}
-        </div>
-        <div className="truncate text-[10.5px] leading-snug text-[color:var(--color-ink-dim)]">
-          {app.description}
-        </div>
-      </div>
-      {/* status badge 始终显示, 状态机一目了然 */}
-      <span
-        className={`tabular shrink-0 rounded-[3px] px-1 py-px font-mono text-[9px] uppercase tracking-wider ${badge.cls}`}
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        title={tooltip}
+        className="group flex w-full items-center gap-2 rounded-[6px] px-3 py-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
       >
-        {badge.label}
-      </span>
-      {/* invocations chip — hover 显示 */}
-      <span className="tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[color:var(--color-thread-file)] opacity-0 transition-opacity group-hover:opacity-100">
-        {invLabel}
-      </span>
+        <AppWindow
+          size={11}
+          className="shrink-0 text-[color:var(--color-thread-file)] opacity-60"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] leading-snug text-[color:var(--color-paper)]">
+            {app.name}
+          </div>
+          <div className="truncate text-[10.5px] leading-snug text-[color:var(--color-ink-dim)]">
+            {app.description}
+          </div>
+        </div>
+        {/* status badge 始终显示, 状态机一目了然 */}
+        <span
+          className={`tabular shrink-0 rounded-[3px] px-1 py-px font-mono text-[9px] uppercase tracking-wider ${badge.cls}`}
+        >
+          {badge.label}
+        </span>
+        {/* invocations chip — hover 显示 */}
+        <span className="tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[color:var(--color-thread-file)] opacity-0 transition-opacity group-hover:opacity-100">
+          {invLabel}
+        </span>
+      </button>
     </li>
   );
 }

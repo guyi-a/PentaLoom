@@ -326,6 +326,64 @@ export interface WeaverProductsResponse {
   apps: AppSummary[];
 }
 
+// /weaver/apps/{name}/detail 返回. AppDetailPanel 用. 跟后端 read_app_detail 对齐.
+export interface AppInvocationSummary {
+  id: string;
+  description: string;
+  target: { component: string; name: string; handler?: string | null } | null;
+  input_keys: string[];
+  output_keys: string[];
+  timeout_ms: number;
+  example_count: number;
+}
+
+export interface AppManifestSummary {
+  name: string;
+  type: string;
+  version: string;
+  invocations: AppInvocationSummary[];
+  permissions: { network_hosts: string[]; file_paths: string[] };
+  files: string[];  // relative paths (用 AppDetailResponse.files 拿 absolute)
+  components?: Record<string, string[]>;  // {scripts: [...], windows: [...], ...}
+}
+
+export interface AppFileEntry {
+  rel_path: string;
+  absolute_path: string;
+  ext: string;
+  size: number;
+}
+
+export interface AppMeta {
+  name: string;
+  status: AppStatus;
+  description: string;
+  source: WeaverSource;
+  created_at: string;
+  updated_at: string;
+  last_finalized_at: string | null;
+  last_finalize_error: string | null;
+  last_used_at: string | null;  // invoke_app 成功后递增 use_count 时一并写
+  use_count: number;
+  is_trusted: boolean;
+}
+
+export interface AppRunLog {
+  run_id: string;
+  invocation_id: string;
+  status: string;
+  duration_ms: number;
+  started_at: string;
+  error?: string;
+}
+
+export interface AppDetailResponse {
+  summary: AppManifestSummary;
+  files: AppFileEntry[];
+  meta: AppMeta | null;
+  recent_runs: AppRunLog[];
+}
+
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.
 export interface PatchMountsBody {
   dirs?: string[];

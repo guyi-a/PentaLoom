@@ -355,6 +355,21 @@ def _save_meta(settings: Settings, meta: InvocableAppMeta) -> None:
     paths.app_meta(settings, meta.name).write_text(meta.model_dump_json(indent=2))
 
 
+def bump_use_count(settings: Settings, app_name: str) -> None:
+    """invoke_app 成功后调 — 递增 use_count + 更新 last_used_at.
+
+    不动 updated_at (语义是"内容修改", invoke 不算内容修改). 不动 status.
+    app 不存在时静默返 (不抛, 防 invoke 已成功反而被 meta 写盘问题搅黄).
+    """
+    meta = read_meta(settings, app_name)
+    if meta is None:
+        return
+    meta.use_count += 1
+    meta.last_used_at = datetime.utcnow()
+    # 直接写, 不走 _save_meta 防误更 updated_at
+    paths.app_meta(settings, app_name).write_text(meta.model_dump_json(indent=2))
+
+
 def _demote_to_dirty_if_ready(meta: InvocableAppMeta) -> None:
     """ready app 被改了 → 打回 dirty, 强制重 finalize (旧 schema + 新代码不一致风险, GPT)."""
     if meta.status == "ready":
