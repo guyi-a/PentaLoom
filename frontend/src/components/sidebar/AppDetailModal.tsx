@@ -11,10 +11,10 @@
 // 打回 dirty (状态机只跟踪 meta-tool 调用). 这是 Phase B.5 固有限制, 改完用户得
 // 自己跟 agent 说 "重 finalize" 才能让 invoke 跑新代码.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
-import { AppWindow, Clock, ExternalLink, Loader2, X } from "lucide-react";
+import { AppWindow, ChevronDown, ChevronRight, Clock, ExternalLink, Loader2, RefreshCw, Server, Square, Eye, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
@@ -23,7 +23,10 @@ import type {
   AppFileEntry,
   AppInvocationSummary,
   AppRunLog,
+  AppRunningService,
   AppStatus,
+  AppWatchEntry,
+  AppWatchFilesResponse,
 } from "@/lib/types";
 import { iconForExt } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
@@ -78,7 +81,7 @@ function fmtTime(iso: string): string {
 }
 
 export function AppDetailModal({ appName, sessionId, onClose }: Props) {
-  const { data, error, isLoading } = useSWR<AppDetailResponse>(
+  const { data, error, isLoading, mutate, isValidating } = useSWR<AppDetailResponse>(
     appName ? `app-detail:${appName}` : null,
     () => api.getAppDetail(appName),
     { revalidateOnFocus: false },
@@ -186,6 +189,15 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
           </button>
           <button
             type="button"
+            onClick={() => mutate()}
+            disabled={isValidating}
+            title="Refresh"
+            className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <RefreshCw size={13} className={isValidating ? "animate-spin" : ""} />
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
             title="Close (Esc)"
@@ -252,6 +264,41 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                   </p>
                 )}
               </Section>
+
+              {/* D-4: Services (running snapshot) */}
+              {(data.running_services?.length ?? 0) > 0 && (
+                <Section title="Services" count={data.running_services?.length}>
+                  <ul className="space-y-0.5">
+                    {(data.running_services ?? []).map((s) => (
+                      <ServiceRow
+                        key={s.name}
+                        appName={appName}
+                        svc={s}
+                        onStopped={() => mutate()}
+                      />
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 px-1 text-[10.5px] italic text-[color:var(--color-ink)]">
+                    Lazy spawn — agent / window 调 invoke_app 时自动起. ✕ 停掉释放进程, 下次 invoke 自动重起.
+                  </p>
+                </Section>
+              )}
+
+              {/* E (watch): components.watches[] lazy-fetch 每个 watch 的文件清单 */}
+              {(data.summary.components?.watches ?? []).length > 0 && (
+                <Section title="Watches" count={data.summary.components?.watches?.length}>
+                  <ul className="space-y-1">
+                    {(data.summary.components?.watches ?? []).map((wname) => (
+                      <WatchRow
+                        key={wname}
+                        appName={appName}
+                        watchName={wname}
+                        sessionId={sessionId}
+                      />
+                    ))}
+                  </ul>
+                </Section>
+              )}
 
               {/* Recent runs */}
               <Section title="Recent runs" count={data.recent_runs.length}>
@@ -422,5 +469,249 @@ function MetaField({ label, value }: { label: string; value: string }) {
       <dt className="font-mono text-[color:var(--color-ink-dim)]">{label}</dt>
       <dd className="font-mono text-[color:var(--color-paper-dim)]">{value}</dd>
     </>
+  );
+}
+
+// 时长格式: 给 service uptime 用. unix ts → 人可读相对时间.
+function fmtUptime(startedAtSec: number): string {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - startedAtSec));
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return m === 0 ? `${h}h` : `${h}h${m}m`;
+  }
+  return `${Math.floor(secs / 86400)}d`;
+}
+
+function ServiceRow({
+  appName,
+  svc,
+  onStopped,
+}: {
+  appName: string;
+  svc: AppRunningService;
+  onStopped: () => void;
+}) {
+  const isUp = svc.status === "running";
+  const [stopping, setStopping] = useState(false);
+
+  async function handleStop() {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      const r = await api.stopAppService(appName, svc.name);
+      if (r.stopped) {
+        toast.success(`stopped ${svc.name} (pid ${svc.pid})`);
+      } else {
+        // 后端在 registry 没找到 — 多半被别的 invocation 链清掉了, UI 这边补刷新就行
+        toast.info(`${svc.name} 已经不在 registry — 刷新状态`);
+      }
+      onStopped();
+    } catch (e) {
+      toast.error(`Stop failed: ${String(e)}`);
+    } finally {
+      setStopping(false);
+    }
+  }
+
+  return (
+    <li
+      title={`log: ${svc.log_path}`}
+      className="flex items-center gap-2 rounded-[4px] px-1.5 py-1 hover:bg-[color:var(--color-bg-raised)]"
+    >
+      <Server
+        size={11}
+        className={cn(
+          "shrink-0",
+          isUp ? "text-[#2d5a3d]" : "text-[color:var(--color-ink-dim)]",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
+        {svc.name}
+      </span>
+      <span
+        className={cn(
+          "tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider",
+          isUp ? "text-[#2d5a3d]" : "text-[#7a2d2d]",
+        )}
+      >
+        {svc.status}
+      </span>
+      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+        :{svc.port}
+      </span>
+      {svc.pid !== null && (
+        <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+          pid {svc.pid}
+        </span>
+      )}
+      {isUp && (
+        <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+          {fmtUptime(svc.started_at)}
+        </span>
+      )}
+      {svc.restart_count > 0 && (
+        <span
+          title="restart count (on_failure)"
+          className="tabular shrink-0 font-mono text-[10px] text-[#6b5400]"
+        >
+          ↻{svc.restart_count}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={handleStop}
+        disabled={stopping || !isUp}
+        title={isUp ? "Stop service (释放进程, 下次 invoke 自动重起)" : "已停止"}
+        className="shrink-0 rounded-[3px] p-0.5 text-[#b06060] transition-colors hover:bg-[#f0c8c8] hover:text-[#7a2d2d] disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        {stopping ? (
+          <Loader2 size={11} className="animate-spin" />
+        ) : (
+          <Square size={10} className="fill-current" />
+        )}
+      </button>
+    </li>
+  );
+}
+
+// E3: WatchRow — 默认收起, 展开时 lazy fetch /watches/{name}/files. SWR key 含
+// watchName, 同 modal 多个 watch 互不踩. 列表内点击文件用系统默认 app 打开.
+function WatchRow({
+  appName,
+  watchName,
+  sessionId,
+}: {
+  appName: string;
+  watchName: string;
+  sessionId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data, error, isLoading, mutate, isValidating } =
+    useSWR<AppWatchFilesResponse>(
+      open ? `app-watch:${appName}:${watchName}` : null,
+      () => api.listWatchFiles(appName, watchName),
+      { revalidateOnFocus: false },
+    );
+
+  async function openWatchFile(entry: AppWatchEntry) {
+    if (!sessionId) {
+      toast.error("Open file requires an active session");
+      return;
+    }
+    try {
+      await api.openFile({ sessionId, path: entry.absolute_path });
+    } catch (e) {
+      toast.error(`Open failed: ${String(e)}`);
+    }
+  }
+
+  return (
+    <li className="rounded-[4px] border border-[color:var(--color-line-soft)] bg-[color:var(--color-bg-soft)]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-2 py-1 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+      >
+        {open ? (
+          <ChevronDown size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        ) : (
+          <ChevronRight size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        )}
+        <Eye size={11} className="shrink-0 text-[color:var(--color-thread-file)]" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
+          {watchName}
+        </span>
+        {data && (
+          <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+            {data.entries.length}
+            {data.truncated ? "+" : ""}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-[color:var(--color-line-soft)] px-2 py-1.5">
+          <div className="mb-1 flex items-center gap-2">
+            <span className="tabular flex-1 truncate font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+              {data?.path ?? "—"}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                mutate();
+              }}
+              disabled={isValidating}
+              title="Refresh files"
+              className="rounded-[3px] p-0.5 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:opacity-40"
+            >
+              <RefreshCw size={10} className={isValidating ? "animate-spin" : ""} />
+            </button>
+          </div>
+          {isLoading && (
+            <div className="flex items-center gap-1.5 px-1 py-1 text-[color:var(--color-ink)]">
+              <Loader2 size={11} className="animate-spin" />
+              <span className="text-[11px] italic">Loading…</span>
+            </div>
+          )}
+          {error && (
+            <div className="rounded-[3px] bg-[#f8e8e8] px-1.5 py-1 font-mono text-[10.5px] text-[#7a2d2d]">
+              {String(error)}
+            </div>
+          )}
+          {data && data.note && (
+            <Placeholder>{data.note}</Placeholder>
+          )}
+          {data && !data.note && data.entries.length === 0 && (
+            <Placeholder>Empty.</Placeholder>
+          )}
+          {data && data.entries.length > 0 && (
+            <ul className="space-y-0.5">
+              {data.entries.map((e) => (
+                <WatchEntryRow key={e.rel_path} entry={e} onOpen={() => openWatchFile(e)} />
+              ))}
+            </ul>
+          )}
+          {data?.truncated && (
+            <p className="mt-1 px-1 text-[10px] italic text-[color:var(--color-ink-dim)]">
+              truncated at 500 entries — 想看全去 weaver/apps/{appName}/{data.path}
+            </p>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function WatchEntryRow({
+  entry,
+  onOpen,
+}: {
+  entry: AppWatchEntry;
+  onOpen: () => void;
+}) {
+  const ext = entry.is_dir ? "" : entry.rel_path.split(".").pop() || "";
+  const Icon = entry.is_dir ? AppWindow : iconForExt(ext);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => !entry.is_dir && onOpen()}
+        disabled={entry.is_dir}
+        className="group flex w-full items-center gap-2 rounded-[3px] px-1 py-0.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)] disabled:cursor-default disabled:hover:bg-transparent"
+      >
+        <Icon size={11} className="shrink-0 text-[color:var(--color-thread-file)]" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[color:var(--color-paper-dim)] group-hover:text-[color:var(--color-paper)]">
+          {entry.rel_path}
+        </span>
+        {!entry.is_dir && (
+          <span className="tabular shrink-0 font-mono text-[9.5px] text-[color:var(--color-ink-dim)]">
+            {fmtBytes(entry.size)}
+          </span>
+        )}
+      </button>
+    </li>
   );
 }

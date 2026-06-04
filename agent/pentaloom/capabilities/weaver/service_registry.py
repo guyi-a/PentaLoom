@@ -173,19 +173,31 @@ class ServiceRegistry:
         return n
 
     def list_for_app(self, app_name: str) -> list[dict]:
-        """inspect_weaver(kind=app) 用 — 不持锁, 只读 snapshot."""
+        """inspect_weaver(kind=app) 用 — 不持锁, 只读 snapshot.
+
+        字段对齐 sidebar D-4 显示:
+          - name / port / pid: 基本信息
+          - status: 'running' | 'dead' (alive bool 对前端展示不直观, 直接字符串)
+          - started_at: unix ts (前端 fmt)
+          - restart_count: on_failure 重启过几次
+          - log_path: tail_weaver_logs(mode='service:<name>') 拿同一份, 也透给前端
+            做 hover tooltip
+        """
         services = self._services.get(app_name) or {}
-        return [
-            {
+        out: list[dict] = []
+        for rs in services.values():
+            proc = rs.process
+            pid = proc.pid if proc is not None else None
+            out.append({
                 "name": rs.service_name,
+                "status": "running" if rs.is_alive else "dead",
                 "port": rs.port,
-                "alive": rs.is_alive,
+                "pid": pid,
                 "started_at": rs.started_at,
                 "restart_count": rs.restart_count,
-                "log_file": str(rs.log_file_path),
-            }
-            for rs in services.values()
-        ]
+                "log_path": str(rs.log_file_path),
+            })
+        return out
 
     # ─── 内部 ────────────────────────────────────────────────────
 
