@@ -191,11 +191,16 @@ def read_app_detail(name: str) -> dict:
 
     recent_runs = app_runtime.tail_run_logs(settings, name, limit=20)
 
+    # D-4: service runtime snapshot (静态读, 不 WS 推送 — modal 刷新按钮拉新)
+    from pentaloom.capabilities.weaver.service_registry import service_registry
+    running_services = service_registry().list_for_app(name)
+
     return {
         "summary": summary,
         "files": files_detail,
         "meta": meta_dict,
         "recent_runs": recent_runs,
+        "running_services": running_services,
     }
 
 
@@ -274,6 +279,133 @@ async def app_window_ws(websocket: WebSocket, name: str) -> None:
     finally:
         reg.remove(name, websocket)
         reg.drop_pending_for_ws(websocket)
+
+
+@router.get("/apps/{name}/watches/{watch_name}/files", response_model=dict)
+def list_app_watch_files(name: str, watch_name: str) -> dict:
+    """Phase E (watch): 列出 watch component 暴露的目录里的文件清单. 给 sidebar
+    AppDetailModal 的 Watches section lazy fetch 用.
+
+    安全:
+      - watch.path 必须相对, 不能 ..
+      - 只允许两类前缀: 'files/' 或 'runs/' (script 产物常在 runs/<run_id>/, 服务/window
+        资产在 files/. 别的子目录 manifest/app.json/meta.json/logs/ 都拒)
+      - resolve 后 is_relative_to(app_dir)
+      - 单次最多返 500 个 entry (防超大目录卡 UI)
+      - 返 rel_path + absolute_path + size + mtime + is_dir. absolute_path 给前端
+        WatchEntryRow 的 openFile 用 (跟 AppFileEntry 一致的契约), 后端已校 resolve
+        在 app_dir 内, 给前端不算泄露多余信息
+    """
+    settings = get_settings()
+    entry = index.find_entry(settings, "app", name)
+    if entry is None:
+        raise HTTPException(404, f"app not found: {name}")
+
+    app_def = app_biz.read_app_definition(settings, name)
+    if app_def is None:
+        raise HTTPException(409, f"app {name!r} 缺 app.json")
+    watch = next((w for w in app_def.components.watches if w.name == watch_name), None)
+    if watch is None:
+        raise HTTPException(
+            404,
+            f"watch {watch_name!r} 不在 app.json (可用: "
+            f"{[w.name for w in app_def.components.watches]})"
+        )
+
+    raw_path = (watch.path or "").strip()
+    if not raw_path:
+        raise HTTPException(400, f"watch {watch_name!r} path 为空")
+    if raw_path.startswith("/") or ".." in raw_path.split("/"):
+        raise HTTPException(400, f"watch.path 不允许跳出 app 目录: {raw_path!r}")
+    head = raw_path.split("/", 1)[0]
+    if head not in ("files", "runs"):
+        raise HTTPException(
+            400,
+            f"watch.path 必须以 'files/' 或 'runs/' 开头, 收到 {raw_path!r}"
+        )
+
+    app_root = paths.app_dir(settings, name)
+    target_dir = (app_root / raw_path).resolve()
+    try:
+        target_dir.relative_to(app_root.resolve())
+    except ValueError:
+        raise HTTPException(400, f"watch.path 越出 app 目录") from None
+
+    if not target_dir.exists():
+        return {
+            "name": name,
+            "watch": watch_name,
+            "path": raw_path,
+            "entries": [],
+            "truncated": False,
+            "note": f"目录还不存在 ({raw_path}) — script/service 还没产文件",
+        }
+    if not target_dir.is_dir():
+        raise HTTPException(400, f"watch.path 不是目录: {raw_path}")
+
+    LIMIT = 500
+    entries: list[dict] = []
+    truncated = False
+    for p in sorted(target_dir.rglob("*")):
+        if not p.exists():
+            continue
+        rel = p.relative_to(target_dir).as_posix()
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        entries.append({
+            "rel_path": rel,
+            "absolute_path": str(p),
+            "size": stat.st_size if p.is_file() else 0,
+            "mtime": stat.st_mtime,
+            "is_dir": p.is_dir(),
+        })
+        if len(entries) >= LIMIT:
+            truncated = True
+            break
+
+    return {
+        "name": name,
+        "watch": watch_name,
+        "path": raw_path,
+        "entries": entries,
+        "truncated": truncated,
+    }
+
+
+@router.post("/apps/{name}/services/{service_name}/stop", status_code=200)
+async def stop_app_service(name: str, service_name: str) -> dict:
+    """D-4 follow-up: 用户在 modal 里手动停一个 running service. 释放进程 +
+    端口; 下次 invoke_app 自动 lazy spawn 重起 (port/pid 都会变).
+
+    校 app 存在 + service 在 manifest 里, 实际进程不在 registry (没起过 / 已死)
+    返 stopped=False — 前端把这条 row 从 UI 抹掉就行, 不当错误.
+
+    不动 ready/draft 状态: stop 跟 finalize 状态正交, 即使 app dirty 也能停
+    (因为停的是已经在跑的旧版本进程, 跟"能不能 invoke 新版"无关).
+    """
+    settings = get_settings()
+    entry = index.find_entry(settings, "app", name)
+    if entry is None:
+        raise HTTPException(404, f"app not found: {name}")
+
+    app_def = app_biz.read_app_definition(settings, name)
+    if app_def is None:
+        raise HTTPException(409, f"app {name!r} 缺 app.json")
+    svc = next(
+        (s for s in app_def.components.services if s.name == service_name), None
+    )
+    if svc is None:
+        raise HTTPException(
+            404,
+            f"service {service_name!r} 不在 app.json (可用: "
+            f"{[s.name for s in app_def.components.services]})"
+        )
+
+    from pentaloom.capabilities.weaver.service_registry import service_registry
+    stopped = await service_registry().stop_service(name, service_name)
+    return {"name": name, "service": service_name, "stopped": stopped}
 
 
 @router.get("/apps/{name}/window", response_class=HTMLResponse)

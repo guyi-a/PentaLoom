@@ -2,6 +2,7 @@
 
 import type {
   AppDetailResponse,
+  AppWatchFilesResponse,
   BrowseResponse,
   Frame,
   HistoryMessage,
@@ -74,9 +75,22 @@ export const api = {
   // weaver 产物列表 (内置 + 用户织的). M14 只 skills 有数据.
   listWeaverProducts: () => http<WeaverProductsResponse>("/weaver/products"),
   // 单个 app 详情 — sidebar AppDetailPanel 用. 一次拉全: manifest summary +
-  // files (含 absolute_path 给 openFile 用) + meta + recent runs.
+  // files (含 absolute_path 给 openFile 用) + meta + recent runs + running services.
   getAppDetail: (name: string) =>
     http<AppDetailResponse>(`/weaver/apps/${encodeURIComponent(name)}/detail`),
+  // 单个 watch component 暴露目录的文件清单 — Phase E lazy fetch (用户在 modal 展开
+  // 某个 watch 才拉, 不在 getAppDetail 里 inline 拉避免大目录拖慢)
+  listWatchFiles: (appName: string, watchName: string) =>
+    http<AppWatchFilesResponse>(
+      `/weaver/apps/${encodeURIComponent(appName)}/watches/${encodeURIComponent(watchName)}/files`,
+    ),
+  // D-4 follow-up: 手动停一个 running service. 下次 invoke_app 自动重 spawn,
+  // 所以不会"停了再也启不起来" — stop 只是释放进程 + 端口.
+  stopAppService: (appName: string, serviceName: string) =>
+    http<{ name: string; service: string; stopped: boolean }>(
+      `/weaver/apps/${encodeURIComponent(appName)}/services/${encodeURIComponent(serviceName)}/stop`,
+      { method: "POST" },
+    ),
   // 中断当前 turn — 两步杀: SDK interrupt + 本地 stream task cancel.
   // Idempotent, 重复调返 204; 跑完已经无 buffer 也返 204 不报错.
   stopChat: (sid: string) =>

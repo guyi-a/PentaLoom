@@ -377,11 +377,40 @@ export interface AppRunLog {
   error?: string;
 }
 
+// D-4: Phase D service runtime snapshot — inspect_weaver / detail endpoint 都返这个
+export interface AppRunningService {
+  name: string;
+  status: "running" | "dead";
+  port: number;
+  pid: number | null;
+  started_at: number;  // unix ts
+  restart_count: number;
+  log_path: string;
+}
+
+// E (watch): 单个 watch component 暴露的文件清单 — lazy fetch
+export interface AppWatchEntry {
+  rel_path: string;
+  absolute_path: string;  // 给 openFile 用 (跟 AppFileEntry 同契约)
+  size: number;
+  mtime: number;  // unix ts
+  is_dir: boolean;
+}
+export interface AppWatchFilesResponse {
+  name: string;
+  watch: string;
+  path: string;
+  entries: AppWatchEntry[];
+  truncated: boolean;
+  note?: string;
+}
+
 export interface AppDetailResponse {
   summary: AppManifestSummary;
   files: AppFileEntry[];
   meta: AppMeta | null;
   recent_runs: AppRunLog[];
+  running_services?: AppRunningService[];  // D-4: 后端可能没返这字段, 前端默认空数组
 }
 
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.

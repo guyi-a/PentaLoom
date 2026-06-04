@@ -104,7 +104,7 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "description": entry.description,
             "summary": summary,
             "meta": meta.model_dump(mode="json") if meta else None,
-            "running_services": running_services,  # [{name, port, alive, started_at, restart_count, log_file}]
+            "running_services": running_services,  # [{name, status, port, pid, started_at, restart_count, log_path}]
         }
     # subagent / workflow — 在后续里程碑实装
     raise index.WeaverError(
