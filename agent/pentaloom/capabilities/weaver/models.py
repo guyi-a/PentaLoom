@@ -97,19 +97,31 @@ class AppWindowSpec(BaseModel):
 
 
 class AppScheduleSpec(BaseModel):
-    """Scheduled task component. Public concept is schedule, not cron."""
+    """Scheduled trigger — cron 触发 invocation. (M16 Phase E)
+
+    设计:
+      - invocation_id 引用 manifest.invocations[].id, 复用 _invoke_script/window/service
+        runtime, 不另起 spawn 路径. finalize 校 invocation_id 存在.
+      - schedule 走标准 5-field cron (分 时 日 月 周), 本地时区. croniter 校合法性.
+      - args 是固定参数 (跟 invocation input_schema 对齐). watch 触发会在此基础上
+        merge events 上下文, schedule 没有触发上下文, 纯固定参数.
+
+    并发: ScheduleTrigger 内部 in-flight bool, overlap 时 skip + 写 runs.jsonl skipped.
+    最短粒度 1 分钟 (cron 限制). sub-minute 留远期 (`interval: "10s"` 字段).
+    """
 
     name: str
-    command: list[str]
     schedule: str
-    workdir: str | None = None
-    python_deps: list[str] | None = None
+    invocation_id: str
+    args: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("command")
+    @field_validator("schedule")
     @classmethod
-    def _command_non_empty(cls, v: list[str]) -> list[str]:
-        if not v or not any(str(x).strip() for x in v):
-            raise ValueError("command 不能为空 (至少一个非空 argv)")
+    def _cron_valid(cls, v: str) -> str:
+        from croniter import croniter
+        v = v.strip()
+        if not croniter.is_valid(v):
+            raise ValueError(f"cron 表达式不合法 (5-field): {v!r}")
         return v
 
 
@@ -140,11 +152,47 @@ class AppScriptSpec(BaseModel):
         return v
 
 
+WatchEvent = Literal["modify", "create", "delete", "move"]
+
+
 class AppWatchSpec(BaseModel):
-    """Directory exposed in the app UI for browsing outputs."""
+    """Watched directory — modal browse + optional invocation trigger. (M16 Phase E)
+
+    path 必保留 (PR #17 modal Watches section lazy fetch 在用). 新增字段都可选,
+    向后兼容: 老 app.json 只有 {name, path} → invocation_id=None → 仅浏览不触发,
+    behavior 跟 PR #17 完全一样.
+
+    设计:
+      - invocation_id=None: 仅 UI 浏览模式 (PR #17 现状), 不起 fs watcher
+      - invocation_id=str: 文件事件触发 invocation, watcher 注册, debounce 合并 burst
+      - events 默认 modify+create — 一般场景 (产物文件刷新). 不监 access (噪音大)
+      - debounce_ms 300ms 默认: vscode / nodemon 同款值, 一次保存的 burst 合并成 1 次触发
+      - 触发 args = spec.args ∪ {"events": [{type, path}, ...]} (truncated cap 100)
+      - 默认非递归 (recursive=False), 大目录 1000+ 文件递归会拖 Observer
+
+    并发: WatchTrigger 内部 in-flight bool, 期间新事件累计但不触发 (写 skipped log).
+    """
 
     name: str
     path: str
+    events: list[WatchEvent] = Field(default_factory=lambda: ["modify", "create"])
+    invocation_id: str | None = None
+    debounce_ms: int = 300
+    args: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("events")
+    @classmethod
+    def _events_non_empty(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("events 不能为空 (至少一个: modify/create/delete/move)")
+        return v
+
+    @field_validator("debounce_ms")
+    @classmethod
+    def _debounce_sane(cls, v: int) -> int:
+        if v < 0 or v > 60_000:
+            raise ValueError(f"debounce_ms 应在 [0, 60000] (毫秒), 收到 {v}")
+        return v
 
 
 class AppComponents(BaseModel):

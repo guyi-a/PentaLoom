@@ -121,10 +121,16 @@ def _append_run_log(
     status: str,
     duration_ms: int,
     error: str | None = None,
+    trigger: str = "user",
 ) -> None:
     """invocation 历史落到 logs/runs.jsonl — 单文件 append-only.
 
-    不引 DB. tail_weaver_logs(kind='app') 反过来读这文件.
+    status: success / failed / skipped (M16 Phase E 加 skipped — schedule overlap /
+    watch in-flight / status race).
+    trigger: user (default, MCP tool / window WS 调用) / schedule / watch.
+
+    不引 DB. tail_weaver_logs(kind='app') 反过来读这文件; 旧 entry 缺 trigger 字段
+    读取时默认 user 兼容.
     """
     log_file = paths.app_logs_dir(settings, app_name) / "runs.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +140,7 @@ def _append_run_log(
         "status": status,
         "duration_ms": duration_ms,
         "started_at": datetime.utcnow().isoformat() + "Z",
+        "trigger": trigger,
     }
     if error:
         entry["error"] = error[:500]  # 截 500 字, 防一坨 traceback 撑爆文件
@@ -147,8 +154,12 @@ async def invoke_app(
     app_name: str,
     invocation_id: str,
     args: dict[str, Any] | None = None,
+    trigger: str = "user",
 ) -> dict[str, Any]:
     """Phase B 入口 — 调一个 invocable app 的 script invocation.
+
+    trigger: user (MCP tool / window WS, default) / schedule (cron 触发) /
+    watch (fs event 触发). 透传到 _invoke_*, runs.jsonl 落地以区分来源.
 
     返 {run_id, status, duration_ms, output}. 失败抛 InvokeError (附 run_id 在 message 里).
     """
@@ -192,15 +203,15 @@ async def invoke_app(
     target_kind = inv.target.component
     if target_kind == "script":
         return await _invoke_script(
-            settings, app_name, app_def, inv, args, run_id, started_at_ms,
+            settings, app_name, app_def, inv, args, run_id, started_at_ms, trigger,
         )
     if target_kind == "window":
         return await _invoke_window(
-            settings, app_name, inv, args, run_id, started_at_ms,
+            settings, app_name, inv, args, run_id, started_at_ms, trigger,
         )
     if target_kind == "service":
         return await _invoke_service(
-            settings, app_name, inv, args, run_id, started_at_ms,
+            settings, app_name, inv, args, run_id, started_at_ms, trigger,
         )
     raise InvokeError(
         f"target.component 不合法 (script | window | service): 收到 {target_kind!r}"
@@ -214,6 +225,7 @@ async def _invoke_window(
     args: dict[str, Any],
     run_id: str,
     started_at_ms: int,
+    trigger: str = "user",
 ) -> dict[str, Any]:
     """target.component='window' 路径 — 走 WebSocket 推到 window registered handler.
 
@@ -260,17 +272,17 @@ async def _invoke_window(
 
     if msg.get("type") == "invoke_error":
         err = str(msg.get("error", "unknown window error"))
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})")
 
     output = msg.get("output") if isinstance(msg.get("output"), dict) else {}
     try:
         _validate_output(output, inv.output_schema)
     except InvokeError as e:
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e), trigger=trigger)
         raise InvokeError(f"{e} (run {run_id})") from e
 
-    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms, trigger=trigger)
     # window invocation 也算 use, 跟 script 同款递增
     app_biz.bump_use_count(settings, app_name)
     logger.info(f"invoke_app(window) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
@@ -289,6 +301,7 @@ async def _invoke_service(
     args: dict[str, Any],
     run_id: str,
     started_at_ms: int,
+    trigger: str = "user",
 ) -> dict[str, Any]:
     """target.component='service' 路径 — lazy spawn service + HTTP fetch.
 
@@ -332,19 +345,19 @@ async def _invoke_service(
     except httpx.TimeoutException as e:
         duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
         err = f"service 超时 ({timeout_s}s): {e}"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})") from e
     except httpx.HTTPError as e:
         duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
         err = f"service 连接失败: {e}"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})") from e
 
     duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
 
     if http_resp.status_code >= 400:
         err = f"service {method} {path} → HTTP {http_resp.status_code}: {http_resp.text[:300]}"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})")
 
     try:
@@ -353,16 +366,16 @@ async def _invoke_service(
             raise ValueError(f"top-level 不是 object, 是 {type(output).__name__}")
     except (ValueError, Exception) as e:
         err = f"service response 不是合法 JSON object: {http_resp.text[:200]}"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})") from e
 
     try:
         _validate_output(output, inv.output_schema)
     except InvokeError as e:
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e), trigger=trigger)
         raise InvokeError(f"{e} (run {run_id})") from e
 
-    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms, trigger=trigger)
     app_biz.bump_use_count(settings, app_name)
     logger.info(f"invoke_app(service) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
     return {
@@ -381,6 +394,7 @@ async def _invoke_script(
     args: dict[str, Any],
     run_id: str,
     started_at_ms: int,
+    trigger: str = "user",
 ) -> dict[str, Any]:
     """target.component='script' 路径 — uv venv subprocess + stdin/stdout JSON.
 
@@ -413,23 +427,23 @@ async def _invoke_script(
 
     if result.exit_code != 0:
         err = f"handler exit {result.exit_code}: {result.stderr[:400]}"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})")
 
     try:
         output = json.loads(result.stdout)
     except json.JSONDecodeError as e:
         err = f"handler 输出不是合法 JSON: {result.stdout[:200]} (stderr: {result.stderr[:200]})"
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err)
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
         raise InvokeError(f"{err} (run {run_id})") from e
 
     try:
         _validate_output(output, inv.output_schema)
     except InvokeError as e:
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e))
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, str(e), trigger=trigger)
         raise InvokeError(f"{e} (run {run_id})") from e
 
-    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms)
+    _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms, trigger=trigger)
     app_biz.bump_use_count(settings, app_name)
     logger.info(f"invoke_app(script) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
     return {

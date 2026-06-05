@@ -56,6 +56,15 @@ async def lifespan(app: FastAPI):
         logger.info("cursor_overlay skipped (not macOS)")
     app.state.cursor_overlay = overlay_client
 
+    # M16 Phase E: bootstrap weaver app triggers (schedule + watch).
+    # 必须在 yield 前装 — 否则 schedule 错过 cron 时间窗口 (server 9:00:01 启动,
+    # 9:00 那次 cron 已过期没人触发). 失败仅 warning, 不阻断 server 启动.
+    try:
+        from pentaloom.capabilities.weaver.triggers import trigger_registry
+        await trigger_registry().bootstrap(settings)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"weaver trigger bootstrap failed (server continues): {e}")
+
     logger.info(
         f"PentaLoom v{__version__} 启动 — host={settings.host} port={settings.port} "
         f"db={settings.db_path}"
@@ -74,6 +83,15 @@ async def lifespan(app: FastAPI):
             await cursor_overlay.shutdown_helper(overlay_client)
             cursor_overlay.set_active_client(None)
         await pool.shutdown()
+        # M16 Phase E: 先停所有 trigger (schedule + watch) — 防 fire 中的 invocation
+        # 撞上即将关的 service. 顺序: trigger → service.
+        try:
+            from pentaloom.capabilities.weaver.triggers import trigger_registry
+            tn = await trigger_registry().stop_all()
+            if tn > 0:
+                logger.info(f"weaver: stopped {tn} trigger(s) on shutdown")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"weaver trigger stop_all failed: {e}")
         # D-2: 停所有 weaver app service (防孤儿 process). 必须在 pool.shutdown 后 —
         # 万一某个 service 是 invoke_app 时 lazy 起的, 先 pool.shutdown 让 LLM session
         # 干净退, 再清 service.

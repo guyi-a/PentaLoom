@@ -93,6 +93,30 @@ def _resolve_within_files(
     return target
 
 
+def _schedule_trigger_action(action: str, settings: Settings, name: str) -> None:
+    """fire-and-forget 调度 TriggerRegistry 操作. (M16 Phase E)
+
+    跟现有 service_registry stop_for_app 同款 fire-and-forget 模式:
+    finalize_app / delete_app_soft 都是 sync API, 不能 await async trigger 方法.
+    没 event loop (pytest sync 调用) 静默跳过.
+
+    action: 'reload' (finalize 成功) / 'stop' (finalize 失败 + delete)
+    """
+    try:
+        import asyncio as _asyncio
+        from pentaloom.capabilities.weaver.triggers import trigger_registry
+        loop = _asyncio.get_event_loop()
+        if not loop.is_running():
+            return
+        reg = trigger_registry()
+        if action == "reload":
+            loop.create_task(reg.reload_app(settings, name))
+        elif action == "stop":
+            loop.create_task(reg.stop_for_app(name))
+    except RuntimeError:
+        pass
+
+
 # ─── manifest.json (InvocableAppManifest) ───────────────────────────────────
 
 def parse_manifest(text: str) -> InvocableAppManifest:
@@ -525,6 +549,8 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
         meta.status = "failed"
         meta.last_finalize_error = msg[:500]
         _save_meta(settings, meta)
+        # M16 Phase E: finalize 失败 → 清旧 trigger 防打着新坏版本
+        _schedule_trigger_action("stop", settings, meta.name)
         logger.warning(f"finalize FAILED: {meta.name} → {msg}")
         raise index.WeaverError(f"finalize 校验失败: {msg}")
 
@@ -534,6 +560,8 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
     meta.last_finalized_at = now
     meta.last_finalize_error = None
     _save_meta(settings, meta)
+    # M16 Phase E: finalize 成功 → 重载 trigger (含装新 schedule/watch)
+    _schedule_trigger_action("reload", settings, meta.name)
     logger.info(f"finalized app: {meta.name} → status=ready")
     return {
         "name": meta.name,
@@ -637,6 +665,9 @@ def delete_app_soft(settings: Settings, name: str) -> Path | None:
     except RuntimeError:
         # 没 event loop (e.g., pytest sync 调用), 跳过 — 没 service 在跑的可能
         pass
+
+    # M16 Phase E: 同款 fire-and-forget 调度 stop trigger (schedule + watch)
+    _schedule_trigger_action("stop", settings, name)
 
     src = paths.app_dir(settings, name)
     if not src.exists():

@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
-import { AppWindow, ChevronDown, ChevronRight, Clock, ExternalLink, Loader2, RefreshCw, Server, Square, Eye, X } from "lucide-react";
+import { AppWindow, CalendarClock, ChevronDown, ChevronRight, ExternalLink, Eye, Loader2, RefreshCw, Server, Square, User, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
@@ -24,9 +24,11 @@ import type {
   AppInvocationSummary,
   AppRunLog,
   AppRunningService,
+  AppScheduleTrigger,
   AppStatus,
   AppWatchEntry,
   AppWatchFilesResponse,
+  AppWatchTrigger,
 } from "@/lib/types";
 import { iconForExt } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
@@ -284,18 +286,39 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 </Section>
               )}
 
+              {/* Phase E: Schedules section — cron 触发 + 状态 snapshot */}
+              {(data.triggers?.schedules?.length ?? 0) > 0 && (
+                <Section title="Schedules" count={data.triggers?.schedules?.length}>
+                  <ul className="space-y-0.5">
+                    {(data.triggers?.schedules ?? []).map((s) => (
+                      <ScheduleRow key={s.name} sched={s} />
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 px-1 text-[10.5px] italic text-[color:var(--color-ink)]">
+                    Cron-driven invocation. Overlap (上次还在跑) 自动 skip — modal Recent runs 可见.
+                  </p>
+                </Section>
+              )}
+
               {/* E (watch): components.watches[] lazy-fetch 每个 watch 的文件清单 */}
               {(data.summary.components?.watches ?? []).length > 0 && (
                 <Section title="Watches" count={data.summary.components?.watches?.length}>
                   <ul className="space-y-1">
-                    {(data.summary.components?.watches ?? []).map((wname) => (
-                      <WatchRow
-                        key={wname}
-                        appName={appName}
-                        watchName={wname}
-                        sessionId={sessionId}
-                      />
-                    ))}
+                    {(data.summary.components?.watches ?? []).map((wname) => {
+                      // Phase E: 找这个 watch 对应的 trigger 状态 (有 invocation_id 才有)
+                      const trig = (data.triggers?.watches ?? []).find(
+                        (t) => t.name === wname,
+                      );
+                      return (
+                        <WatchRow
+                          key={wname}
+                          appName={appName}
+                          watchName={wname}
+                          sessionId={sessionId}
+                          trigger={trig}
+                        />
+                      );
+                    })}
                   </ul>
                 </Section>
               )}
@@ -438,20 +461,38 @@ function FileRow({
 }
 
 function RunRow({ run }: { run: AppRunLog }) {
-  const isOk = run.status === "success";
+  const trigger = run.trigger ?? "user";
+  // Phase E: 三色 status. skipped 灰 — overlap / status race 不是真失败.
+  const statusCls =
+    run.status === "success"
+      ? "text-[#2d5a3d]"
+      : run.status === "skipped"
+        ? "text-[color:var(--color-ink-dim)]"
+        : "text-[#7a2d2d]";
+  // trigger 来源 icon: user 默认/历史 entry, schedule 时钟, watch 眼睛
+  const TriggerIcon = trigger === "schedule" ? CalendarClock : trigger === "watch" ? Eye : User;
+  const triggerTitle =
+    trigger === "schedule"
+      ? "schedule trigger"
+      : trigger === "watch"
+        ? "watch trigger"
+        : "user / agent invoke";
   return (
     <li
-      title={run.error || run.run_id}
+      title={`${triggerTitle}\n${run.error || run.run_id}`}
       className="flex items-center gap-2 rounded-[4px] px-1.5 py-1 hover:bg-[color:var(--color-bg-raised)]"
     >
-      <Clock size={11} className="shrink-0 text-[color:var(--color-ink-dim)]" />
+      <TriggerIcon
+        size={11}
+        className="shrink-0 text-[color:var(--color-ink-dim)]"
+      />
       <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[color:var(--color-paper-dim)]">
         {run.invocation_id}
       </span>
       <span
         className={cn(
           "tabular shrink-0 font-mono text-[10px] uppercase tracking-wider",
-          isOk ? "text-[#2d5a3d]" : "text-[#7a2d2d]",
+          statusCls,
         )}
       >
         {run.status}
@@ -483,6 +524,72 @@ function fmtUptime(startedAtSec: number): string {
     return m === 0 ? `${h}h` : `${h}h${m}m`;
   }
   return `${Math.floor(secs / 86400)}d`;
+}
+
+// 相对时间格式: 给 ScheduleRow next_fire / last_fired 用. 正数 "in 5m", 负数 "5m ago".
+function fmtRelative(targetSec: number | null): string {
+  if (targetSec === null) return "—";
+  const diff = targetSec - Date.now() / 1000;
+  const abs = Math.abs(diff);
+  let s: string;
+  if (abs < 60) s = `${Math.floor(abs)}s`;
+  else if (abs < 3600) s = `${Math.floor(abs / 60)}m`;
+  else if (abs < 86400) s = `${Math.floor(abs / 3600)}h`;
+  else s = `${Math.floor(abs / 86400)}d`;
+  return diff > 0 ? `in ${s}` : `${s} ago`;
+}
+
+function ScheduleRow({ sched }: { sched: AppScheduleTrigger }) {
+  return (
+    <li
+      title={`cron: ${sched.schedule} → ${sched.invocation_id}`}
+      className="flex items-center gap-2 rounded-[4px] px-1.5 py-1 hover:bg-[color:var(--color-bg-raised)]"
+    >
+      <CalendarClock
+        size={11}
+        className={cn(
+          "shrink-0",
+          sched.in_flight ? "text-[#6b5400]" : "text-[color:var(--color-thread-file)]",
+        )}
+      />
+      <span className="min-w-0 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
+        {sched.name}
+      </span>
+      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+        {sched.schedule}
+      </span>
+      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+        → {sched.invocation_id}
+      </span>
+      <span className="flex-1" />
+      {sched.last_fired_at !== null && (
+        <span
+          title={`last fired ${new Date(sched.last_fired_at * 1000).toLocaleString()}`}
+          className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]"
+        >
+          last {fmtRelative(sched.last_fired_at)}
+        </span>
+      )}
+      <span
+        title={
+          sched.next_fire_at !== null
+            ? `next fire ${new Date(sched.next_fire_at * 1000).toLocaleString()}`
+            : "cron 计算失败 (异常)"
+        }
+        className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-paper-dim)]"
+      >
+        next {fmtRelative(sched.next_fire_at)}
+      </span>
+      {sched.in_flight && (
+        <span
+          title="invocation 正在跑"
+          className="tabular shrink-0 font-mono text-[10px] text-[#6b5400]"
+        >
+          ●
+        </span>
+      )}
+    </li>
+  );
 }
 
 function ServiceRow({
@@ -579,14 +686,17 @@ function ServiceRow({
 
 // E3: WatchRow — 默认收起, 展开时 lazy fetch /watches/{name}/files. SWR key 含
 // watchName, 同 modal 多个 watch 互不踩. 列表内点击文件用系统默认 app 打开.
+// Phase E: 头部按钮加 trigger 行 (events + invocation_id) 或 "browse only" 灰字.
 function WatchRow({
   appName,
   watchName,
   sessionId,
+  trigger,
 }: {
   appName: string;
   watchName: string;
   sessionId: string;
+  trigger?: AppWatchTrigger;  // 有 invocation_id 才会传, 否则纯 UI 浏览
 }) {
   const [open, setOpen] = useState(false);
   const { data, error, isLoading, mutate, isValidating } =
@@ -621,9 +731,27 @@ function WatchRow({
           <ChevronRight size={11} className="shrink-0 text-[color:var(--color-ink)]" />
         )}
         <Eye size={11} className="shrink-0 text-[color:var(--color-thread-file)]" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
           {watchName}
         </span>
+        {/* Phase E: trigger 状态 — 有 invocation_id 显示 events → invocation, 否则 "browse" */}
+        {trigger ? (
+          <span
+            title={`fires ${trigger.invocation_id} on ${trigger.events.join("/")}, debounce ${trigger.debounce_ms}ms`}
+            className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]"
+          >
+            {trigger.events.join("/")} → {trigger.invocation_id}
+            {trigger.in_flight && <span className="ml-1 text-[#6b5400]">●</span>}
+          </span>
+        ) : (
+          <span
+            title="watch.invocation_id 没设, 仅 UI 浏览 (不触发 invocation)"
+            className="tabular shrink-0 font-mono text-[10px] italic text-[color:var(--color-ink-dim)]"
+          >
+            browse only
+          </span>
+        )}
+        <span className="flex-1" />
         {data && (
           <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
             {data.entries.length}
