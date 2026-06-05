@@ -371,10 +371,11 @@ export interface AppMeta {
 export interface AppRunLog {
   run_id: string;
   invocation_id: string;
-  status: string;
+  status: string;       // success / failed / skipped (Phase E race / overlap)
   duration_ms: number;
   started_at: string;
   error?: string;
+  trigger?: "user" | "schedule" | "watch";  // Phase E; 旧 entry 缺字段默认 user
 }
 
 // D-4: Phase D service runtime snapshot — inspect_weaver / detail endpoint 都返这个
@@ -405,12 +406,38 @@ export interface AppWatchFilesResponse {
   note?: string;
 }
 
+// Phase E (M16): schedule / watch trigger 运行态 snapshot
+// 来自后端 trigger_registry().list_for_app(), inline 在 AppDetailResponse.triggers
+export interface AppScheduleTrigger {
+  name: string;
+  schedule: string;       // cron 表达式
+  invocation_id: string;
+  next_fire_at: number | null;  // unix ts, null 表示循环还没算出 (异常)
+  last_fired_at: number | null; // unix ts
+  in_flight: boolean;
+}
+export interface AppWatchTrigger {
+  name: string;
+  path: string;
+  events: ("modify" | "create" | "delete" | "move")[];
+  invocation_id: string;        // 注: snapshot 只列 invocation_id 非 null 的 (browse-only 不上 trigger)
+  debounce_ms: number;
+  last_event_at: number | null;
+  last_fired_at: number | null;
+  in_flight: boolean;
+}
+export interface AppTriggersState {
+  schedules: AppScheduleTrigger[];
+  watches: AppWatchTrigger[];
+}
+
 export interface AppDetailResponse {
   summary: AppManifestSummary;
   files: AppFileEntry[];
   meta: AppMeta | null;
   recent_runs: AppRunLog[];
   running_services?: AppRunningService[];  // D-4: 后端可能没返这字段, 前端默认空数组
+  triggers?: AppTriggersState;             // Phase E: schedules + watches 运行态
 }
 
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.

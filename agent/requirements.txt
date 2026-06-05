@@ -48,3 +48,10 @@ pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
 # pillow: 截图编码前缩放 (默认 jpeg q70 + 0.33x ≈ 94 KB base64 / ~1.1k vision token).
 pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 pillow>=11.0
+
+# ---------- M16 Phase E weaver app triggers (schedule + watch runtime) ----------
+# cron 表达式校验 + 算下次触发时间; 自写 asyncio sleep 循环, 不引 APScheduler.
+croniter>=2.0.0
+# 跨平台 fs watcher: macOS FSEvents / Linux inotify / Windows RDCW.
+# Observer 跑独立线程, 事件用 asyncio.run_coroutine_threadsafe 投回 main loop.
+watchdog>=4.0.0

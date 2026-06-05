@@ -195,12 +195,18 @@ def read_app_detail(name: str) -> dict:
     from pentaloom.capabilities.weaver.service_registry import service_registry
     running_services = service_registry().list_for_app(name)
 
+    # Phase E: schedule + watch trigger snapshot. 静态读 + Refresh 按钮重拉.
+    # 用户在 modal 里看到 next_fire_at / last_fired_at / in_flight.
+    from pentaloom.capabilities.weaver.triggers import trigger_registry
+    triggers_state = trigger_registry().list_for_app(name)
+
     return {
         "summary": summary,
         "files": files_detail,
         "meta": meta_dict,
         "recent_runs": recent_runs,
         "running_services": running_services,
+        "triggers": triggers_state,  # {schedules: [...], watches: [...]}
     }
 
 
