@@ -30,9 +30,12 @@ import {
   INSTALL_BROWSER_USE_TOOL_NAME,
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
+  INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
+  INVOKE_WORKFLOW_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   RUN_WEAVER_TOOL_NAME,
   WEAVE_SKILL_TOOL_NAME,
+  WEAVE_WORKFLOW_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "@/lib/types";
@@ -486,6 +489,80 @@ export function ApprovalInfo({
     );
   }
 
+  if (name === WEAVE_WORKFLOW_TOOL_NAME) {
+    const workflowName = String(input.name ?? "").trim();
+    const desc = String(input.description ?? "").trim();
+    const definitionJson = String(input.definition_json ?? "");
+    // 解析 step 数量给个 preview chip — 解析失败就降级显示全文
+    let stepCount: number | null = null;
+    try {
+      const parsed = JSON.parse(definitionJson);
+      if (Array.isArray(parsed?.steps)) stepCount = parsed.steps.length;
+    } catch {
+      // 忽略, 让 agent 看 raw definition
+    }
+    return (
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldBlock label="Name">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+              {workflowName || "(empty)"}
+            </span>
+          </FieldBlock>
+          <FieldBlock label="Steps">
+            <span className="font-mono text-[12.5px] text-[color:var(--color-paper-dim)]">
+              {stepCount === null ? "(unparsed)" : `${stepCount} step${stepCount === 1 ? "" : "s"}`}
+            </span>
+          </FieldBlock>
+        </div>
+        <FieldBlock label="Description">{desc || "(empty)"}</FieldBlock>
+        <FieldBlock label="workflow.json preview">
+          <pre className="max-h-[320px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[color:var(--color-paper)]">
+            {definitionJson || "(empty)"}
+          </pre>
+        </FieldBlock>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          允许后写盘到 data_dir/weaver/workflows/, status=draft. 还需 weave_workflow_finalize 收口才能 invoke.
+        </div>
+      </div>
+    );
+  }
+
+  if (
+    name === INVOKE_WORKFLOW_TOOL_NAME ||
+    name === INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME
+  ) {
+    const isDynamic = name === INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME;
+    const workflowName = String(input.name ?? "").trim();
+    // 静态版字段叫 args, 动态版叫 inputs (跟后端工具签名对齐)
+    const argsField = isDynamic ? input.inputs : input.args;
+    const argsLabel = isDynamic ? "Inputs" : "Args (inputs)";
+    const argsPreview =
+      argsField && typeof argsField === "object"
+        ? JSON.stringify(argsField, null, 2)
+        : "{}";
+    return (
+      <div className="space-y-2">
+        <FieldBlock label="Workflow">
+          <span className="font-mono text-[12.5px] text-[color:var(--color-paper)]">
+            {workflowName || "(empty)"}
+          </span>
+        </FieldBlock>
+        <FieldBlock label={argsLabel}>
+          <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[color:var(--color-paper)]">
+            {argsPreview}
+          </pre>
+        </FieldBlock>
+        <div className="text-[11px] text-[color:var(--color-ink)]">
+          {isDynamic
+            ? "动态调用 — 工具不跑 step DAG, 只把 plan 渲成 markdown 给主 agent. agent 看到后用 TodoWrite 拆任务, 一步步自己接管."
+            : "静态调用 — workflow_runtime 跑完整个 step DAG, 返结构化 output. 适合 cron / 后台触发."}
+          {" "}首次审通过整会话所有同款调用免审.
+        </div>
+      </div>
+    );
+  }
+
   if (name === RUN_WEAVER_TOOL_NAME) {
     const kind = String(input.kind ?? "").trim();
     const targetName = String(input.name ?? "").trim();
@@ -504,7 +581,7 @@ export function ApprovalInfo({
           </FieldBlock>
         </div>
         <div className="text-[11px] text-[color:var(--color-ink)]">
-          M14 阶段 run_weaver 占位 — workflow 在 M16 才能跑.
+          run_weaver 是兜底入口 — workflow 推荐走 invoke_workflow, app 走 invoke_app.
         </div>
       </div>
     );

@@ -13,6 +13,8 @@ from pentaloom.tools.weaver import (
     EDIT_WEAVER_FULL_NAME,
     INSPECT_WEAVER_FULL_NAME,
     INVOKE_APP_FULL_NAME,
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
+    INVOKE_WORKFLOW_FULL_NAME,
     LIST_WEAVER_FULL_NAME,
     TAIL_WEAVER_LOGS_FULL_NAME,
     WEAVE_APP_EDIT_FILE_FULL_NAME,
@@ -20,6 +22,8 @@ from pentaloom.tools.weaver import (
     WEAVE_APP_FULL_NAME,
     WEAVE_APP_WRITE_FILE_FULL_NAME,
     WEAVE_SKILL_FULL_NAME,
+    WEAVE_WORKFLOW_FINALIZE_FULL_NAME,
+    WEAVE_WORKFLOW_FULL_NAME,
 )
 
 WEAVER_PROMPT_INSTRUCTIONS = (
@@ -117,18 +121,98 @@ WEAVER_PROMPT_INSTRUCTIONS = (
     f"- 看返回的 error 字段\n"
     f"- 或 {TAIL_WEAVER_LOGS_FULL_NAME}(kind='app', name=...) 拉历次 run\n"
     "\n"
-    "## D. 礼仪\n"
+    f"## D. {WEAVE_WORKFLOW_FULL_NAME} / {INVOKE_WORKFLOW_FULL_NAME} — 织 + 跑 dynamic workflow\n"
+    "workflow = 把多步串成一个**可复用流程**. 整个就一个 workflow.json (没 files/ 子树),"
+    " 3 种 step (invoke_app / call_llm / set_var) + mustache 步间引用.\n"
+    "\n"
+    "**何时织 workflow** (跟 skill / app 都不重合):\n"
+    "- 多步流程, 涉及 2 个以上 app 串联 (e.g., csv 解析 → LLM 总结 → 写文件)\n"
+    "- 流程会反复跑 (本周报 / 月度总结之类周期性产物)\n"
+    "- 用户明说'每次都按这个流程走'\n"
+    "\n"
+    "**何时不织**:\n"
+    "- 单 app 单次调用 (直接 invoke_app)\n"
+    "- 一次性临时编排 (在对话里跑掉就行)\n"
+    "- 跟已有 workflow 重复 (先 list_weaver 查)\n"
+    "- 只有 1 步 (没有'流程'可言, 当 app 织)\n"
+    "\n"
+    "**3 种 step**:\n"
+    "- `invoke_app` — 调一个已 ready 的 app invocation. args 走 mustache 渲染.\n"
+    "- `call_llm` — 让模型处理一段文本 (prompt 走 mustache 渲染). "
+    "用同主对话的 endpoint/key 但 stateless (不带上下文). "
+    "`output_format='json'` 时 runtime 强 `json.loads`, 失败该 step failed — "
+    "prompt 里建议明确'返合法 JSON', 但**不靠它**防幻觉.\n"
+    "- `set_var` — 字面量 dict, runtime 递归渲染 mustache 后整体当 step.output. "
+    "用途: 把多个 step output 重组成新 dict / 给后续步当命名常量.\n"
+    "\n"
+    "**mustache 语法** (path lookup, 不支持函数 / 表达式):\n"
+    "- `{{inputs.<key>}}` — workflow 入参 (key 必须在 inputs_schema.properties)\n"
+    "- `{{steps.<sid>.output.<path>}}` — 前面某步的 output (sid 必须在 self 之前)\n"
+    "- 整 string 就 `{{...}}` → 返**原值类型** (int/dict/list 不强制 str 化)\n"
+    "- 多个 `{{...}}` 嵌文本 → 字符串拼接\n"
+    "\n"
+    "**流程** (跟 weave_app 一样递进式):\n"
+    "```\n"
+    f"1) {WEAVE_WORKFLOW_FULL_NAME}(name, description, definition_json)  ← 单 HITL 审\n"
+    "   - 建 workflow 骨架, status=draft, mark rebuild\n"
+    f"2) {WEAVE_WORKFLOW_FINALIZE_FULL_NAME}(workflow_name)  ← auto-pass, 5 项校验\n"
+    "   - schema + step.id 唯一 + mustache forward-ref + inputs key 存在 + invoke_app 软校\n"
+    f"3a) {INVOKE_WORKFLOW_FULL_NAME}(name, args)        ← 静态调 (workflow_runtime 跑 step DAG)\n"
+    f"3b) {INVOKE_WORKFLOW_DYNAMIC_FULL_NAME}(name, inputs)  ← 动态调 (你接管按 plan 跑)\n"
+    "   - 两条都 OK, 看场景挑 (下面有判断准则). 首次 HITL, 之后整会话信任.\n"
+    "```\n"
+    "\n"
+    "**静态 vs 动态调用** (同一份 workflow.json, 两种调法):\n"
+    f"- **静态 {INVOKE_WORKFLOW_FULL_NAME}**: 后端 workflow_runtime 跑 step DAG, mustache 渲染步间引用, "
+    "中间步失败整 workflow 失败. call_llm step 起独立子 LLM. 适用: cron 定时触发 / 后台无人值守 / "
+    "想要确定执行路径不 deviate / 已经 verified 过的 well-known 流程. 返结构化 {run_id, status, output, steps}.\n"
+    f"- **动态 {INVOKE_WORKFLOW_DYNAMIC_FULL_NAME}**: 工具不跑 step, 只把 plan 渲成 markdown 给你, 你接管. "
+    "你看到 ToolResult 后**用 TodoWrite 拆步骤一步步做**, 自己调 invoke_app / 自己处理 LLM 部分 (你就是 LLM, "
+    "call_llm step 在动态版降级为'你直接想清楚就行'). 适用: 主对话里跑 / 想用你的全套能力 (临时改 args, "
+    "中途读文件, 看 tool result 再决定) / workflow 是 plan / SOP 性质, 步骤描述要灵活. 返一段 plan markdown.\n"
+    "\n"
+    "**默认走动态版** (除非用户明说要 cron / 后台跑). 用户在主对话里说'跑这个 workflow' 默认动态: 你接管, "
+    "TodoWrite 跟踪, 一步步做, 跟普通对话一样. 静态版相对刚性, 出错没 fallback (你不在 loop 里救不回来).\n"
+    "\n"
+    "**workflow.json 例** (最小可跑):\n"
+    "```json\n"
+    "{\n"
+    '  "name": "weekly-digest",\n'
+    '  "description": "汇总本周 csv 给我读一句",\n'
+    '  "version": "0.1.0",\n'
+    '  "inputs_schema": {"type": "object", "required": ["csv_path"],\n'
+    '                     "properties": {"csv_path": {"type": "string"}}},\n'
+    '  "steps": [\n'
+    '    {"kind": "invoke_app", "id": "s1", "app_name": "csv-stats",\n'
+    '     "invocation_id": "summarize", "args": {"path": "{{inputs.csv_path}}"}},\n'
+    '    {"kind": "call_llm", "id": "s2",\n'
+    '     "prompt": "一句话总结 {{steps.s1.output.stats}}",\n'
+    '     "output_format": "text"}\n'
+    '  ],\n'
+    '  "output_template": {"summary": "{{steps.s2.output}}",\n'
+    '                       "stats": "{{steps.s1.output.stats}}"}\n'
+    "}\n"
+    "```\n"
+    "\n"
+    "**常见坑**:\n"
+    "- 引用未定义 step (forward-ref): finalize 拒\n"
+    "- `{{inputs.X}}` X 不在 inputs_schema.properties: finalize 拒\n"
+    "- `call_llm output_format=json` 但模型返非 JSON: runtime step failed\n"
+    "- 中间步失败整 workflow 失败 (后续 step 不跑, 不 retry)\n"
+    "- workflow 名跟 skill / app / 内置 skill 重名: 拒\n"
+    "\n"
+    "## E. 礼仪\n"
     "- 单轮对话最多 propose 一次 weave_* (用户被审批弹窗轰炸会关闭整个 weave 功能)\n"
     "- 用户 deny 后整个 session 不再 propose 类似内容\n"
     "- 沉淀完返 'XXX 已沉淀, 下条对话起 agent 自动加载' — 当前 turn 不会立刻看到\n"
     "\n"
-    f"## E. 管理能力库 (list / inspect / edit / delete / tail_logs)\n"
+    f"## F. 管理能力库 (list / inspect / edit / delete / tail_logs)\n"
     f"- '我有哪些 weaver 产物' → {LIST_WEAVER_FULL_NAME}\n"
     f"- '看那个 X 长啥样' → {INSPECT_WEAVER_FULL_NAME}(kind=skill|app)\n"
     f"- 用户要改产物 → {EDIT_WEAVER_FULL_NAME} (弹 diff 审批; 当前只支持 kind=skill)\n"
     f"- 用户要删产物 → {DELETE_WEAVER_FULL_NAME} (软删到 .trash/, 支持 skill+app)\n"
     f"- 查 app 历次运行 → {TAIL_WEAVER_LOGS_FULL_NAME}(kind='app')\n"
-    "- run_weaver 在 workflow milestone 才实装, 现在别主动调\n"
+    f"- 查 workflow 历次运行 → {TAIL_WEAVER_LOGS_FULL_NAME}(kind='workflow')\n"
     "\n"
     "**SKILL.md 格式** (weave_skill 的 content 必须按此):\n"
     "```\n"

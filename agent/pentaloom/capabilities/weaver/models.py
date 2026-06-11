@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -316,3 +316,116 @@ class InvocableAppMeta(BaseModel):
     last_used_at: datetime | None = None
     use_count: int = 0
     is_trusted: bool = False
+
+
+# ─── Workflow (M17 dynamic workflow) ────────────────────────────────────────
+# workflow = 沉淀流程编排 (skill 沉淀方法论, app 沉淀工具, workflow 把工具+LLM
+# 串起来). 5 类设计文档原 5 种 step kind, MVP 先做 3 种线性: invoke_app /
+# call_llm / set_var. 不含 if/loop, 不支持 cron 触发 (远期).
+
+WorkflowStepKind = Literal["invoke_app", "call_llm", "set_var"]
+
+# step.id 必须是 [a-z0-9_]+ — workflow 内 mustache 引用 + log 显示都用它做主键.
+_STEP_ID_PATTERN = r"^[a-z0-9_]+$"
+
+
+class _StepBase(BaseModel):
+    """3 种 Step 共享的 id 字段 + 校验. discriminator 走 kind."""
+
+    id: str
+
+    @field_validator("id")
+    @classmethod
+    def _id_format(cls, v: str) -> str:
+        import re
+        if not re.match(_STEP_ID_PATTERN, v):
+            raise ValueError(
+                f"step.id 必须是 ^[a-z0-9_]+$ (mustache 引用主键), 收到 {v!r}"
+            )
+        return v
+
+
+class InvokeAppStep(_StepBase):
+    """调一个 app 的 invocation. args 里值含 mustache, runtime 渲染."""
+
+    kind: Literal["invoke_app"] = "invoke_app"
+    app_name: str
+    invocation_id: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class CallLlmStep(_StepBase):
+    """跑一次 Claude 子对话. 独立 anthropic client, 不接 PentaLoom 主对话池.
+
+    output_format=json 时 runtime 强 json.loads; prompt 里建议含 'json' 当 hint
+    但不靠它防幻觉.
+    """
+
+    kind: Literal["call_llm"] = "call_llm"
+    system: str = ""
+    prompt: str  # 含 mustache
+    output_format: Literal["text", "json"] = "text"
+    model: str | None = None  # None → settings.model (注意不是 default_model)
+    max_tokens: int = 1024
+    timeout_s: int = 60
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("call_llm.prompt 不能为空")
+        return v
+
+
+class SetVarStep(_StepBase):
+    """给 ctx 设变量. value 是 dict, runtime 递归渲染 mustache (跟 invoke_app.args
+    同套规则), 用作'重组 / 重命名'工具 — 把多个 step output 整合成一个新 dict
+    给后续 step 当输入."""
+
+    kind: Literal["set_var"] = "set_var"
+    value: dict[str, Any] = Field(default_factory=dict)
+
+
+WorkflowStep = Annotated[
+    InvokeAppStep | CallLlmStep | SetVarStep,
+    Field(discriminator="kind"),
+]
+
+
+class WorkflowDefinition(BaseModel):
+    """workflow.json 主文件 schema. 跟 InvocableAppManifest 平级 (一个描 invocable
+    contract, 一个描 step DAG). version 暂只语义化但不强制兼容性."""
+
+    name: str
+    description: str
+    version: str = "0.1.0"
+    inputs_schema: dict[str, Any] = Field(default_factory=dict)
+    output_template: dict[str, Any] | None = None
+    steps: list[WorkflowStep]
+
+    @field_validator("steps")
+    @classmethod
+    def _steps_id_unique(cls, v: list[WorkflowStep]) -> list[WorkflowStep]:
+        seen: set[str] = set()
+        for s in v:
+            if s.id in seen:
+                raise ValueError(f"step.id 重复: {s.id!r} (workflow 内必须唯一)")
+            seen.add(s.id)
+        return v
+
+
+class WorkflowMeta(BaseModel):
+    """weaver/workflows/<name>/meta.json. 跟 InvocableAppMeta 平行 — 同款递进式
+    weave 状态机 + 时间戳 + 使用计数."""
+
+    name: str
+    kind: Literal["workflow"] = "workflow"
+    description: str
+    source: WeaverSource = "agent_woven"
+    status: Literal["draft", "ready", "dirty", "failed"] = "draft"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_finalized_at: datetime | None = None
+    last_finalize_error: str | None = None
+    last_used_at: datetime | None = None
+    use_count: int = 0

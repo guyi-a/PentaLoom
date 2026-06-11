@@ -135,10 +135,53 @@ def ensure_app_dirs(settings: Settings, name: str) -> None:
     app_runs_dir(settings, name).mkdir(parents=True, exist_ok=True)
 
 
+# ─── Workflow 路径 (M17) ────────────────────────────────────────────────────
+# 跟 app 同 weaver_root 平级, 但物理位置独立 — workflow 没 files/ 子树, 只有
+# workflow.json 主文件 + meta + 独立 logs/runs.jsonl + runs/<run_id>/.
+
+def workflows_dir(settings: Settings) -> Path:
+    return weaver_root(settings) / "workflows"
+
+
+def workflow_dir(settings: Settings, name: str) -> Path:
+    return workflows_dir(settings) / name
+
+
+def workflow_json(settings: Settings, name: str) -> Path:
+    """主文件 — WorkflowDefinition 序列化, 用户 vscode 直接看."""
+    return workflow_dir(settings, name) / "workflow.json"
+
+
+def workflow_meta(settings: Settings, name: str) -> Path:
+    return workflow_dir(settings, name) / "meta.json"
+
+
+def workflow_logs_dir(settings: Settings, name: str) -> Path:
+    """独立 logs/runs.jsonl 不混 app log (GPT review #3 要点)."""
+    return workflow_dir(settings, name) / "logs"
+
+
+def workflow_runs_dir(settings: Settings, name: str) -> Path:
+    """每次 invoke_workflow 输出落 runs/<run_id>/, 跟 app_runs_dir 同款."""
+    return workflow_dir(settings, name) / "runs"
+
+
+def workflow_run_dir(settings: Settings, name: str, run_id: str) -> Path:
+    return workflow_runs_dir(settings, name) / run_id
+
+
+def ensure_workflow_dirs(settings: Settings, name: str) -> None:
+    """weave_workflow 时一次性建好骨架. mkdir 幂等."""
+    workflow_dir(settings, name).mkdir(parents=True, exist_ok=True)
+    workflow_logs_dir(settings, name).mkdir(parents=True, exist_ok=True)
+    workflow_runs_dir(settings, name).mkdir(parents=True, exist_ok=True)
+
+
 def ensure_dirs(settings: Settings) -> None:
     """启动 / weave_* 时确保骨架目录存在. mkdir 幂等."""
     weaver_root(settings).mkdir(parents=True, exist_ok=True)
     skills_dir(settings).mkdir(parents=True, exist_ok=True)
     apps_dir(settings).mkdir(parents=True, exist_ok=True)
+    workflows_dir(settings).mkdir(parents=True, exist_ok=True)  # M17
     trash_dir(settings).mkdir(parents=True, exist_ok=True)
     skills_link_root(settings).mkdir(parents=True, exist_ok=True)

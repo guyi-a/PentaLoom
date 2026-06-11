@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
-import { AppWindow, CalendarClock, ChevronDown, ChevronRight, ExternalLink, Eye, Loader2, RefreshCw, Server, Square, User, X } from "lucide-react";
+import { AppWindow, CalendarClock, ChevronDown, ChevronRight, ExternalLink, Eye, GitBranch, Loader2, RefreshCw, Server, Square, User, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
@@ -469,14 +469,23 @@ function RunRow({ run }: { run: AppRunLog }) {
       : run.status === "skipped"
         ? "text-[color:var(--color-ink-dim)]"
         : "text-[#7a2d2d]";
-  // trigger 来源 icon: user 默认/历史 entry, schedule 时钟, watch 眼睛
-  const TriggerIcon = trigger === "schedule" ? CalendarClock : trigger === "watch" ? Eye : User;
+  // trigger 来源 icon: user 默认/历史 entry, schedule 时钟, watch 眼睛, workflow 分支
+  const TriggerIcon =
+    trigger === "schedule"
+      ? CalendarClock
+      : trigger === "watch"
+        ? Eye
+        : trigger === "workflow"
+          ? GitBranch
+          : User;
   const triggerTitle =
     trigger === "schedule"
       ? "schedule trigger"
       : trigger === "watch"
         ? "watch trigger"
-        : "user / agent invoke";
+        : trigger === "workflow"
+          ? "workflow step (invoke_app from workflow runtime)"
+          : "user / agent invoke";
   return (
     <li
       title={`${triggerTitle}\n${run.error || run.run_id}`}

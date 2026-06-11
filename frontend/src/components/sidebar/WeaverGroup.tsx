@@ -15,13 +15,20 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
-  Workflow,
+  GitBranch,
 } from "lucide-react";
 
 import { AppDetailModal } from "@/components/sidebar/AppDetailModal";
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
+import { WorkflowDetailModal } from "@/components/sidebar/WorkflowDetailModal";
 import { api } from "@/lib/api";
-import type { AppStatus, AppSummary, SkillSummary, WeaverSource } from "@/lib/types";
+import type {
+  AppStatus,
+  AppSummary,
+  SkillSummary,
+  WeaverSource,
+  WorkflowSummary,
+} from "@/lib/types";
 
 interface Props {
   // 当前活跃 session id — 给 AppDetailModal 内 openFile 用. sidebar 自身跨 session,
@@ -55,7 +62,9 @@ export function WeaverGroup({ currentSid }: Props) {
   );
   const skills = data?.skills ?? [];
   const apps = data?.apps ?? [];
+  const workflows = data?.workflows ?? [];
   const [openAppName, setOpenAppName] = useState<string | null>(null);
+  const [openWorkflowName, setOpenWorkflowName] = useState<string | null>(null);
 
   return (
     <>
@@ -95,15 +104,29 @@ export function WeaverGroup({ currentSid }: Props) {
           )}
         </SubSection>
 
+        <SubSection label="Workflows" count={workflows.length}>
+          {isLoading ? (
+            <PlaceholderText>Loading…</PlaceholderText>
+          ) : workflows.length === 0 ? (
+            <PlaceholderText icon={<GitBranch size={10} />}>
+              No workflows yet, weave one in chat.
+            </PlaceholderText>
+          ) : (
+            <ul className="space-y-0.5">
+              {workflows.map((w) => (
+                <WorkflowRow
+                  key={w.name}
+                  workflow={w}
+                  onOpen={() => setOpenWorkflowName(w.name)}
+                />
+              ))}
+            </ul>
+          )}
+        </SubSection>
+
         <SubSection label="Subagents">
           <PlaceholderText icon={<Boxes size={10} />}>
             Coming with M17.
-          </PlaceholderText>
-        </SubSection>
-
-        <SubSection label="Workflows">
-          <PlaceholderText icon={<Workflow size={10} />}>
-            Coming with workflow milestone.
           </PlaceholderText>
         </SubSection>
       </div>
@@ -113,6 +136,12 @@ export function WeaverGroup({ currentSid }: Props) {
         appName={openAppName}
         sessionId={currentSid ?? ""}
         onClose={() => setOpenAppName(null)}
+      />
+    )}
+    {openWorkflowName && (
+      <WorkflowDetailModal
+        workflowName={openWorkflowName}
+        onClose={() => setOpenWorkflowName(null)}
       />
     )}
     </>
@@ -241,6 +270,58 @@ function AppRow({
         {/* invocations chip — hover 显示 */}
         <span className="tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[color:var(--color-thread-file)] opacity-0 transition-opacity group-hover:opacity-100">
           {invLabel}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function WorkflowRow({
+  workflow,
+  onOpen,
+}: {
+  workflow: WorkflowSummary;
+  onOpen: () => void;
+}) {
+  const badge = statusBadge[workflow.status] ?? statusBadge.draft;
+  const stepLabel = `${workflow.step_count} step${workflow.step_count === 1 ? "" : "s"}`;
+  const tooltip = [
+    `${workflow.name} — ${workflow.description}`,
+    `status: ${workflow.status}`,
+    stepLabel,
+    workflow.use_count > 0
+      ? `${workflow.use_count} run${workflow.use_count === 1 ? "" : "s"}`
+      : "never run",
+    "Click to open detail",
+  ].join(" · ");
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        title={tooltip}
+        className="group flex w-full items-center gap-2 rounded-[6px] px-3 py-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+      >
+        <GitBranch
+          size={11}
+          className="shrink-0 text-[color:var(--color-thread-file)] opacity-60"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] leading-snug text-[color:var(--color-paper)]">
+            {workflow.name}
+          </div>
+          <div className="truncate text-[10.5px] leading-snug text-[color:var(--color-ink-dim)]">
+            {workflow.description}
+          </div>
+        </div>
+        <span
+          className={`tabular shrink-0 rounded-[3px] px-1 py-px font-mono text-[9px] uppercase tracking-wider ${badge.cls}`}
+        >
+          {badge.label}
+        </span>
+        <span className="tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-[color:var(--color-thread-file)] opacity-0 transition-opacity group-hover:opacity-100">
+          {stepLabel}
         </span>
       </button>
     </li>

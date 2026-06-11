@@ -55,3 +55,8 @@ croniter>=2.0.0
 # 跨平台 fs watcher: macOS FSEvents / Linux inotify / Windows RDCW.
 # Observer 跑独立线程, 事件用 asyncio.run_coroutine_threadsafe 投回 main loop.
 watchdog>=4.0.0
+
+# ---------- M17 dynamic workflow ----------
+# call_llm step 用. 显式声明: 当前是 claude-agent-sdk 的 transitive 依赖, 但 SDK
+# 升级时可能砍掉, 这里钉死防 workflow 静默崩.
+anthropic>=0.86,<1.0
