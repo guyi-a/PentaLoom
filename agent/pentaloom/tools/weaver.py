@@ -23,6 +23,8 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from pentaloom.capabilities.weaver import WeaverError, app as app_biz, meta_tools, skill
 from pentaloom.capabilities.weaver import app_runtime
+from pentaloom.capabilities.weaver import workflow as workflow_biz
+from pentaloom.capabilities.weaver import workflow_runtime
 from pentaloom.config import Settings
 
 WEAVER_MCP_SERVER_NAME = "pentaloom_weaver"
@@ -33,6 +35,10 @@ WEAVE_APP_WRITE_FILE_TOOL_NAME = "weave_app_write_file"
 WEAVE_APP_EDIT_FILE_TOOL_NAME = "weave_app_edit_file"
 WEAVE_APP_FINALIZE_TOOL_NAME = "weave_app_finalize"
 INVOKE_APP_TOOL_NAME = "invoke_app"
+WEAVE_WORKFLOW_TOOL_NAME = "weave_workflow"
+WEAVE_WORKFLOW_FINALIZE_TOOL_NAME = "weave_workflow_finalize"
+INVOKE_WORKFLOW_TOOL_NAME = "invoke_workflow"
+INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME = "invoke_workflow_dynamic"
 LIST_WEAVER_TOOL_NAME = "list_weaver"
 INSPECT_WEAVER_TOOL_NAME = "inspect_weaver"
 EDIT_WEAVER_TOOL_NAME = "edit_weaver"
@@ -46,6 +52,10 @@ WEAVE_APP_WRITE_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_WRI
 WEAVE_APP_EDIT_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_EDIT_FILE_TOOL_NAME}"
 WEAVE_APP_FINALIZE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_FINALIZE_TOOL_NAME}"
 INVOKE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INVOKE_APP_TOOL_NAME}"
+WEAVE_WORKFLOW_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_WORKFLOW_TOOL_NAME}"
+WEAVE_WORKFLOW_FINALIZE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_WORKFLOW_FINALIZE_TOOL_NAME}"
+INVOKE_WORKFLOW_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INVOKE_WORKFLOW_TOOL_NAME}"
+INVOKE_WORKFLOW_DYNAMIC_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME}"
 LIST_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{LIST_WEAVER_TOOL_NAME}"
 INSPECT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{INSPECT_WEAVER_TOOL_NAME}"
 EDIT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{EDIT_WEAVER_TOOL_NAME}"
@@ -60,6 +70,10 @@ ALL_WEAVER_FULL_NAMES = (
     WEAVE_APP_EDIT_FILE_FULL_NAME,
     WEAVE_APP_FINALIZE_FULL_NAME,
     INVOKE_APP_FULL_NAME,
+    WEAVE_WORKFLOW_FULL_NAME,
+    WEAVE_WORKFLOW_FINALIZE_FULL_NAME,
+    INVOKE_WORKFLOW_FULL_NAME,
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
     LIST_WEAVER_FULL_NAME,
     INSPECT_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
@@ -310,6 +324,138 @@ def build_weaver_mcp_server(
         return _ok_json(result)
 
     @tool(
+        WEAVE_WORKFLOW_TOOL_NAME,
+        (
+            "织一个 dynamic workflow — 流程编排产物, 把多步 invoke_app/call_llm/set_var "
+            "串起来. 整 workflow 一个 JSON 主文件 (workflow.json), 没 files/ 子树. "
+            "成功后 status='draft', mark pending rebuild, 用户下条 message agent 重载. "
+            "必须再调 weave_workflow_finalize 收口才能 invoke_workflow. "
+            "参数: "
+            "name (必填, kebab-case, 必须跟 definition_json.name 一致, ≤64 chars); "
+            "description (必填, 一句话, 必须跟 definition_json.description 一致); "
+            "definition_json (必填, 完整 WorkflowDefinition JSON 字符串 — name/description/"
+            "version/inputs_schema/steps[]/output_template?). "
+            "step kind: invoke_app / call_llm / set_var. "
+            "步骤间引用走 mustache: {{inputs.X}} 或 {{steps.<id>.output.<path>}}."
+        ),
+        {"name": str, "description": str, "definition_json": str},
+    )
+    async def _weave_workflow(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            meta = workflow_biz.weave_workflow(
+                settings,
+                name=str(args.get("name", "")),
+                description=str(args.get("description", "")),
+                definition_json=str(args.get("definition_json", "")),
+            )
+        except WeaverError as e:
+            return _err(f"weave_workflow 失败: {e}")
+        except Exception as e:
+            return _err(f"weave_workflow 未预期错误 {type(e).__name__}: {e}")
+        mark_rebuild()
+        return _ok_text(
+            f"已建 workflow {meta.name!r} (status=draft, {len(workflow_biz.read_workflow(settings, meta.name).steps)} steps). "
+            f"现在调 weave_workflow_finalize 校验 → status=ready 就能 invoke_workflow."
+        )
+
+    @tool(
+        WEAVE_WORKFLOW_FINALIZE_TOOL_NAME,
+        (
+            "workflow 收口校验 — 通过 → status=ready (invoke_workflow 可调). "
+            "校验: schema + step.id 唯一/格式 + mustache 引用合法 (forward-ref / inputs key) + "
+            "invoke_app 软校 (app_name 不存在仅 warn, 不挡). "
+            "失败: status=failed, 错误信息存 last_finalize_error. 修完重 finalize 即可. "
+            "自动放行 (跟 weave_app_finalize 一致). 参数: workflow_name."
+        ),
+        {
+            "type": "object",
+            "properties": {"workflow_name": {"type": "string"}},
+            "required": ["workflow_name"],
+        },
+    )
+    async def _weave_workflow_finalize(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = workflow_biz.finalize_workflow(
+                settings, name=str(args.get("workflow_name", "")),
+            )
+        except WeaverError as e:
+            return _err(f"weave_workflow_finalize 校验失败: {e}")
+        except Exception as e:
+            return _err(f"weave_workflow_finalize 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
+
+    @tool(
+        INVOKE_WORKFLOW_TOOL_NAME,
+        (
+            "调一个已 finalize 的 workflow, 跑 step DAG 拿 result. "
+            "每步 dispatch 到 invoke_app / call_llm / set_var, mustache 渲染步骤间引用, "
+            "中间步失败 → 整 workflow 失败 + 后续步不跑 (没 retry). "
+            "call_llm 用独立 anthropic client (跟主对话同 endpoint, 但 stateless 不接 LoomPool). "
+            "参数: name (workflow 名, 必填); args (按 inputs_schema 形态的 dict, 可选, 默认 {}). "
+            "返 {run_id, status, duration_ms, output, steps[], error?} — output 是最终 output_template "
+            "渲染结果或最后一步 output; steps 含每步 status/duration/output_summary, invoke_app 步还含 "
+            "app_name/invocation_id/app_run_id 给 modal 追踪用."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "args": {"type": "object"},
+            },
+            "required": ["name"],
+        },
+    )
+    async def _invoke_workflow(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await workflow_runtime.invoke_workflow(
+                settings,
+                name=str(args.get("name", "")),
+                args=args.get("args") if isinstance(args.get("args"), dict) else {},
+            )
+        except workflow_runtime.WorkflowError as e:
+            return _err(f"invoke_workflow 失败: {e}")
+        except Exception as e:
+            return _err(f"invoke_workflow 未预期错误 {type(e).__name__}: {e}")
+        return _ok_json(result)
+
+    @tool(
+        INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
+        (
+            "动态模式调 workflow — 不跑 step DAG, 而是把 workflow definition 渲染成一段 plan "
+            "markdown 让你 (主 agent) 自己接管. 你看到 ToolResult 后, 用 TodoWrite 把 steps 拆成 "
+            "todo, 一步步调 invoke_app / 自己 reasoning / 自己 reply, 跟普通对话一样. "
+            "适用: workflow 是给主 agent 看的 plan / SOP, 想用 agent 全套能力执行 (临时改 args, "
+            "中途读文件, 把 LLM 处理那步直接想清楚就行). "
+            "对比 invoke_workflow (静态版): 静态版 stateless 跑 step DAG 拿 output, 适合 cron / "
+            "无人值守; 动态版你接管, 适合主对话里走 plan. "
+            "schema 同一份 (用户织一遍, 静态/动态都能调). "
+            "call_llm step 在动态版降级为'你自己处理这步'; set_var 降级为'记住这些常量'. "
+            "参数: name (workflow 名, 必填); inputs (按 inputs_schema 形态的 dict, 可选). "
+            "返一段 plan markdown, 不返结构化 output."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "inputs": {"type": "object"},
+            },
+            "required": ["name"],
+        },
+    )
+    async def _invoke_workflow_dynamic(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            plan_md = await workflow_runtime.render_dynamic_plan(
+                settings,
+                name=str(args.get("name", "")),
+                inputs=args.get("inputs") if isinstance(args.get("inputs"), dict) else {},
+            )
+        except workflow_runtime.WorkflowError as e:
+            return _err(f"invoke_workflow_dynamic 失败: {e}")
+        except Exception as e:
+            return _err(f"invoke_workflow_dynamic 未预期错误 {type(e).__name__}: {e}")
+        return _ok_text(plan_md)
+
+    @tool(
         LIST_WEAVER_TOOL_NAME,
         (
             "列用户织的 weaver 产物. 返 {counts, items}. items 是 [{name, kind, description, source, path}, ...]. "
@@ -446,11 +592,29 @@ def build_weaver_mcp_server(
         },
     )
     async def _run_weaver(args: dict[str, Any]) -> dict[str, Any]:
+        kind = str(args.get("kind", ""))
+        name = str(args.get("name", ""))
+        # workflow 走异步路径 — meta_tools.run_weaver 是 sync, 内部 asyncio.run 在
+        # async 工具体里会挂 (running event loop). 直接 await runtime 绕过同步层.
+        if kind == "workflow":
+            try:
+                result = await workflow_runtime.invoke_workflow(
+                    settings,
+                    name=name,
+                    args=args.get("args") if isinstance(args.get("args"), dict) else {},
+                )
+            except workflow_runtime.WorkflowError as e:
+                return _err(f"run_weaver(workflow) 失败: {e}")
+            except WeaverError as e:
+                return _err(f"run_weaver(workflow) 失败: {e}")
+            except Exception as e:
+                return _err(f"run_weaver(workflow) 未预期错误 {type(e).__name__}: {e}")
+            return _ok_json(result)
         try:
             result = meta_tools.run_weaver(
                 settings,
-                kind=str(args.get("kind", "")),
-                name=str(args.get("name", "")),
+                kind=kind,
+                name=name,
                 args=args.get("args") or {},
             )
         except WeaverError as e:
@@ -505,6 +669,10 @@ def build_weaver_mcp_server(
             _weave_app_edit_file,
             _weave_app_finalize,
             _invoke_app,
+            _weave_workflow,
+            _weave_workflow_finalize,
+            _invoke_workflow,
+            _invoke_workflow_dynamic,
             _list_weaver,
             _inspect_weaver,
             _edit_weaver,

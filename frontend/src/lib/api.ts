@@ -12,6 +12,7 @@ import type {
   PermissionDecisionResp,
   SessionMeta,
   WeaverProductsResponse,
+  WorkflowDetailResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -78,6 +79,9 @@ export const api = {
   // files (含 absolute_path 给 openFile 用) + meta + recent runs + running services.
   getAppDetail: (name: string) =>
     http<AppDetailResponse>(`/weaver/apps/${encodeURIComponent(name)}/detail`),
+  // M17 dynamic workflow detail — WorkflowDetailModal 用. 含 definition + meta + 最近 20 条 run.
+  getWorkflowDetail: (name: string) =>
+    http<WorkflowDetailResponse>(`/weaver/workflows/${encodeURIComponent(name)}/detail`),
   // 单个 watch component 暴露目录的文件清单 — Phase E lazy fetch (用户在 modal 展开
   // 某个 watch 才拉, 不在 getAppDetail 里 inline 拉避免大目录拖慢)
   listWatchFiles: (appName: string, watchName: string) =>

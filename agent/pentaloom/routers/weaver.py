@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 from pentaloom.capabilities.weaver import app as app_biz
 from pentaloom.capabilities.weaver import app_runtime, index, paths, skill
+from pentaloom.capabilities.weaver import workflow as workflow_biz
+from pentaloom.capabilities.weaver import workflow_runtime
 from pentaloom.capabilities.weaver.window_registry import window_registry
 from pentaloom.config import get_settings
 
@@ -45,10 +47,21 @@ class AppSummary(BaseModel):
     component_counts: dict[str, int]  # {scripts: 2, windows: 1, ...}
 
 
+class WorkflowSummary(BaseModel):
+    """M17 dynamic workflow 摘要 — sidebar 用. 关键 metric 是步数 + status + use_count."""
+
+    name: str
+    description: str
+    source: str
+    status: str  # draft | ready | dirty | failed (跟 app 同款状态机)
+    step_count: int
+    use_count: int
+
+
 class WeaverProductsResponse(BaseModel):
     skills: list[SkillSummary]
     subagents: list[Any] = []   # M17 实装
-    workflows: list[Any] = []   # M16 workflow milestone
+    workflows: list[WorkflowSummary] = []
     apps: list[AppSummary]
 
 
@@ -104,6 +117,31 @@ def _collect_apps() -> list[AppSummary]:
     return out
 
 
+def _collect_workflows() -> list[WorkflowSummary]:
+    """Sidebar 用户 weave 的 workflow 列表. 单个 workflow 读失败不阻塞全列表 — 跟
+    _collect_apps 同款降级 (损坏的 workflow 也露出, step_count=0 当 failed)."""
+    settings = get_settings()
+    idx = index.load_index(settings)
+    out: list[WorkflowSummary] = []
+    for e in idx.workflows:
+        try:
+            definition = workflow_biz.read_workflow(settings, e.name)
+            meta = workflow_biz.read_meta(settings, e.name)
+        except index.WeaverError:
+            out.append(WorkflowSummary(
+                name=e.name, description=e.description, source=e.source,
+                status="failed", step_count=0, use_count=0,
+            ))
+            continue
+        out.append(WorkflowSummary(
+            name=e.name, description=e.description, source=e.source,
+            status=meta.status if meta else "draft",
+            step_count=len(definition.steps),
+            use_count=meta.use_count if meta else 0,
+        ))
+    return out
+
+
 @router.get("/skills", response_model=list[SkillSummary])
 def list_skills() -> list[SkillSummary]:
     return _collect_skills()
@@ -111,9 +149,10 @@ def list_skills() -> list[SkillSummary]:
 
 @router.get("/products", response_model=WeaverProductsResponse)
 def list_products() -> WeaverProductsResponse:
-    """sidebar 一次拉全部产物. M14/M16 阶段 subagents/workflows 仍空."""
+    """sidebar 一次拉全部产物. subagents 仍空 (M17 subagent UI 才实装)."""
     return WeaverProductsResponse(
         skills=_collect_skills(),
+        workflows=_collect_workflows(),
         apps=_collect_apps(),
     )
 
@@ -207,6 +246,29 @@ def read_app_detail(name: str) -> dict:
         "recent_runs": recent_runs,
         "running_services": running_services,
         "triggers": triggers_state,  # {schedules: [...], watches: [...]}
+    }
+
+
+@router.get("/workflows/{name}/detail", response_model=dict)
+def read_workflow_detail(name: str) -> dict:
+    """M17: WorkflowDetailModal 用 — 一次拉全 detail.
+
+    返:
+      - summary: {name, description, version, step_count, steps_summary, definition, meta}
+      - recent_runs: 最近 20 条 logs/runs.jsonl (含每步 status/duration/output_summary)
+    """
+    settings = get_settings()
+    entry = index.find_entry(settings, "workflow", name)
+    if entry is None:
+        raise HTTPException(404, f"workflow not found: {name}")
+    try:
+        summary = workflow_biz.list_workflow_summary(settings, name)
+    except index.WeaverError as e:
+        raise HTTPException(500, str(e)) from e
+    recent_runs = workflow_runtime.tail_workflow_run_logs(settings, name, limit=20)
+    return {
+        "summary": summary,
+        "recent_runs": recent_runs,
     }
 
 

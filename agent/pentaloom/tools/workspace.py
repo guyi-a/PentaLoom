@@ -64,9 +64,12 @@ from pentaloom.tools.weaver import (
     DELETE_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
     INVOKE_APP_FULL_NAME,
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
+    INVOKE_WORKFLOW_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
     WEAVE_APP_FULL_NAME,
     WEAVE_SKILL_FULL_NAME,
+    WEAVE_WORKFLOW_FULL_NAME,
 )
 
 WORKSPACE_MCP_SERVER_NAME = "pentaloom"
@@ -108,6 +111,7 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     # 设计文档 §8.1-8.3: 每次单审, 不进 ALLOW_SESSION_TOOLS — 长期资产改动应该每次过目.
     WEAVE_SKILL_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_WORKFLOW_FULL_NAME,  # M17 — 跟 weave_skill / weave_app 一档, 单审一次
     EDIT_WEAVER_FULL_NAME,
     DELETE_WEAVER_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
@@ -115,6 +119,10 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     # (跟 web_search / browser_bridge / computer_use 同款): 首次任何 app 任何 invocation
     # 审批通过后整会话所有 invoke_app 调用免审. 用户自己 weave 的产物默认信任.
     INVOKE_APP_FULL_NAME,
+    # invoke_workflow (M17) — 跟 invoke_app 同款 enabled-once 模式
+    INVOKE_WORKFLOW_FULL_NAME,
+    # invoke_workflow_dynamic (M17 dynamic) — 同款 enabled-once
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
@@ -134,6 +142,8 @@ ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
     INVOKE_APP_FULL_NAME,
+    INVOKE_WORKFLOW_FULL_NAME,  # M17 — 跟 invoke_app 同款 enabled-once
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,  # M17 dynamic — 同款 enabled-once
 })
 
 
@@ -309,6 +319,17 @@ def _normalize_invoke_app(_tool_input: dict[str, Any]) -> str:
     return "enabled"
 
 
+def _normalize_invoke_workflow(_tool_input: dict[str, Any]) -> str:
+    """invoke_workflow (M17) 同款单 key — 整会话首次审完所有 invoke_workflow 免审."""
+    return "enabled"
+
+
+def _normalize_invoke_workflow_dynamic(_tool_input: dict[str, Any]) -> str:
+    """invoke_workflow_dynamic 同 invoke_workflow 同款 — 跟静态版分开统计 (避免混淆),
+    但行为一致: 整会话首次审完所有 invoke_workflow_dynamic 免审."""
+    return "enabled"
+
+
 def _normalize_web_fetch(_tool_input: dict[str, Any]) -> str:
     """WebFetch 同款单 key 模式 — 拉单个 URL 跑小模型抽信息, 跟 web_search 一样
     没破坏性. 按 URL 切碎审会打断节奏; 首次审完整会话所有 WebFetch 免审."""
@@ -340,6 +361,10 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return _normalize_web_search(tool_input)
     if tool_name == INVOKE_APP_FULL_NAME:
         return _normalize_invoke_app(tool_input)
+    if tool_name == INVOKE_WORKFLOW_FULL_NAME:
+        return _normalize_invoke_workflow(tool_input)
+    if tool_name == INVOKE_WORKFLOW_DYNAMIC_FULL_NAME:
+        return _normalize_invoke_workflow_dynamic(tool_input)
     if tool_name == WEB_FETCH_TOOL_NAME:
         return _normalize_web_fetch(tool_input)
     return None
@@ -519,6 +544,22 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
             invocation_id = str(tool_input.get("invocation_id", "")).strip()
             if not app_name or not invocation_id:
                 return PermissionResultDeny(message="invoke_app 需要 name + invocation_id")
+        if tool_name == WEAVE_WORKFLOW_FULL_NAME:
+            wf_name = str(tool_input.get("name", "")).strip()
+            wf_desc = str(tool_input.get("description", "")).strip()
+            wf_def = str(tool_input.get("definition_json", "")).strip()
+            if not wf_name or not wf_desc or not wf_def:
+                return PermissionResultDeny(
+                    message="weave_workflow 需要 name + description + definition_json"
+                )
+        if tool_name == INVOKE_WORKFLOW_FULL_NAME:
+            wf_name = str(tool_input.get("name", "")).strip()
+            if not wf_name:
+                return PermissionResultDeny(message="invoke_workflow 需要 name")
+        if tool_name == INVOKE_WORKFLOW_DYNAMIC_FULL_NAME:
+            wf_name = str(tool_input.get("name", "")).strip()
+            if not wf_name:
+                return PermissionResultDeny(message="invoke_workflow_dynamic 需要 name")
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input

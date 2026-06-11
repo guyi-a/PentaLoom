@@ -9,8 +9,10 @@ import {
   FilePlus2,
   FileText,
   FolderOpen,
+  GitBranch,
   Globe,
   ListChecks,
+  Network,
   Package,
   Pencil,
   Play,
@@ -33,11 +35,15 @@ import {
   INSTALL_FONT_TOOL_NAME,
   INSTALL_LIBS_TOOL_NAME,
   INVOKE_APP_TOOL_NAME,
+  INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
+  INVOKE_WORKFLOW_TOOL_NAME,
   RUN_SCRIPT_TOOL_NAME,
   WEAVE_APP_EDIT_FILE_TOOL_NAME,
   WEAVE_APP_FINALIZE_TOOL_NAME,
   WEAVE_APP_TOOL_NAME,
   WEAVE_APP_WRITE_FILE_TOOL_NAME,
+  WEAVE_WORKFLOW_FINALIZE_TOOL_NAME,
+  WEAVE_WORKFLOW_TOOL_NAME,
   WORKSPACE_PERMISSION_TOOL_NAME,
 } from "./types";
 import { browserCommandSummary } from "./browser-command";
@@ -72,6 +78,12 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   "mcp__pentaloom_weaver__weave_app_write_file": FilePlus2,
   "mcp__pentaloom_weaver__weave_app_edit_file": Pencil,
   "mcp__pentaloom_weaver__weave_app_finalize": ShieldCheck,
+  // M17 dynamic workflow
+  [WEAVE_WORKFLOW_TOOL_NAME]: GitBranch,
+  [WEAVE_WORKFLOW_FINALIZE_TOOL_NAME]: ShieldCheck,
+  [INVOKE_WORKFLOW_TOOL_NAME]: Network,
+  // 动态版 — 复用 Network icon (跟静态版统一视觉, agent 接管不需要单独 icon 区分)
+  [INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME]: Network,
 };
 
 export function toolIcon(name: string): LucideIcon {
@@ -128,6 +140,20 @@ export function oneLineSummary(
     const appName = typeof input.name === "string" ? input.name : "";
     const invocationId = typeof input.invocation_id === "string" ? input.invocation_id : "";
     return [appName, invocationId].filter(Boolean).join(" · ");
+  }
+  if (name === WEAVE_WORKFLOW_TOOL_NAME || name === WEAVE_WORKFLOW_FINALIZE_TOOL_NAME) {
+    // weave_workflow 用 'name' 字段; weave_workflow_finalize 用 'workflow_name'
+    const wfName =
+      typeof input.name === "string" ? input.name :
+        typeof input.workflow_name === "string" ? input.workflow_name : "";
+    return wfName;
+  }
+  if (
+    name === INVOKE_WORKFLOW_TOOL_NAME ||
+    name === INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME
+  ) {
+    const wfName = typeof input.name === "string" ? input.name : "";
+    return wfName;
   }
   if (n.includes("read") && typeof input.file_path === "string")
     return input.file_path;

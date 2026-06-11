@@ -215,6 +215,18 @@ export const RUN_WEAVER_TOOL_NAME =
 // browser_bridge / computer_use): 首次审完整会话所有 invoke_app 免审.
 export const INVOKE_APP_TOOL_NAME =
   "mcp__pentaloom_weaver__invoke_app";
+// M17 dynamic workflow — 织流程 + 收口 + 调流程.
+export const WEAVE_WORKFLOW_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_workflow";
+export const WEAVE_WORKFLOW_FINALIZE_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_workflow_finalize";
+// invoke_workflow 跟 invoke_app 同款 enabled-once 信任
+export const INVOKE_WORKFLOW_TOOL_NAME =
+  "mcp__pentaloom_weaver__invoke_workflow";
+// invoke_workflow_dynamic — 动态版, 把 workflow 渲成 plan markdown 给主 agent 接管.
+// 跟静态版分开常量, 但 enabled-once 行为一致.
+export const INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME =
+  "mcp__pentaloom_weaver__invoke_workflow_dynamic";
 
 export const BASH_TOOL_NAME = "Bash";
 // SDK / CLI 内置 WebFetch — 拉单个 URL 抽信息. 单 key "enabled" 模式同 web_search.
@@ -237,10 +249,13 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   WEB_SEARCH_TOOL_NAME,
   WEAVE_SKILL_TOOL_NAME,
   WEAVE_APP_TOOL_NAME,
+  WEAVE_WORKFLOW_TOOL_NAME,
   EDIT_WEAVER_TOOL_NAME,
   DELETE_WEAVER_TOOL_NAME,
   RUN_WEAVER_TOOL_NAME,
   INVOKE_APP_TOOL_NAME,
+  INVOKE_WORKFLOW_TOOL_NAME,
+  INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -256,6 +271,8 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   COMPUTER_USE_TOOL_NAME,
   WEB_SEARCH_TOOL_NAME,
   INVOKE_APP_TOOL_NAME,
+  INVOKE_WORKFLOW_TOOL_NAME,
+  INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {
@@ -319,10 +336,20 @@ export interface AppSummary {
   component_counts: Record<string, number>;  // {scripts: 2, windows: 1, ...}
 }
 
+// M17 dynamic workflow — sidebar 用. 跟 AppSummary 平行的瘦摘要.
+export interface WorkflowSummary {
+  name: string;
+  description: string;
+  source: WeaverSource;
+  status: AppStatus;  // 跟 app 共享状态机 (draft / ready / dirty / failed)
+  step_count: number;
+  use_count: number;
+}
+
 export interface WeaverProductsResponse {
   skills: SkillSummary[];
   subagents: unknown[];  // M17
-  workflows: unknown[];  // workflow milestone
+  workflows: WorkflowSummary[];
   apps: AppSummary[];
 }
 
@@ -375,7 +402,7 @@ export interface AppRunLog {
   duration_ms: number;
   started_at: string;
   error?: string;
-  trigger?: "user" | "schedule" | "watch";  // Phase E; 旧 entry 缺字段默认 user
+  trigger?: "user" | "schedule" | "watch" | "workflow";  // Phase E + M17 workflow; 旧 entry 缺字段默认 user
 }
 
 // D-4: Phase D service runtime snapshot — inspect_weaver / detail endpoint 都返这个
@@ -438,6 +465,86 @@ export interface AppDetailResponse {
   recent_runs: AppRunLog[];
   running_services?: AppRunningService[];  // D-4: 后端可能没返这字段, 前端默认空数组
   triggers?: AppTriggersState;             // Phase E: schedules + watches 运行态
+}
+
+// ──── M17 dynamic workflow ──────────────────────────────────
+
+// 3 种 step (跟后端 models.py 的 InvokeAppStep / CallLlmStep / SetVarStep 平行).
+// kind 是 discriminator, 其它字段按 kind 不同.
+export type WorkflowStep =
+  | { kind: "invoke_app"; id: string; app_name: string; invocation_id: string; args: Record<string, unknown> }
+  | {
+      kind: "call_llm";
+      id: string;
+      system: string;
+      prompt: string;
+      output_format: "text" | "json";
+      model: string | null;
+      max_tokens: number;
+      timeout_s: number;
+    }
+  | { kind: "set_var"; id: string; value: Record<string, unknown> };
+
+export interface WorkflowDefinition {
+  name: string;
+  description: string;
+  version: string;
+  inputs_schema: Record<string, unknown>;
+  output_template: Record<string, unknown> | null;
+  steps: WorkflowStep[];
+}
+
+export interface WorkflowMeta {
+  name: string;
+  description: string;
+  source: WeaverSource;
+  status: AppStatus;
+  created_at: string;
+  updated_at: string;
+  last_finalized_at: string | null;
+  last_finalize_error: string | null;
+  last_used_at: string | null;
+  use_count: number;
+}
+
+// 单步执行结果. status: success / failed (失败步还含 error). invoke_app 步还含
+// app_name / invocation_id / app_run_id 给 modal 跳转 app modal 看那一次 app run.
+// kind 多一个 "output_template": runtime 在 output_template 渲染失败时插一条 pseudo
+// step 进 step_results, 让 modal 能看见错在哪 (而不是"step 全 success 但 run failed"幽灵).
+export interface WorkflowStepLog {
+  id: string;
+  kind: "invoke_app" | "call_llm" | "set_var" | "output_template";
+  status: "success" | "failed";
+  duration_ms: number;
+  output_summary?: unknown;
+  error?: string;
+  app_name?: string;
+  invocation_id?: string;
+  app_run_id?: string;
+}
+
+export interface WorkflowRunLog {
+  run_id: string;
+  status: string;       // success / failed
+  duration_ms: number;
+  started_at: string;
+  trigger?: "user" | "schedule" | "watch" | "workflow";  // 当前 workflow 只支持 user 触发
+  error?: string;
+  steps: WorkflowStepLog[];
+}
+
+// /weaver/workflows/{name}/detail 返. summary 含 definition + meta + step 摘要.
+export interface WorkflowDetailResponse {
+  summary: {
+    name: string;
+    description: string;
+    version: string;
+    step_count: number;
+    steps_summary: { id: string; kind: WorkflowStep["kind"] }[];
+    definition: WorkflowDefinition;
+    meta: WorkflowMeta | null;
+  };
+  recent_runs: WorkflowRunLog[];
 }
 
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.

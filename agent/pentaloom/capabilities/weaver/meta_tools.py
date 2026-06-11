@@ -106,9 +106,29 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "meta": meta.model_dump(mode="json") if meta else None,
             "running_services": running_services,  # [{name, status, port, pid, started_at, restart_count, log_path}]
         }
-    # subagent / workflow — 在后续里程碑实装
+    if k == "workflow":
+        # M17 dynamic workflow — inspect 返 definition + meta + recent_runs
+        from pentaloom.capabilities.weaver import workflow as workflow_biz
+        from pentaloom.capabilities.weaver import workflow_runtime
+        entry = index.find_entry(settings, "workflow", name)
+        if entry is None:
+            raise index.WeaverError(f"workflow {name!r} 不存在")
+        try:
+            summary = workflow_biz.list_workflow_summary(settings, name)
+        except index.WeaverError as e:
+            raise index.WeaverError(f"读 workflow {name!r} 失败: {e}") from e
+        recent_runs = workflow_runtime.tail_workflow_run_logs(settings, name, limit=10)
+        return {
+            "name": name,
+            "kind": "workflow",
+            "source": entry.source,
+            "description": entry.description,
+            **summary,  # 含 step_count / steps_summary / definition / meta
+            "recent_runs": recent_runs,
+        }
+    # subagent — 在 M17 subagent UI 里程碑实装
     raise index.WeaverError(
-        f"inspect_weaver(kind={kind}) 只支持 skill / app; "
+        f"inspect_weaver(kind={kind}) 只支持 skill / app / workflow; "
         f"{kind} 在后续里程碑实装"
     )
 
@@ -116,18 +136,29 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
 def edit_weaver(
     settings: Settings, kind: str, name: str, new_content: str
 ) -> dict[str, Any]:
-    """改某产物. skill 是改 SKILL.md 全文. 内置 skill 不在 weaver 内, 不会被点名."""
+    """改某产物.
+
+    skill: new_content = SKILL.md 全文
+    workflow: new_content = workflow.json 全文 (status ready → dirty 强制重 finalize)
+    """
     k = _check_kind(kind)
     if k == "skill":
         meta = skill.edit_skill(settings, name, new_content)
         return {"name": name, "kind": "skill", "edited": True, "meta": meta.model_dump(mode="json")}
+    if k == "workflow":
+        from pentaloom.capabilities.weaver import workflow as workflow_biz
+        meta = workflow_biz.edit_workflow(
+            settings, name=name, new_definition_json=new_content,
+        )
+        return {"name": name, "kind": "workflow", "edited": True, "meta": meta.model_dump(mode="json")}
     raise index.WeaverError(
-        f"M14 阶段 edit_weaver(kind={kind}) 只支持 skill; {kind} 在后续里程碑实装"
+        f"edit_weaver(kind={kind}) 只支持 skill / workflow (app 用 weave_app_edit_file); "
+        f"{kind} 在后续里程碑实装"
     )
 
 
 def delete_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
-    """软删. skill 是搬到 .trash/. 内置 skill 不在 weaver 内, 不会被点名.
+    """软删. 整个产物目录搬到 .trash/. 内置 skill 不在 weaver 内, 不会被点名.
 
     trash_path 为 None 时表示孤儿条目 — index 有但物理目录已被外部清掉, 这次只清了 index.
     """
@@ -146,15 +177,27 @@ def delete_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "trash_path": str(trash_path) if trash_path else None,
             "was_orphan": trash_path is None,
         }
+    if k == "workflow":
+        from pentaloom.capabilities.weaver import workflow as workflow_biz
+        trash_path = workflow_biz.delete_workflow_soft(settings, name)
+        return {
+            "name": name, "kind": "workflow", "deleted": True,
+            "trash_path": str(trash_path) if trash_path else None,
+            "was_orphan": trash_path is None,
+        }
     raise index.WeaverError(
-        f"delete_weaver(kind={kind}) 只支持 skill / app; {kind} 在后续里程碑实装"
+        f"delete_weaver(kind={kind}) 只支持 skill / app / workflow; {kind} 在后续里程碑实装"
     )
 
 
 def run_weaver(
     settings: Settings, kind: str, name: str, args: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """运行某产物. workflow 才有意义; skill / subagent 是被加载, 没 'run' 语义."""
+    """运行某产物. workflow 才有意义; skill / subagent 是被加载, 没 'run' 语义.
+
+    workflow 也可走 dedicated invoke_workflow tool (schema 紧, prompts 主推那个),
+    run_weaver(kind=workflow) 是兜底入口.
+    """
     k = _check_kind(kind)
     if k == "skill":
         raise index.WeaverError(
@@ -165,8 +208,20 @@ def run_weaver(
         raise index.WeaverError(
             "subagent 通过 Task 工具派单, 不走 run_weaver. M17 才有 UI 配置"
         )
+    if k == "workflow":
+        # workflow 是异步 runtime, 必须在 async 上下文里跑. _run_weaver 工具体走特殊
+        # 路径直接 await workflow_runtime.invoke_workflow, 不会到这里; 直接调
+        # meta_tools.run_weaver(kind=workflow) 不被支持 (没办法在 sync 里安全转 async).
+        raise index.WeaverError(
+            "run_weaver(kind='workflow') 必须从异步上下文调; 工具入口走 _run_weaver, "
+            "代码里调请直接 await workflow_runtime.invoke_workflow(...)."
+        )
+    if k == "app":
+        raise index.WeaverError(
+            "app 走 dedicated invoke_app tool, 不走 run_weaver"
+        )
     raise NotImplementedError(
-        f"run_weaver(kind={kind}) M16 才实装 (workflow); M14 这里先占位"
+        f"run_weaver(kind={kind}) 未支持"
     )
 
 
@@ -223,6 +278,13 @@ def tail_weaver_logs(
         raise index.WeaverError(
             "skill 是被动加载, 没有运行历史. 用 inspect_weaver 读 SKILL.md"
         )
+    if k == "workflow":
+        from pentaloom.capabilities.weaver import workflow_runtime
+        entry = index.find_entry(settings, "workflow", name)
+        if entry is None:
+            raise index.WeaverError(f"workflow {name!r} 不存在")
+        runs = workflow_runtime.tail_workflow_run_logs(settings, name, limit=max(1, n))
+        return {"name": name, "kind": "workflow", "mode": "runs", "runs": runs}
     raise NotImplementedError(
-        f"tail_weaver_logs(kind={kind}) 在 workflow milestone 才实装"
+        f"tail_weaver_logs(kind={kind}) 未支持 (subagent 在 M17 subagent UI 里程碑)"
     )

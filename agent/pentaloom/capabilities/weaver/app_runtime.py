@@ -127,7 +127,8 @@ def _append_run_log(
 
     status: success / failed / skipped (M16 Phase E 加 skipped — schedule overlap /
     watch in-flight / status race).
-    trigger: user (default, MCP tool / window WS 调用) / schedule / watch.
+    trigger: user (default, MCP tool / window WS 调用) / schedule / watch / workflow
+    (M17, workflow_runtime.invoke_workflow 调用 invoke_app step 时透传).
 
     不引 DB. tail_weaver_logs(kind='app') 反过来读这文件; 旧 entry 缺 trigger 字段
     读取时默认 user 兼容.
