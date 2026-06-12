@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { Check, GitBranch, Pencil, Trash2, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  GitBranch,
+  Loader2,
+  Pencil,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { LoomMark } from "@/components/brand/LoomMark";
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
 import { WeaverGroup } from "@/components/sidebar/WeaverGroup";
 import { api } from "@/lib/api";
+import { useSessionStatus } from "@/lib/session-status-store";
 import type { SessionMeta } from "@/lib/types";
 import {
   cn,
@@ -263,11 +272,9 @@ function SessionRow({
           </div>
         ) : (
           <div className="flex items-center gap-2 px-3 py-2.5">
-            {/* GitBranch 染 thread-file 钢蓝, opacity 50 — 五瓣丝线主题首次散到列表里, 一眼看出"是 PentaLoom 不是 Linear" */}
-            <GitBranch
-              size={12}
-              className="shrink-0 text-[color:var(--color-thread-file)] opacity-50"
-            />
+            {/* 状态 icon: idle 时默认 GitBranch (五瓣丝线主题), running 时换 spinner,
+                waiting_approval 时换 AlertCircle (橙色, 提示用户去看). */}
+            <SessionStatusIcon sid={session.session_id} />
             {/* title */}
             <div
               className={cn(
@@ -317,5 +324,36 @@ function SessionRow({
         )}
       </div>
     </li>
+  );
+}
+
+// 单 session 状态 icon — 订阅 useSessionStatusStore Map<sid, status>, 状态变
+// 时仅本 SessionRow 重渲 (zustand 选择器精度). 三态:
+//   - idle: GitBranch (默认 brand-y 钢蓝, opacity 50 跟非 active 文字一档)
+//   - running: Loader2 animate-spin (accent 色, 暗示"在跑")
+//   - waiting_approval: AlertCircle 橙色 (用户进 session 解审批, 高显著度)
+function SessionStatusIcon({ sid }: { sid: string }) {
+  const status = useSessionStatus(sid);
+  if (status === "running") {
+    return (
+      <Loader2
+        size={12}
+        className="shrink-0 animate-spin text-[color:var(--color-accent)]"
+      />
+    );
+  }
+  if (status === "waiting_approval") {
+    return (
+      <AlertCircle
+        size={12}
+        className="shrink-0 text-[color:var(--color-warn,#d97706)]"
+      />
+    );
+  }
+  return (
+    <GitBranch
+      size={12}
+      className="shrink-0 text-[color:var(--color-thread-file)] opacity-50"
+    />
   );
 }

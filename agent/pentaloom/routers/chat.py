@@ -55,6 +55,7 @@ from pentaloom.infra.attachments import (
 )
 from pentaloom.infra.db import AsyncSessionLocal
 from pentaloom.infra.prompt_blocks import build_attachments_block
+from pentaloom.infra.session_status import session_status
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import (
     ALLOW_SESSION_TOOLS,
@@ -310,11 +311,18 @@ async def _run_query_and_fill_buffer(
                 for frame in _serialize(msg, current_msg_id):
                     chunk = _sse(frame)
                     buf.append(chunk)
-                    # 跟踪 HITL pending: tool_use(HITL 工具) → mark; tool_result → clear
+                    # 跟踪 HITL pending: tool_use(HITL 工具) → mark; tool_result → clear.
+                    # 同步推 session_status: 进入审批切 waiting_approval, 出来切回 running
+                    # (前提是没有别的 pending — 多 Bash 并发场景).
                     if frame.get("type") == "tool_use" and frame.get("name") in HITL_TOOL_NAMES:
                         buf.mark_pending(str(frame.get("id", "")), chunk)
+                        session_status.set_status(sid, "waiting_approval")
                     elif frame.get("type") == "tool_result":
                         buf.clear_pending(str(frame.get("tool_use_id", "")))
+                        session_status.set_status(
+                            sid,
+                            "waiting_approval" if buf.has_pending() else "running",
+                        )
         except asyncio.CancelledError:
             logger.info(f"chat task cancelled (session={sid})")
             buf.append(_sse({"type": "error", "message": "cancelled"}))
@@ -325,6 +333,9 @@ async def _run_query_and_fill_buffer(
         finally:
             buf.append(_sse({"type": "stream_end"}))
             buf.finish()
+            # 状态机收尾 — turn 跑完不论成功/失败/cancel, 一律切 idle 让 sidebar
+            # spinner 停转. 跟 stream_end 帧同步, 用户感知一致.
+            session_status.set_status(sid, "idle")
             entry = pool.peek_entry(sid) if pool is not None else None
             if entry is not None and entry.pending_rebuild:
                 logger.info(f"weaver rebuild pending — evict session={sid}")
@@ -356,21 +367,49 @@ async def _run_chat_turn(
 
     抽出来的理由: 上轮 weaver_post_turn_evict + HITL pending bookkeeping +
     SSE 状态机 + StreamBuffer 生命周期都嵌在这里, 复制粘贴一份就开始漂.
-    """
-    try:
-        pl, lock = await pool.get(sid, mounted)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
 
+    `pool.get` 含 SDK CLI 子进程 spawn + initialize, 新 session 数百 ms ~ 数秒.
+    这段时间不能挡前端 fetch — 否则 mutate("sessions") 调不上, 新会话不在 sidebar
+    出现. 所以先 buf.append 一个 sentinel + 起后台 task 跑 pool.get, 立刻返
+    StreamingResponse; stream_all 第一次 yield 是 sentinel, headers 立即 flush.
+    """
     buf = stream_buffers.create_for_turn(sid)
     buf.set_user_prompt(
         display_text,
         attachment_count=attachment_count,
         inline_image_count=inline_image_count,
     )
-    task = asyncio.create_task(
-        _run_query_and_fill_buffer(pl, internal_prompt, inline_image_blocks, sid, lock, pool)
-    )
+    # SSE comment 帧: `:` 开头任意文本 + `\n\n`. 浏览器 EventSource 自动忽略,
+    # 我们的 parseSSE (api.ts) 也只 filter `data:` 开头的行, 不会当 frame 消费.
+    # 作用: 让 stream_all 立刻有东西 yield → uvicorn flush response headers
+    # → 前端 `await fetch()` 立即 resolve → mutate("sessions") 立即调上.
+    buf.append(": session-ready\n\n")
+    # session 级状态推 running — 跟 sentinel 同步, 用户按下发送瞬间 sidebar
+    # 的 spinner 立刻转, 不等 SDK 子进程 spawn 完.
+    session_status.set_status(sid, "running")
+
+    async def _kickoff() -> None:
+        # 后台跑 pool.get (SDK 子进程 spawn) + query. 异常落 SSE 帧 + 状态切 idle.
+        try:
+            pl, lock = await pool.get(sid, mounted)
+        except ValueError as e:
+            buf.append(_sse({"type": "error", "message": str(e)}))
+            buf.append(_sse({"type": "stream_end"}))
+            buf.finish()
+            session_status.set_status(sid, "idle")
+            return
+        except Exception as e:
+            logger.exception(f"pool.get failed sid={sid}: {e}")
+            buf.append(_sse({"type": "error", "message": f"session init failed: {e}"}))
+            buf.append(_sse({"type": "stream_end"}))
+            buf.finish()
+            session_status.set_status(sid, "idle")
+            return
+        await _run_query_and_fill_buffer(
+            pl, internal_prompt, inline_image_blocks, sid, lock, pool
+        )
+
+    task = asyncio.create_task(_kickoff())
     buf.set_task(task)
 
     return StreamingResponse(

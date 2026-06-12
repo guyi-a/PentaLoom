@@ -18,6 +18,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk._internal.sessions import project_key_for_directory
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -26,6 +27,7 @@ from pentaloom.crud import chat_session as crud_chat
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.infra.db import AsyncSessionLocal
 from pentaloom.infra.prompt_blocks import strip_internal_prompt_blocks
+from pentaloom.infra.session_status import session_status
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.models.session import (
     ChatSession,
@@ -199,6 +201,38 @@ def _session_message_to_frames(
         _content_blocks_to_frames(content, message_id),
         attachment_count,
         inline_images,
+    )
+
+
+SSE_STATUS_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+
+@router.get(
+    "/status/stream",
+    summary="全局 SSE 长连 — 推送各 session 的状态变化 (running / waiting_approval / idle)",
+)
+async def stream_session_status() -> StreamingResponse:
+    """sidebar 挂载时 open 一次, 卸载关. 一份连接覆盖所有 session.
+
+    跟 /chat 的 per-turn SSE 流物理分开 (不同 endpoint, 不同 buffer):
+      - /chat 流: 携带消息内容, 生命周期 = turn
+      - /sessions/status/stream: 携带状态枚举, 生命周期 = sidebar 挂载期
+
+    新订阅者订阅瞬间, publisher 先 yield 当前所有非 idle 状态 snapshot —
+    用户刚开 app / 切回页面时不需要等下次 turn 才看到"哪些会话在跑".
+    """
+
+    async def gen():
+        async for chunk in session_status.subscribe():
+            yield chunk
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers=SSE_STATUS_HEADERS,
     )
 
 
@@ -393,6 +427,7 @@ async def delete_session(sid: str, request: Request) -> dict:
     # 1.5 兜底 buffer 清理 — pool.evict 在 entry 命中时已经清过, 但当前 session
     # 没在 pool (如从未跑过 / 已 LRU 出局) 时不会清, 这里补一刀.
     stream_buffers.remove(sid)
+    session_status.remove(sid)
 
     # 2. db: chat_sessions + 三张镜像表
     async with AsyncSessionLocal() as db:
