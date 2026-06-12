@@ -22,11 +22,12 @@
 """
 
 import asyncio
+import base64
 import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -39,13 +40,21 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from pentaloom.config import get_settings
 from pentaloom.crud import chat_session as crud_chat
+from pentaloom.infra.attachments import (
+    AttachmentTooLarge,
+    commit_attachment,
+    pick_unique_dest,
+    sanitize_filename,
+)
 from pentaloom.infra.db import AsyncSessionLocal
+from pentaloom.infra.prompt_blocks import build_attachments_block
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import (
     ALLOW_SESSION_TOOLS,
@@ -249,12 +258,20 @@ async def _resolve_session(req: ChatRequest) -> tuple[str, list[str]]:
 
 
 async def _run_query_and_fill_buffer(
-    pl, prompt: str, sid: str, lock: asyncio.Lock, pool
+    pl,
+    prompt: str,
+    inline_image_blocks: list[dict[str, Any]] | None,
+    sid: str,
+    lock: asyncio.Lock,
+    pool,
 ) -> None:
-    """后台 task: 跑一轮 pl.query(prompt), 把每帧 append 到 stream_buffer.
+    """后台 task: 跑一轮 pl.query / pl.query_multimodal, 把每帧 append 到 stream_buffer.
 
     锁: per-session lock 串行化 turn (LoomPool 给的); 同 sid 同时只跑一轮.
     异常: query 抛错 emit error frame; 一定走 finally append stream_end + finish().
+
+    inline_image_blocks: list[dict] 时走 multimodal 路径 — 把 image 块跟 text 块
+    拼成 content_blocks list 喂给 SDK; None 时走 plain str query 路径 (现有行为).
 
     msg_id 追踪: anthropic stream 协议里 message_start 携带 message.id, 后续同
     一 message 的 content_block_delta 没自带 message id. 我们在这里维护
@@ -271,9 +288,18 @@ async def _run_query_and_fill_buffer(
     buf = stream_buffers.get(sid)
     assert buf is not None, f"stream_buffer should exist for {sid}"
     current_msg_id: str | None = None
+
+    if inline_image_blocks:
+        # content blocks: image 在前, text 在后 (Anthropic 推荐 ordering — 让 LLM
+        # 先看图再读文本指令). text 块用 internal_prompt (含 attachments block).
+        content_blocks = [*inline_image_blocks, {"type": "text", "text": prompt}]
+        message_iter = pl.query_multimodal(content_blocks)
+    else:
+        message_iter = pl.query(prompt)
+
     async with lock:
         try:
-            async for msg in pl.query(prompt):
+            async for msg in message_iter:
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}
                     et = ev.get("type")
@@ -308,6 +334,52 @@ async def _run_query_and_fill_buffer(
                     logger.exception(f"weaver post-turn evict failed (session={sid})")
 
 
+async def _run_chat_turn(
+    *,
+    sid: str,
+    mounted: list[str],
+    display_text: str,
+    internal_prompt: str,
+    attachment_count: int,
+    inline_image_count: int = 0,
+    inline_image_blocks: list[dict[str, Any]] | None = None,
+    pool,
+) -> StreamingResponse:
+    """LoomPool 拉 client → StreamBuffer 占名额 → 起后台 query task → 返 SSE.
+
+    /chat 跟 /chat/with-attachments 共享这条流水线. 区别仅在入参装配:
+      - /chat: display_text == internal_prompt, 0 附件 0 图片
+      - /chat/with-attachments: internal_prompt 已被 prepend 上
+        <pentaloom_internal_attachments> 块; display_text 是用户纯文本
+        (附件 only 时为空字符串); attachment_count > 0.
+        inline_image_blocks 不为 None 时走 multimodal 路径喂 SDK.
+
+    抽出来的理由: 上轮 weaver_post_turn_evict + HITL pending bookkeeping +
+    SSE 状态机 + StreamBuffer 生命周期都嵌在这里, 复制粘贴一份就开始漂.
+    """
+    try:
+        pl, lock = await pool.get(sid, mounted)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    buf = stream_buffers.create_for_turn(sid)
+    buf.set_user_prompt(
+        display_text,
+        attachment_count=attachment_count,
+        inline_image_count=inline_image_count,
+    )
+    task = asyncio.create_task(
+        _run_query_and_fill_buffer(pl, internal_prompt, inline_image_blocks, sid, lock, pool)
+    )
+    buf.set_task(task)
+
+    return StreamingResponse(
+        buf.stream_all(),
+        media_type="text/event-stream",
+        headers={**SSE_HEADERS, "X-Session-Id": sid},
+    )
+
+
 @router.post("/chat", summary="向 PentaLoom 发一条消息, SSE 流回 (支持后续 GET /resume 重连)")
 async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     pool = getattr(request.app.state, "pool", None)
@@ -316,22 +388,191 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
 
     sid, mounted = await _resolve_session(req)
 
+    return await _run_chat_turn(
+        sid=sid,
+        mounted=mounted,
+        display_text=req.prompt,
+        internal_prompt=req.prompt,
+        attachment_count=0,
+        pool=pool,
+    )
+
+
+# ──── 附件 / inline image 上限 (跟 docs/attachment-upload-plan.md §8 对齐) ─────
+MAX_ATTACHMENT_COUNT = 10
+MAX_PER_FILE_BYTES = 50 * 1024 * 1024
+MAX_TOTAL_BYTES = 100 * 1024 * 1024
+# inline image (粘贴) 单独 cap — 不落盘 + 不算 file count, 直接喂 SDK content block.
+# Anthropic 接图大约 5MB / 张, 总 token 隐含 cap; 我们粗校 5MB / 张 + 10 张.
+MAX_INLINE_IMAGE_COUNT = 10
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+_INLINE_IMAGE_MIME_ALLOW = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
+@router.post(
+    "/chat/with-attachments",
+    summary="multipart 版 /chat — 把附件 commit 进 sandbox 后再起 turn",
+)
+async def chat_with_attachments(
+    request: Request,
+    prompt: Annotated[str, Form()] = "",
+    session_id: Annotated[str | None, Form()] = None,
+    mounted_dirs: Annotated[str | None, Form()] = None,
+    files: Annotated[list[UploadFile], File()] = [],  # noqa: B006 (FastAPI 默认惯例)
+    inline_images: Annotated[list[UploadFile], File()] = [],  # noqa: B006
+) -> StreamingResponse:
+    """commit-on-send 附件 / inline image 上传. 两条路径:
+      - files: 落盘 sandbox/attachments/{filename}, 走 internal block 引用路径
+      - inline_images: **不落盘**, 转 base64 拼 Anthropic content_blocks 直接喂 SDK
+        (走 PentaLoom.query_multimodal). LLM 真"看到"图. 适合粘贴截图.
+
+    流程:
+      1. count cap (file ≤ 10, inline image ≤ 10)
+      2. 解 mounted_dirs JSON (form 字段编码限制)
+      3. 复用 _resolve_session — 构造 fake ChatRequest 带过去
+      4. 流式落盘 file 到 sandbox/attachments/{filename}, 同名 (N) suffix 避让
+      5. 读 inline_images 转 base64 (per-image size cap; mime 白名单)
+      6. 拼 <pentaloom_internal_attachments> block 跟 user 文本 → internal_prompt
+      7. 走 _run_chat_turn — inline_images 不为空时走 multimodal 路径
+
+    HITL: 不审 — 见 plan §4.2 lead note. 用户主动通过 file picker / clipboard,
+    跟 mount_dir 同档信任.
+    """
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(500, "LoomPool not initialized")
+
+    if not files and not inline_images:
+        raise HTTPException(
+            400, "no files or inline_images; use /chat for text-only sends"
+        )
+    if len(files) > MAX_ATTACHMENT_COUNT:
+        raise HTTPException(
+            400, f"too many files ({len(files)} > {MAX_ATTACHMENT_COUNT})"
+        )
+    if len(inline_images) > MAX_INLINE_IMAGE_COUNT:
+        raise HTTPException(
+            400,
+            f"too many inline images ({len(inline_images)} > {MAX_INLINE_IMAGE_COUNT})",
+        )
+
+    # parse mounted_dirs JSON. 空字符串 / 缺字段 = None (沿用 db).
+    mounted_dirs_list: list[str] | None
+    if mounted_dirs:
+        try:
+            parsed = json.loads(mounted_dirs)
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"mounted_dirs not valid JSON: {e}") from e
+        if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+            raise HTTPException(400, "mounted_dirs must be a JSON array of strings")
+        mounted_dirs_list = parsed
+    else:
+        mounted_dirs_list = None
+
+    # resolve / create session — 用 fake ChatRequest 复用现有逻辑.
+    # prompt 走过去仅用于算 title (新 session 时); 附件 only 时空 prompt 也 OK,
+    # title 为 None, sidebar 退化到 sid 截断显示.
+    fake_req = ChatRequest(
+        prompt=prompt, session_id=session_id, mounted_dirs=mounted_dirs_list
+    )
+    sid, mounted = await _resolve_session(fake_req)
+
+    # commit files 流式落盘到 sandbox/attachments/{name}, 同名加 (N) suffix.
+    # 失败时只清理这一轮新写入的文件; 不动 attachments/ 里上轮 / 别 turn 的文件.
+    settings = get_settings()
+    sandbox = settings.sandbox_dir_for(sid)
+    attachments_dir = sandbox / "attachments"
+    written_dests: list[Path] = []  # 失败时回滚用
+    rel_paths: list[str] = []
+    total_written = 0
     try:
-        pl, lock = await pool.get(sid, mounted)
-    except ValueError as e:
+        for i, f in enumerate(files):
+            safe = sanitize_filename(f.filename or "", fallback=f"untitled-{i + 1}")
+            dest = pick_unique_dest(attachments_dir, safe)
+            written = await commit_attachment(
+                f,
+                dest=dest,
+                per_file_max=MAX_PER_FILE_BYTES,
+                total_so_far=total_written,
+                total_max=MAX_TOTAL_BYTES,
+            )
+            total_written += written
+            written_dests.append(dest)
+            rel_paths.append(f"attachments/{dest.name}")
+    except AttachmentTooLarge as e:
+        for d in written_dests:
+            d.unlink(missing_ok=True)
         raise HTTPException(400, str(e)) from e
+    except OSError as e:
+        for d in written_dests:
+            d.unlink(missing_ok=True)
+        logger.exception(f"attachment commit failed sid={sid}")
+        raise HTTPException(500, f"attachment commit failed: {e}") from e
 
-    # 占住 buffer 名额 + 起后台 task. 后台 task 拿到 lock 才会真正开跑 (同 sid 上
-    # 轮没结束就排队), buffer 在前的 chunks 会保留, 重连仍能拿到.
-    buf = stream_buffers.create_for_turn(sid)
-    buf.set_user_prompt(req.prompt)
-    task = asyncio.create_task(_run_query_and_fill_buffer(pl, req.prompt, sid, lock, pool))
-    buf.set_task(task)
+    if files:
+        logger.info(
+            f"attachments committed sid={sid} count={len(files)} bytes={total_written} "
+            f"paths={rel_paths}"
+        )
 
-    return StreamingResponse(
-        buf.stream_all(),
-        media_type="text/event-stream",
-        headers={**SSE_HEADERS, "X-Session-Id": sid},
+    # 读 inline_images: 不落盘, 直接转 base64 给 SDK content block 用.
+    # 单张超 cap / mime 不在白名单 → 400. 整 turn 已写入的附件 attachments_dir
+    # 不回滚 (image 校验在 file 写入之后, 出错时附件保留 — 用户选择重试整 turn 时
+    # 自动覆盖同名 + 加 suffix).
+    inline_image_blocks: list[dict[str, Any]] = []
+    for i, img in enumerate(inline_images):
+        mime = (img.content_type or "image/png").lower()
+        if mime not in _INLINE_IMAGE_MIME_ALLOW:
+            raise HTTPException(
+                400,
+                f"inline_image[{i}] mime {mime!r} not allowed; "
+                f"must be one of {sorted(_INLINE_IMAGE_MIME_ALLOW)}",
+            )
+        # 一次 read 进内存. UploadFile 默认有 SpooledTemporaryFile, 文件大时已落盘.
+        # cap 在前面 5MB, 内存压力可控.
+        data = await img.read()
+        if len(data) > MAX_INLINE_IMAGE_BYTES:
+            raise HTTPException(
+                400,
+                f"inline_image[{i}] {img.filename or '(unnamed)'!r} too large: "
+                f"{len(data)} > {MAX_INLINE_IMAGE_BYTES}",
+            )
+        inline_image_blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": base64.b64encode(data).decode(),
+            },
+        })
+
+    if inline_images:
+        total_img_bytes = sum(
+            len(base64.b64decode(b["source"]["data"])) for b in inline_image_blocks
+        )
+        logger.info(
+            f"inline images sid={sid} count={len(inline_images)} bytes={total_img_bytes}"
+        )
+
+    # 拼 internal_prompt. display_text 保持纯用户文本 (空时前端走 count 占位).
+    # internal_prompt 在 prompt 空时就 = block 自身 — block 是 markdown 文本, SDK
+    # 接受这种 user message; strip 后剩空串, 前端走 attachment_count > 0 占位渲染.
+    # files 空时不拼 attachments block (纯 inline image 场景, 没文件路径要 agent 看).
+    if rel_paths:
+        block = build_attachments_block(rel_paths)
+        internal_prompt = f"{block}{prompt}"
+    else:
+        internal_prompt = prompt
+
+    return await _run_chat_turn(
+        sid=sid,
+        mounted=mounted,
+        display_text=prompt,
+        internal_prompt=internal_prompt,
+        attachment_count=len(files),
+        inline_image_count=len(inline_images),
+        inline_image_blocks=inline_image_blocks or None,
+        pool=pool,
     )
 
 
@@ -360,12 +601,22 @@ async def resume(sid: str) -> Response:
     # 既不进 buffer.chunks (UserMessage 文本走 _serialize 时被跳过), 也未必在
     # SWR 拉到的 JSONL 里 (SDK 写时机不保证). 不注入的话刷新 / 切走再回 / 多 tab
     # 都会看到自己消息消失到 turn 结束才出现.
+    #
+    # attachment_count / inline_image_count 跟 text 一对配套: text 空 + 任一 > 0
+    # 时前端渲染 "📎 N 个文件" / "🖼️ N 张图片" 占位; 都为 0 + text 空时不注入帧.
     user_prompt = buf.user_prompt
+    attachment_count = buf.attachment_count
+    inline_image_count = buf.inline_image_count
     stream = buf.stream_all()
 
     async def _with_user_prompt() -> AsyncIterator[str]:
-        if user_prompt:
-            yield _sse({"type": "user_prompt", "text": user_prompt})
+        if user_prompt or attachment_count > 0 or inline_image_count > 0:
+            yield _sse({
+                "type": "user_prompt",
+                "text": user_prompt or "",
+                "attachment_count": attachment_count,
+                "inline_image_count": inline_image_count,
+            })
         async for chunk in stream:
             yield chunk
 

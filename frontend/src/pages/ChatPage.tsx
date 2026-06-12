@@ -27,7 +27,12 @@ import { Check, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { FilePreviewPanel } from "@/components/right-panel/file-preview/FilePreviewPanel";
 import { RightPanel } from "@/components/right-panel/RightPanel";
-import { api, chatStream, resumeChat } from "@/lib/api";
+import {
+  api,
+  chatStream,
+  chatStreamWithAttachments,
+  resumeChat,
+} from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
 import {
@@ -89,6 +94,14 @@ export function ChatPage() {
   // ── 现场流 ────────────────────────────────────────────────
   const [liveFrames, setLiveFrames] = useState<Frame[]>([]);
   const [localUserPrompt, setLocalUserPrompt] = useState<string | null>(null);
+  // 跟 localUserPrompt 配套, attach-only 时 prompt 空但 count > 0,
+  // user bubble 渲染 "📎 N 个文件". resume frame 也带这字段, 切走再回时恢复.
+  const [localAttachmentCount, setLocalAttachmentCount] = useState<number>(0);
+  // 内嵌图片缩略图 src 列 (live blob URL) — turn 进行期间 user bubble 渲缩略图.
+  // turn 结束后由 history 拉到的 data URL 接管显示, 我们 revoke + 清空.
+  // localInlineImageCount 保留给 resume mid-turn 占位 (跨页面 blob URL 失效, 退回数量).
+  const [localInlineImages, setLocalInlineImages] = useState<{ src: string }[]>([]);
+  const [localInlineImageCount, setLocalInlineImageCount] = useState<number>(0);
   const [sending, setSending] = useState(false);
   // 当前活跃的 SSE 流的 abort 函数 (chatStream 或 resumeChat 都用同一槽位 —
   // 任一时刻只会有一个: send() 跑时不会 resume, resume 跑完才 setSending(false))
@@ -160,6 +173,12 @@ export function ChatPage() {
     let cancelled = false;
     setLiveFrames([]);
     setLocalUserPrompt(null);
+    setLocalAttachmentCount(0);
+    setLocalInlineImages((prev) => {
+      prev.forEach((img) => URL.revokeObjectURL(img.src));
+      return [];
+    });
+    setLocalInlineImageCount(0);
     setSending(false);
 
     if (!sid) return;
@@ -188,8 +207,12 @@ export function ChatPage() {
           if (cancelled) break;
           if (f.type === "user_prompt") {
             // 后端在 resume 首帧塞回这轮 turn 的 user prompt — 用来补 "刷新后
-            // localUserPrompt 是 null, JSONL 又没 catch up" 的空窗.
+            // localUserPrompt 是 null, JSONL 又没 catch up" 的空窗. attachment_count /
+            // inline_image_count 跟 text 配套 (任一 only 时 text 空 count > 0),
+            // 一并恢复让占位渲染对.
             setLocalUserPrompt(f.text);
+            setLocalAttachmentCount(f.attachment_count ?? 0);
+            setLocalInlineImageCount(f.inline_image_count ?? 0);
             continue;
           }
           setLiveFrames((prev) => appendFrame(prev, f));
@@ -202,6 +225,8 @@ export function ChatPage() {
           globalMutate("sessions");
           setLiveFrames([]);
           setLocalUserPrompt(null);
+          setLocalAttachmentCount(0);
+          setLocalInlineImageCount(0);
         }
       } catch (err) {
         // 用户切走 / 刷新触发的 abort 是预期; 别 toast
@@ -224,14 +249,41 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
-  async function send(prompt: string) {
+  async function send(prompt: string, files: File[], inlineImages: File[]) {
     if (!sid || sending) return;
     setSending(true);
     setLocalUserPrompt(prompt);
+    setLocalAttachmentCount(files.length);
+    setLocalInlineImageCount(inlineImages.length);
+    // 给 user bubble 渲缩略图用. 父组件持自己的 blob URL (跟 PromptInput 那份解耦),
+    // turn 结束 history mutate 完后 revoke.
+    const newImageUrls = inlineImages.map((f) => ({ src: URL.createObjectURL(f) }));
+    setLocalInlineImages((prev) => {
+      prev.forEach((img) => URL.revokeObjectURL(img.src));
+      return newImageUrls;
+    });
     setLiveFrames([]);
     try {
-      const handle = await chatStream({ prompt, sessionId: sid });
+      // 有附件 / 内嵌图片走 multipart, 都没有走 JSON — 两条返同款 SSE 流.
+      const hasAnyAttachment = files.length > 0 || inlineImages.length > 0;
+      const handle = hasAnyAttachment
+        ? await chatStreamWithAttachments({
+            prompt,
+            sessionId: sid,
+            files,
+            inlineImages,
+          })
+        : await chatStream({ prompt, sessionId: sid });
       abortRef.current = handle.abort;
+      // turn 一开起来就 mutate fs:tree (TreeRoot 的 SWR key) — 让右栏 Workspace
+      // 立刻看到新落盘的 attachments/. 仅落盘附件触发, 内嵌图不落盘, 不刷.
+      if (files.length > 0) {
+        globalMutate(
+          (key) => Array.isArray(key) && key[0] === "fs:tree",
+          undefined,
+          { revalidate: true },
+        );
+      }
       for await (const f of handle.frames) {
         setLiveFrames((prev) => appendFrame(prev, f));
         if (f.type === "stream_end") break;
@@ -246,6 +298,13 @@ export function ChatPage() {
       globalMutate("weaver/products");
       setLiveFrames([]);
       setLocalUserPrompt(null);
+      setLocalAttachmentCount(0);
+      setLocalInlineImageCount(0);
+      // history 已经 mutate, 历史 user bubble 用 data URL 接管渲染 → revoke blob URL.
+      setLocalInlineImages((prev) => {
+        prev.forEach((img) => URL.revokeObjectURL(img.src));
+        return [];
+      });
     } catch (err) {
       // 用户切走 sid 时 cleanup 会 abort 本地 fetch — 这是预期, 别 toast.
       // 后端 background task 仍在跑, 回来时 resume 能接上.
@@ -384,6 +443,9 @@ export function ChatPage() {
                 historyMessages={history ?? []}
                 streamedFrames={liveFrames}
                 localUserPrompt={localUserPrompt}
+                localAttachmentCount={localAttachmentCount}
+                localInlineImages={localInlineImages}
+                localInlineImageCount={localInlineImageCount}
                 onUserSend={send}
                 onStop={stop}
                 inputDisabled={sending}

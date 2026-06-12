@@ -11,6 +11,7 @@
             ...
 """
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,35 @@ class PentaLoom:
                 "PentaLoom not started; use `async with PentaLoom() as pl:`"
             )
         await self._client.query(prompt)
+        async for msg in self._client.receive_response():
+            yield msg
+
+    async def query_multimodal(
+        self, content_blocks: list[dict[str, Any]]
+    ) -> AsyncIterator[Any]:
+        """走 content blocks list 的 user message — 给 inline image 这种多模态用.
+
+        SDK 的 client.query() 接 str 时直接 transport.write(json), 接 AsyncIterable
+        时走 stream_input 会 wait_for_result_and_end_input 关 stdin (streaming 语义).
+        我们的 PentaLoom 是 long-lived client 跑多轮 turn, stream_input 关 stdin 后
+        第二轮就废. 所以这里复制 SDK str 模式的逻辑, 只是把 content 字段从 str
+        换成 list[dict] (Anthropic content blocks 格式, 含 image / text / 等).
+
+        访问私有 _transport 是有意的 — SDK 当前没暴露 "single-shot dict prompt"
+        公共 API. 升级 SDK 时验证 client._transport 仍是 SubprocessCLITransport
+        且 .write() 协议不变.
+        """
+        if self._client is None:
+            raise RuntimeError(
+                "PentaLoom not started; use `async with PentaLoom() as pl:`"
+            )
+        message = {
+            "type": "user",
+            "message": {"role": "user", "content": content_blocks},
+            "parent_tool_use_id": None,
+            "session_id": "default",
+        }
+        await self._client._transport.write(json.dumps(message) + "\n")
         async for msg in self._client.receive_response():
             yield msg
 

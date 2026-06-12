@@ -163,16 +163,66 @@ export async function chatStream(args: {
     signal,
   });
 
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`chat ${res.status} ${res.statusText} ${text}`);
+  return finalizeChatStream(res, controller, "chat");
+}
+
+// multipart 版 chatStream — composer 有 draft files / 粘贴图片时走这条. 后端
+// /chat/with-attachments 同时处理两条通路:
+//   - files     → 落盘 sandbox/attachments/{name} (同名 (N) 避让), 走 internal block 引用
+//   - inlineImages → 不落盘, 转 base64 + Anthropic image content block 直接喂 SDK
+// 跟 chatStream 的差异:
+//   - body 用 FormData 不是 JSON
+//   - mounted_dirs 走 JSON.stringify 编码 (multipart 字段限制)
+// 共性: 响应 + abort 语义跟 chatStream 一模一样, 复用 finalizeChatStream.
+export async function chatStreamWithAttachments(args: {
+  prompt: string;
+  sessionId?: string;
+  mountedDirs?: string[];
+  files: File[];
+  inlineImages?: File[];
+  signal?: AbortSignal;
+}): Promise<ChatStreamHandle> {
+  const controller = new AbortController();
+  const signal = args.signal
+    ? mergeSignals(controller.signal, args.signal)
+    : controller.signal;
+
+  const form = new FormData();
+  form.append("prompt", args.prompt);
+  if (args.sessionId) form.append("session_id", args.sessionId);
+  if (args.mountedDirs && args.mountedDirs.length > 0) {
+    form.append("mounted_dirs", JSON.stringify(args.mountedDirs));
+  }
+  for (const f of args.files) {
+    // 用原文件名 — 后端 sanitize_filename 会处理不安全字符 + 限长
+    form.append("files", f, f.name);
+  }
+  for (const img of args.inlineImages ?? []) {
+    // 粘贴的图通常 type 已设 (浏览器 clipboard item 自带 mime); name 由 PromptInput 兜底.
+    form.append("inline_images", img, img.name);
   }
 
+  const res = await fetch(`${BASE}/chat/with-attachments`, {
+    method: "POST",
+    body: form,
+    signal,
+  });
+
+  return finalizeChatStream(res, controller, "chat-with-attachments");
+}
+
+async function finalizeChatStream(
+  res: Response,
+  controller: AbortController,
+  label: string,
+): Promise<ChatStreamHandle> {
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${label} ${res.status} ${res.statusText} ${text}`);
+  }
   const sid =
     res.headers.get("x-session-id") ?? res.headers.get("X-Session-Id") ?? "";
-
   const frames = parseSSE(res.body);
-
   return {
     sessionId: sid,
     frames,

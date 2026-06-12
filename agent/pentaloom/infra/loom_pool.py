@@ -31,11 +31,13 @@ import uuid
 from dataclasses import dataclass, field
 
 from claude_agent_sdk import AgentDefinition
+from claude_agent_sdk._internal.sessions import project_key_for_directory
 from loguru import logger
 
 from pentaloom.app import PentaLoom
 from pentaloom.capabilities.weaver import assemble_weaver
 from pentaloom.config import get_settings
+from pentaloom.infra.session_store import SQLiteSessionStore
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import PERMISSION_REGISTRY, make_can_use_tool
 from pentaloom.tools.weaver import WEAVER_MCP_SERVER_NAME, build_weaver_mcp_server
@@ -97,8 +99,13 @@ class LoomPool:
                     await self._evict_lru()
                 # 首次 build: 用 session_id=. 之后重建 (mounts 变 / evict 后再 get) 走 resume.
                 # SDK 限制: 同一 sid 的 JSONL 已存在时, 再用 session_id= spawn 会 exit 1,
-                # 必须 resume=. 我们在 build 时根据沙箱目录是否已存在判断 (首次还是续接).
-                resume_existing = self._settings.sandbox_dir_for(session_id).exists()
+                # 必须 resume=. 判定逻辑: 查 SDK transcript (SQLiteSessionStore 镜像) 是
+                # 否真有这个 sid 的 entries — 才是 SDK 视角的"跑过 turn".
+                #
+                # 之前用 sandbox.exists() 启发判, 太脆: 任何外层 (e.g. /chat/with-attachments
+                # 在调 _run_chat_turn 之前 commit_attachment 的 mkdir) 提前建出 sandbox dir,
+                # 都会被误判 resume → SDK 起进程 exit 1.
+                resume_existing = await self._has_sdk_transcript(session_id)
                 entry = await self._build(session_id, mounted_dirs, resume=resume_existing)
                 self._registry[session_id] = entry
             elif sorted(entry.mounted_dirs) != sorted(mounted_dirs):
@@ -117,6 +124,22 @@ class LoomPool:
             else:
                 entry.last_used = time.monotonic()
         return entry.pl, entry.lock
+
+    async def _has_sdk_transcript(self, session_id: str) -> bool:
+        """该 sid 在 SDK transcript (SQLiteSessionStore 镜像) 里有 entries 吗?
+
+        判 "需要 resume= 还是 session_id=" 的真理之源 — 跟 SDK 视角对齐.
+        project_key_for_directory 是纯字符串变换, 不要求 sandbox 路径存在.
+        """
+        sandbox = self._settings.sandbox_dir_for(session_id)
+        project_key = project_key_for_directory(str(sandbox))
+        store = SQLiteSessionStore()
+        entries = await store.load({
+            "project_key": project_key,
+            "session_id": session_id,
+            "subpath": "",
+        })
+        return bool(entries)
 
     async def _build(
         self,
