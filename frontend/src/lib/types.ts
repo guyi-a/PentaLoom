@@ -18,6 +18,15 @@ export interface HistoryMessage {
   uuid: string;                       // SDK envelope uuid - 用作 React key
   message_id: string | null;          // anthropic message.id - 跨源去重 key (user 历史可能为 null)
   frames: Frame[];
+  // 仅 user role + 后端剥掉 <pentaloom_internal_attachments> 块时挂. 老消息 / 无附件
+  // 消息不会带这字段. 前端 ChatStream 在 user bubble text 空 + count > 0 时渲染
+  // "📎 N 个文件" 占位 (no chips list — 那是 Phase 3).
+  attachment_count?: number;
+  // 内嵌图片 (粘贴的, 走 SDK content block, 不落盘) 的 src 列表 — src 是 data URL
+  // (data:image/png;base64,...). 后端从 SDK transcript 的 image content block 直接
+  // 转出, user bubble 用作 <img src> 渲缩略图 grid.
+  // 量大的话 history payload 会膨胀, 真出问题再做 thumbnail 缓存 / lazy fetch.
+  inline_images?: { src: string }[];
 }
 
 export interface PermissionDecisionBody {
@@ -140,9 +149,15 @@ export interface StreamEndFrame {
 // 仅在 resume 流首帧出现: 后端把这轮 turn 的 user prompt 作为 snapshot 注入,
 // 让刷新 / 切走再回 / 多 tab 能立刻看到"自己刚发的那条". 前端拿到后塞回
 // localUserPrompt, 不进 liveFrames.
+//
+// attachment_count / inline_image_count 跟 text 配套: text 空 + 任一 > 0 时前端
+// 渲染 "📎 N 个文件" / "🖼️ N 张图片" 占位 (各自独立 indicator, 可同时出现).
+// 老 buffer / 老 SSE 流不带这俩字段, 默认按 0 处理.
 export interface UserPromptFrame {
   type: "user_prompt";
   text: string;
+  attachment_count?: number;
+  inline_image_count?: number;
 }
 
 // 后端在 POST /chat/permission 完成 resolve 后推一帧. 让审批栏立刻消失,

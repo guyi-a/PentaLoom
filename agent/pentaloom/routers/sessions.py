@@ -25,6 +25,7 @@ from pentaloom.config import get_settings
 from pentaloom.crud import chat_session as crud_chat
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.infra.db import AsyncSessionLocal
+from pentaloom.infra.prompt_blocks import strip_internal_prompt_blocks
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.models.session import (
     ChatSession,
@@ -132,18 +133,73 @@ def _content_blocks_to_frames(content: Any, msg_uuid: str | None) -> list[dict]:
     return out
 
 
-def _session_message_to_frames(sm: SessionMessage) -> tuple[str | None, list[dict]]:
-    """SessionMessage → (anthropic message.id, frames).
+def _session_message_to_frames(
+    sm: SessionMessage,
+) -> tuple[str | None, list[dict], int, list[dict]]:
+    """SessionMessage → (anthropic message.id, frames, attachment_count, inline_images).
 
     msg_uuid 用 anthropic message.id (msg_xxxx), 跟 /chat SSE 端的 thinking/text
     delta + AssistantMessage tool_use 同源 — 前端跨源去重 + 幂等 merge 才对得齐.
     user role 没 message.id (client 端构造), 返 None.
+
+    user role 出口处理两件事:
+      1. text content 走 strip_internal_prompt_blocks 剥 <pentaloom_internal_attachments>
+         块, 数附件个数 → attachment_count (落盘附件).
+      2. 收集 list 里 image type block 的 base64 → 转 data URL 灌进 inline_images.
+         _content_blocks_to_frames 不输出 image type frame (前端不需要 image 进
+         turn 状态机), data URL 直接挂 entry top-level 给 UserBubble 渲缩略图.
     """
     msg = sm.message or {}
     if not isinstance(msg, dict):
-        return None, []
+        return None, [], 0, []
     message_id = msg.get("id") if isinstance(msg.get("id"), str) else None
-    return message_id, _content_blocks_to_frames(msg.get("content"), message_id)
+    content = msg.get("content")
+    attachment_count = 0
+    inline_images: list[dict] = []
+
+    if sm.type == "user":
+        # user content 可能是 str 或 list[block]; 两种都要 strip text 部分.
+        if isinstance(content, str):
+            stripped, count = strip_internal_prompt_blocks(content)
+            attachment_count += count
+            content = stripped
+        elif isinstance(content, list):
+            new_blocks: list[Any] = []
+            for b in content:
+                if isinstance(b, dict):
+                    btype = b.get("type")
+                    if btype == "text":
+                        stripped, count = strip_internal_prompt_blocks(
+                            b.get("text", "")
+                        )
+                        attachment_count += count
+                        new_blocks.append({**b, "text": stripped})
+                        continue
+                    if btype == "image":
+                        # 拼 data URL — 前端 <img src> 直接消费, 不需要再走 endpoint.
+                        # 量大问题: SDK transcript 里就是 base64, 历史拉一次几百 KB,
+                        # 真有性能问题再加 thumbnail 缓存 / endpoint 拉单图.
+                        src = b.get("source") or {}
+                        if (
+                            isinstance(src, dict)
+                            and src.get("type") == "base64"
+                            and isinstance(src.get("data"), str)
+                            and isinstance(src.get("media_type"), str)
+                        ):
+                            inline_images.append({
+                                "src": f"data:{src['media_type']};base64,{src['data']}",
+                            })
+                        # image block 不进 frame
+                        continue
+                new_blocks.append(b)
+            content = new_blocks
+
+    return (
+        message_id,
+        _content_blocks_to_frames(content, message_id),
+        attachment_count,
+        inline_images,
+    )
 
 
 @router.get("", summary="所有 ChatSession (按最近活跃倒序)")
@@ -239,13 +295,23 @@ async def get_session_messages(
 
 
 def _build_message_entry(m: SessionMessage) -> dict:
-    message_id, frames = _session_message_to_frames(m)
-    return {
+    message_id, frames, attachment_count, inline_images = (
+        _session_message_to_frames(m)
+    )
+    entry: dict[str, Any] = {
         "role": m.type,
         "uuid": m.uuid,                # envelope uuid - 用作 React key
         "message_id": message_id,      # anthropic message.id - 用作跨源去重
         "frames": frames,
     }
+    # 仅 user role + 真有附件 / 内嵌图片的消息才挂字段; 老消息 / assistant 都不带,
+    # 前端只在见到字段时才渲染.
+    if attachment_count > 0:
+        entry["attachment_count"] = attachment_count
+    if inline_images:
+        # data URL 列表 (含 base64). 前端 user bubble 渲缩略图 grid.
+        entry["inline_images"] = inline_images
+    return entry
 
 
 @router.patch("/{sid}", summary="改 session 元数据 (目前只支持 title)")

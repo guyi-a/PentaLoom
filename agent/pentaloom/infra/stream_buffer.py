@@ -129,17 +129,35 @@ class StreamBuffer:
     # 取 dict 最后一个用于兼容旧字段名, 实际订阅时全部注入.
     _pending_approval_chunks: dict[str, str] = field(default_factory=dict)
     # 这轮 turn 的用户原始 prompt — POST /chat 时 set, finish 时清.
-    # 重连场景 (subscribe_only=true): 用户原 prompt 既不在 buffer.chunks 里
-    # (UserMessage 文本不走 _serialize), 也未必在 JSONL 里 (SDK 写入时机晚),
-    # 不注入的话刷新页面会看不到自己刚发的那条. 跟 _pending_approval_chunks
-    # 同款 snapshot 注入逻辑解决.
+    # 重连场景: 用户原 prompt 既不在 buffer.chunks 里 (UserMessage 文本不走
+    # _serialize), 也未必在 JSONL 里 (SDK 写入时机晚), 不注入的话刷新页面
+    # 会看不到自己刚发的那条. 跟 _pending_approval_chunks 同款 snapshot 注入逻辑解决.
+    #
+    # 注意: 这里存的是 **display_prompt** — user 输入的纯文本, 不是给 SDK 的
+    # internal_prompt (后者带 <pentaloom_internal_attachments> 前缀块). SDK 内部
+    # 会持久化 internal 版本进 messages.jsonl, 历史回放时由 sessions.py 出口处的
+    # strip helper 剥掉.
     user_prompt: str | None = None
+    # 这轮 turn 落盘附件数量. text 空 + 该值 > 0 → user bubble 渲染 "📎 N 个文件" 占位.
+    attachment_count: int = 0
+    # 这轮 turn 内嵌图片数量 (粘贴的 — 不落盘, 走 SDK content block).
+    # text 空 + 该值 > 0 → user bubble 渲染 "🖼️ N 张图片" 占位.
+    # attachment_count 跟 inline_image_count 可同时 > 0 (混合场景).
+    inline_image_count: int = 0
 
     def set_task(self, task: asyncio.Task) -> None:
         self._task = task
 
-    def set_user_prompt(self, prompt: str) -> None:
+    def set_user_prompt(
+        self,
+        prompt: str,
+        attachment_count: int = 0,
+        inline_image_count: int = 0,
+    ) -> None:
+        """记 display_prompt + 附件数 + 图片数. 三者一起 set 防止状态错配."""
         self.user_prompt = prompt
+        self.attachment_count = attachment_count
+        self.inline_image_count = inline_image_count
 
     def cancel(self) -> bool:
         """取消后台 query task. 返回 True 表示真的取消了 (本来在跑)."""

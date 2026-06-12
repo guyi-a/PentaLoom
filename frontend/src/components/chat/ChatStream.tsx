@@ -27,8 +27,18 @@ interface Props {
   streamedFrames: Frame[];
   // 用户在本 turn 刚发出的 prompt — 显示在 streamedFrames 之前 (历史里不需要传, 历史里 user 是 role)
   localUserPrompt?: string | null;
-  // 父组件实现的"再发一条" — ChatPage 会真的开新 SSE, EmptyPage 传 noop / 跳转
-  onUserSend: (prompt: string) => void;
+  // 跟 localUserPrompt 配套. 附件 only 时 prompt 为空字符串但 count > 0,
+  // UserBubble 渲染 "📎 N 个文件" 占位; prompt 非空 + count > 0 时在文本下加附件计数标注.
+  localAttachmentCount?: number;
+  // 内嵌图片 (粘贴的, 不落盘) 缩略图 src 列 — live 时是 blob URL.
+  // 没传但 localInlineImageCount > 0 时退回占位 "🖼️ N 张图片" (resume mid-turn 场景).
+  localInlineImages?: { src: string }[];
+  localInlineImageCount?: number;
+  // 父组件实现的"再发一条" — ChatPage 会真的开新 SSE, EmptyPage 传 noop / 跳转.
+  // files: composer 的 draft 附件 (落盘 sandbox/attachments/, multipart 通路).
+  // inlineImages: 粘贴的内嵌图片 (不落盘, 走 SDK content block).
+  // 都为空时父组件可以走 chat 老路 (text-only); 任一非空时走 chat-with-attachments.
+  onUserSend: (prompt: string, files: File[], inlineImages: File[]) => void;
   // 中断当前 turn 的回调 — 仅 ChatPage 提供, EmptyPage 没 sid 没法 stop, 不传.
   onStop?: () => void;
   inputDisabled?: boolean;
@@ -138,6 +148,9 @@ export function ChatStream({
   historyMessages,
   streamedFrames,
   localUserPrompt,
+  localAttachmentCount = 0,
+  localInlineImages,
+  localInlineImageCount = 0,
   onUserSend,
   onStop,
   inputDisabled,
@@ -233,10 +246,21 @@ export function ChatStream({
             ),
           )}
 
-          {/* 本轮用户 prompt — 历史里可能没有 (新建会话时, 后端写 jsonl 是异步的) */}
-          {localUserPrompt && (
+          {/* 本轮用户 prompt — 历史里可能没有 (新建会话时, 后端写 jsonl 是异步的).
+              prompt 空 + 附件 / 图片 > 0 也要渲染, 让用户看到自己发了什么.
+              localInlineImages 优先 (有 blob URL 直接渲缩略图), 没拿到 (resume mid-turn)
+              退回 localInlineImageCount 占位. */}
+          {(localUserPrompt ||
+            localAttachmentCount > 0 ||
+            (localInlineImages && localInlineImages.length > 0) ||
+            localInlineImageCount > 0) && (
             <div className="space-y-3">
-              <UserBubble text={localUserPrompt} />
+              <UserBubble
+                text={localUserPrompt ?? ""}
+                attachmentCount={localAttachmentCount}
+                inlineImages={localInlineImages}
+                inlineImageCount={localInlineImageCount}
+              />
             </div>
           )}
 
@@ -258,8 +282,13 @@ export function ChatStream({
             </div>
           )}
 
-          {/* 本轮 user prompt 已发出, 但后端首帧还没到 — 给个占位, 别让用户对着空白等 */}
-          {localUserPrompt && streamedItems.length === 0 && (
+          {/* 本轮 user prompt 已发出, 但后端首帧还没到 — 给个占位, 别让用户对着空白等.
+              附件 / 图片 only 发送时 prompt 空但有图 / 文件也要显示占位. */}
+          {(localUserPrompt ||
+            localAttachmentCount > 0 ||
+            (localInlineImages && localInlineImages.length > 0) ||
+            localInlineImageCount > 0) &&
+            streamedItems.length === 0 && (
             <div className="flex items-center gap-2 px-1 py-2 text-[12px] text-[color:var(--color-ink)]">
               <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--color-accent)]" />
               <span>Working on it…</span>
@@ -293,12 +322,22 @@ function MessageGroup({
   if (message.role === "user") {
     // user 历史: frames 里可能有 text + tool_result; tool_result 已被
     // extResults 收走并配到对应 assistant 的 ToolRow 上, 这里只渲染 text.
+    // attachment_count / inline_images 后端在 _build_message_entry 时挂的 —
+    // 附件 / 图片 only 消息 text 为空但有附件 / 图片时仍要渲染, 别 null 跳过.
     const text = message.frames
       .filter((f): f is { type: "text"; text: string } => f.type === "text")
       .map((f) => f.text)
       .join("\n");
-    if (!text) return null;
-    return <UserBubble text={text} />;
+    const attachmentCount = message.attachment_count ?? 0;
+    const inlineImages = message.inline_images ?? [];
+    if (!text && attachmentCount === 0 && inlineImages.length === 0) return null;
+    return (
+      <UserBubble
+        text={text}
+        attachmentCount={attachmentCount}
+        inlineImages={inlineImages}
+      />
+    );
   }
   // assistant: 一条 turn 里可能有 text/thinking/tool_use/tool_result 混合.
   // 传 extResults 让 pairFrames 跨 message 拿 result.
