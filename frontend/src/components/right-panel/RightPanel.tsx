@@ -1,11 +1,13 @@
-// 三栏布局的右栏容器. 内部三个 section: Todo / Workspace / Context.
-// 响应式由 ChatPage 决定 (panelOpen state + viewport class), 这里只负责内容.
+// 三栏布局的右栏容器. 内部两个 section: Todo / Workspace (含文件树).
 //
+// 旧 ContextSection (chip list 累积 tool_use 路径) 在 M19.0 重构时删了 —
+// 跟实际文件系统脱节, rename/delete 后变 404; 价值被"WorkspaceTree 真实树形" +
+// "ToolRow 文件名直接 click → preview"取代.
+
 import type { Frame, HistoryMessage, SessionMeta } from "@/lib/types";
 
-import { ContextSection } from "./ContextSection";
 import { TodoSection } from "./TodoSection";
-import { WorkspaceSection } from "./WorkspaceSection";
+import { WorkspaceTree } from "./file-tree/WorkspaceTree";
 
 interface Props {
   sessionId: string;
@@ -24,19 +26,13 @@ export function RightPanel({
 }: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)]">
-      {/* 内容 — 整体可滚, 但 ContextSection 内部 ul 也 cap 自己的 max-h */}
       <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto">
         <TodoSection history={history} liveFrames={liveFrames} />
-        <WorkspaceSection
+        <WorkspaceTree
           sessionId={sessionId}
           sandboxDir={meta.sandbox_dir}
           mountedDirs={meta.mounted_dirs}
           onMountsChanged={onMountsChanged}
-        />
-        <ContextSection
-          sessionId={sessionId}
-          history={history}
-          liveFrames={liveFrames}
         />
       </div>
     </div>

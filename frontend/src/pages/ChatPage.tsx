@@ -25,10 +25,16 @@ import useSWR, { useSWRConfig } from "swr";
 import { Check, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
 
 import { ChatStream } from "@/components/chat/ChatStream";
+import { FilePreviewPanel } from "@/components/right-panel/file-preview/FilePreviewPanel";
 import { RightPanel } from "@/components/right-panel/RightPanel";
 import { api, chatStream, resumeChat } from "@/lib/api";
 import { appendFrame } from "@/lib/frames";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
+import {
+  PREVIEW_WIDTH_MAX,
+  PREVIEW_WIDTH_MIN,
+  usePreviewStore,
+} from "@/lib/preview-store";
 import type { Frame } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -273,6 +279,54 @@ export function ChatPage() {
     [mutateMeta, globalMutate],
   );
 
+  // File preview — Context chip 点击触发, 替换 RightPanel 槽位 (preview 模式).
+  // hook 必须放 early return 之前 (React rules of hooks).
+  // sid 切换时清掉 (跨 session preview 没意义).
+  const previewFile = usePreviewStore((s) => s.previewFile);
+  const closePreview = usePreviewStore((s) => s.closePreview);
+  const previewWidth = usePreviewStore((s) => s.previewWidth);
+  const setPreviewWidth = usePreviewStore((s) => s.setPreviewWidth);
+  useEffect(() => {
+    closePreview();
+  }, [sid, closePreview]);
+
+  // preview 列左边缘 resize handle. 跟 RightPanel 同款 pointer 模式 — pointermove
+  // 直接计算新宽度 + clamp + 写 localStorage. 跨 chat 主区时强制 min-width 防主区压没.
+  function beginPreviewResize(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = previewWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const containerEl = e.currentTarget.parentElement?.parentElement ?? null;
+    function onMove(ev: PointerEvent) {
+      const maxByMain = containerEl
+        ? containerEl.clientWidth - MAIN_CONTENT_MIN_WIDTH
+        : PREVIEW_WIDTH_MAX;
+      const maxWidth = Math.max(
+        PREVIEW_WIDTH_MIN,
+        Math.min(PREVIEW_WIDTH_MAX, maxByMain),
+      );
+      // 鼠标向左拖 → 列变宽 (列在右边). delta = startX - ev.clientX
+      const next = Math.max(
+        PREVIEW_WIDTH_MIN,
+        Math.min(maxWidth, startWidth + (startX - ev.clientX)),
+      );
+      setPreviewWidth(next);
+    }
+    function onUp() {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }
+
   if (metaError) {
     return (
       <div className="flex h-full items-center justify-center px-6">
@@ -292,7 +346,10 @@ export function ChatPage() {
   }
 
   // 右栏在 desktop (>=768) 时占内联宽度; 在 mobile 时悬浮 drawer 覆盖.
-  const desktopPanelVisible = !isMobile && panelOpen;
+  // preview 模式: 占用 RightPanel 同一个槽位, RightPanel 让位 (跟 krow 同款 mode 切换).
+  // 槽位宽度仍用 panelWidth — 用户拖拽过的宽度对 preview 也合适.
+  const showPreviewColumn = !isMobile && previewFile !== null;
+  const desktopPanelVisible = !isMobile && panelOpen && !showPreviewColumn;
   const mobilePanelVisible = isMobile && panelOpen;
 
   return (
@@ -300,7 +357,6 @@ export function ChatPage() {
       <ChatHeader
         sessionId={meta.session_id}
         title={meta.title}
-        mountedCount={meta.mounted_dirs.length}
         panelOpen={panelOpen}
         onTogglePanel={() => setPanelOpen(!panelOpen)}
         onTitleChange={async (next) => {
@@ -351,6 +407,22 @@ export function ChatPage() {
                 />
               </div>
             )}
+            {showPreviewColumn && (
+              <div
+                className="relative shrink-0"
+                style={{ width: previewWidth }}
+              >
+                {/* 左边缘 resize handle. 跟 RightPanel 的 separator 同款视觉 + 拖动逻辑. */}
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  title="Drag to resize preview"
+                  onPointerDown={beginPreviewResize}
+                  className="absolute left-[-3px] top-0 z-20 h-full w-1.5 cursor-col-resize transition-colors hover:bg-[color:var(--color-accent)]/20"
+                />
+                <FilePreviewPanel sessionId={meta.session_id} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -383,14 +455,12 @@ export function ChatPage() {
 function ChatHeader({
   sessionId,
   title,
-  mountedCount,
   panelOpen,
   onTogglePanel,
   onTitleChange,
 }: {
   sessionId: string;
   title: string | null;
-  mountedCount: number;
   panelOpen: boolean;
   onTogglePanel: () => void;
   onTitleChange: (next: string | null) => void;
@@ -465,18 +535,6 @@ function ChatHeader({
             </button>
           )}
         </div>
-
-        {/* 紧凑 mounts chip — 右栏关时这里也能看一眼; 点开右栏 */}
-        {mountedCount > 0 && (
-          <button
-            type="button"
-            onClick={onTogglePanel}
-            title={`${mountedCount} mount${mountedCount === 1 ? "" : "s"} · Open panel`}
-            className="app-no-drag shrink-0 rounded-[4px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] px-2 py-1 font-mono text-[10px] text-[color:var(--color-paper-dim)] transition-colors hover:border-[color:var(--color-line-strong)] hover:text-[color:var(--color-paper)]"
-          >
-            {mountedCount} mount{mountedCount === 1 ? "" : "s"}
-          </button>
-        )}
 
         <button
           type="button"

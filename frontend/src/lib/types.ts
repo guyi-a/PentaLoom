@@ -547,6 +547,77 @@ export interface WorkflowDetailResponse {
   recent_runs: WorkflowRunLog[];
 }
 
+// GET /fs/tree 返 — 右栏 WorkspaceTree 用. 嵌套树 (children 仅 directory 含).
+// truncated=true 表示该目录触 max_depth, 还有未读子项 (UI 显 "..." 提示).
+export interface FsTreeNode {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  children?: FsTreeNode[] | null;
+  truncated?: boolean;
+}
+
+// ──── M19 文件预览 ──────────────────────────────────────────
+
+// GET /fs/preview/stat 返
+export interface FilePreviewMeta {
+  path: string;            // 规范化绝对路径
+  name: string;
+  size: number;
+  ext: string;             // 不含点 . 的小写后缀; 无后缀 ""
+  mtime: number;           // unix ts
+  is_directory: boolean;
+  is_binary_guess: boolean;
+}
+
+// GET /fs/preview/text 返
+export interface TextPreviewResult {
+  content: string;
+  truncated: boolean;
+  size: number;
+}
+
+// GET /fs/preview/office/xlsx 返 — openpyxl 后端结构化解析.
+// 前端 HTML table 真渲 (sticky header / 字体颜色 / 背景色 / 合并单元格 / sheet tabs).
+// docx / pptx 不走这, 它们 fetch ArrayBuffer 给客户端 docx-preview / pptx-renderer 库渲.
+export interface XlsxCellStyle {
+  bold?: boolean | null;
+  italic?: boolean | null;
+  font_size?: number | null;
+  color?: string | null;       // CSS color, e.g. "#3d5a80"
+  bg_color?: string | null;
+  align?: "left" | "center" | "right" | null;
+  valign?: "top" | "middle" | "bottom" | null;
+}
+
+export interface XlsxCell {
+  text: string;
+  style?: XlsxCellStyle | null;
+}
+
+export interface XlsxMerge {
+  start_row: number;
+  start_col: number;
+  end_row: number;
+  end_col: number;
+}
+
+export interface XlsxSheet {
+  name: string;
+  row_count: number;
+  col_count: number;
+  rows: XlsxCell[][];
+  merges: XlsxMerge[];
+  truncated: boolean;
+}
+
+export interface XlsxWorkbookPreview {
+  sheets: XlsxSheet[];
+  active_sheet_index: number;
+  truncated: boolean;
+  size: number;
+}
+
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.
 export interface PatchMountsBody {
   dirs?: string[];

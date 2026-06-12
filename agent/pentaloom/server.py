@@ -19,7 +19,15 @@ from pentaloom.config import get_settings
 from pentaloom.infra import cursor_overlay, python_env
 from pentaloom.infra.db import Base, engine
 from pentaloom.infra.loom_pool import LoomPool
-from pentaloom.routers import browser_bridge, chat, fs, health, sessions, weaver
+from pentaloom.routers import (
+    browser_bridge,
+    chat,
+    fs,
+    health,
+    preview,
+    sessions,
+    weaver,
+)
 
 
 @asynccontextmanager
@@ -123,6 +131,7 @@ app.include_router(health.router, tags=["system"])
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(fs.router)
+app.include_router(preview.router)
 app.include_router(weaver.router)
 # Chrome 扩展 (Kro Browser Bridge) 桥接 — 路径硬编码 /chrome-bridge/{ping,ws}.
 # 扩展端写死, router 内的路径也写死, 不能加 prefix.
