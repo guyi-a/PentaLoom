@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* 字体 — bunny.net 是 Google Fonts 的隐私镜像 (不发跟踪头). 套 Electron 前应该
    切 self-host woff2 (放 public/fonts/), 离线场景才不会拉空白. */
@@ -293,4 +294,31 @@ select:focus-visible {
 .prose-loom strong {
   font-weight: 600;
   color: var(--color-paper);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   shiki 代码预览 host 样式 — CodePreview 用 dangerouslySetInnerHTML
+   塞 shiki 出的 <pre><code>...; 这里覆盖默认 padding/font/bg 跟 PentaLoom 协调.
+   ──────────────────────────────────────────────────────────────── */
+.pl-shiki-host pre.shiki {
+  background: transparent !important;
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--font-mono, ui-monospace, "JetBrains Mono", monospace);
+  font-size: 11.5px;
+  line-height: 1.6;
+  /* shiki 默认 white-space: pre, 想要横向滚动就够 */
+}
+.pl-shiki-host pre.shiki code {
+  font-family: inherit;
+  font-size: inherit;
+}
+.pl-shiki-host .pl-line-no {
+  display: inline-block;
+  min-width: 2.4em;
+  margin-right: 1em;
+  text-align: right;
+  user-select: none;
+  color: var(--color-ink-dim);
+  opacity: 0.7;
 }

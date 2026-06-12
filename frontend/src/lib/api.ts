@@ -4,15 +4,19 @@ import type {
   AppDetailResponse,
   AppWatchFilesResponse,
   BrowseResponse,
+  FilePreviewMeta,
   Frame,
+  FsTreeNode,
   HistoryMessage,
   OpenFileResp,
   PatchMountsBody,
   PermissionDecisionBody,
   PermissionDecisionResp,
   SessionMeta,
+  TextPreviewResult,
   WeaverProductsResponse,
   WorkflowDetailResponse,
+  XlsxWorkbookPreview,
 } from "./types";
 
 const BASE = "/api";
@@ -59,6 +63,11 @@ export const api = {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return http<BrowseResponse>(`/fs/browse${q}`);
   },
+  // 右栏 WorkspaceTree 拉某个 mount/sandbox 子树. 默认 max_depth=8.
+  getFsTree: (sessionId: string, path: string, maxDepth = 8) =>
+    http<FsTreeNode>(
+      `/fs/tree?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}&max_depth=${maxDepth}`,
+    ),
   // 用系统默认 app 打开 path. reveal=true 时定位到文件 (Finder/Explorer 选中).
   // 后端按 session.mounted_dirs ∪ sandbox 子树校验, 越权返 403.
   openFile: (args: { sessionId: string; path: string; reveal?: boolean }) =>
@@ -99,6 +108,27 @@ export const api = {
   // Idempotent, 重复调返 204; 跑完已经无 buffer 也返 204 不报错.
   stopChat: (sid: string) =>
     http<void>(`/chat/${sid}/stop`, { method: "POST" }),
+
+  // M19 file preview — sandbox/mount 鉴权同 fs/open.
+  getPreviewMeta: (sessionId: string, path: string) =>
+    http<FilePreviewMeta>(
+      `/fs/preview/stat?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+    ),
+  getPreviewText: (sessionId: string, path: string, maxBytes?: number) => {
+    const max = maxBytes ? `&max_bytes=${maxBytes}` : "";
+    return http<TextPreviewResult>(
+      `/fs/preview/text?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${max}`,
+    );
+  },
+  // xlsx 结构化预览 (openpyxl 解析). docx/pptx 不走这, 它们 fetch ArrayBuffer 给前端渲染库.
+  getPreviewXlsx: (sessionId: string, path: string) =>
+    http<XlsxWorkbookPreview>(
+      `/fs/preview/office/xlsx?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+    ),
+  // 直接拼 URL — 给 <img|iframe|video src=> 用, 不走 fetch + JSON 解析.
+  // 跟 /fs/preview/file 同一份 endpoint, 鉴权走 query string.
+  getPreviewFileUrl: (sessionId: string, path: string): string =>
+    `${BASE}/fs/preview/file?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
 };
 
 // ──── chat SSE ───────────────────────────────────────────────

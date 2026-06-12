@@ -15,7 +15,7 @@
 // 给用户一瞬间瞥到"哦, 审批通过了" 再自然收起来.
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, CircleStop, Loader2, ShieldAlert, XCircle } from "lucide-react";
+import { Check, ChevronRight, CircleStop, Eye, Loader2, ShieldAlert, XCircle } from "lucide-react";
 
 import { ApprovalInfo, InlineApprovalBar } from "./FrameBlock";
 import { BashExpansion } from "./tool-expansions/BashExpansion";
@@ -25,7 +25,15 @@ import { ComputerUseExpansion } from "./tool-expansions/ComputerUseExpansion";
 import { FileVerifyExpansion } from "./tool-expansions/FileVerifyExpansion";
 import { GenericExpansion } from "./tool-expansions/GenericExpansion";
 import { RunScriptExpansion } from "./tool-expansions/RunScriptExpansion";
-import { friendlyToolName, oneLineSummary, threadColorForTool, toolIcon } from "@/lib/tool-meta";
+import { usePreviewStore } from "@/lib/preview-store";
+import {
+  PATH_KEYS,
+  basename,
+  friendlyToolName,
+  oneLineSummary,
+  threadColorForTool,
+  toolIcon,
+} from "@/lib/tool-meta";
 import {
   BASH_TOOL_NAME,
   BROWSER_BRIDGE_TOOL_NAME,
@@ -132,10 +140,15 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
   const summary = oneLineSummary(use.name, use.input);
   const threadColor = threadColorForTool(use.name);
 
+  // 补 Context 删掉后的快捷点开 — 看 input 里有没有可预览的绝对路径,
+  // 有就在 row 右上角加 hover 出现的 preview 按钮.
+  const previewablePath = extractPreviewablePath(use.input);
+  const openPreview = usePreviewStore((s) => s.openPreview);
+
   return (
     <div
       className={cn(
-        "rounded-[5px] border-l-2 bg-[color:var(--color-bg-soft)] py-1.5 pl-3 pr-3 transition-colors",
+        "group rounded-[5px] border-l-2 bg-[color:var(--color-bg-soft)] py-1.5 pl-3 pr-3 transition-colors",
         status === "hitl-pending" && "ring-1 ring-[color:var(--color-warn)]/30",
         status === "success" && "bg-[color:var(--color-success)]/5",
         status === "failed" && "bg-[color:var(--color-error)]/5",
@@ -166,8 +179,37 @@ export function ToolRow({ pair, pendingApproval, sessionId }: Props) {
             · {summary}
           </span>
         )}
-        {/* 状态 chip — 永远靠右挨着 chevron, 一眼能看 */}
+        {/* 状态 chip + hover preview 按钮 — 永远靠右挨着 chevron, 一眼能看 */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {previewablePath && (
+            // span 假按钮 (HTML 不许 button 嵌套 button) — onPointerDown stopPropagation
+            // 防触发外层 toggle, click 走 openPreview.
+            <span
+              role="button"
+              tabIndex={0}
+              title={`Preview ${basename(previewablePath)}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                openPreview({
+                  path: previewablePath,
+                  name: basename(previewablePath),
+                });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  openPreview({
+                    path: previewablePath,
+                    name: basename(previewablePath),
+                  });
+                }
+              }}
+              className="cursor-pointer rounded-[3px] p-0.5 text-[color:var(--color-ink-dim)] opacity-0 transition-opacity hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] group-hover:opacity-100"
+            >
+              <Eye size={11} />
+            </span>
+          )}
           <StatusBadge status={status} />
           {!compactOnly && (
             <ChevronRight
@@ -255,4 +297,18 @@ function StatusBadge({ status }: { status: ToolStatus }) {
       aria-label="done"
     />
   );
+}
+
+// 从 tool input 提取一个可预览的绝对路径 — 给 ToolRow hover preview 按钮用.
+// 取 PATH_KEYS 里第一个非空字符串值, 必须 / 开头. PATH_KEYS 包含 file_path / path /
+// script_path / output_path / notebook_path 等常见路径字段.
+function extractPreviewablePath(
+  input: Record<string, unknown> | undefined,
+): string | null {
+  if (!input) return null;
+  for (const key of PATH_KEYS) {
+    const v = input[key];
+    if (typeof v === "string" && v.startsWith("/")) return v;
+  }
+  return null;
 }
