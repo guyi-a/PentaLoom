@@ -90,6 +90,9 @@ async def lifespan(app: FastAPI):
         if overlay_client is not None:
             await cursor_overlay.shutdown_helper(overlay_client)
             cursor_overlay.set_active_client(None)
+        # 让 sidebar SSE 长连优雅收尾 — 给所有订阅者推 None 让 generator break.
+        from pentaloom.infra.session_status import session_status
+        session_status.shutdown()
         await pool.shutdown()
         # M16 Phase E: 先停所有 trigger (schedule + watch) — 防 fire 中的 invocation
         # 撞上即将关的 service. 顺序: trigger → service.

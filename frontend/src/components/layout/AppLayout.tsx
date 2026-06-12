@@ -1,12 +1,13 @@
-import { useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
 import { GitBranch, PanelLeftClose, PanelLeftOpen, Search, Settings, SquarePen, X } from "lucide-react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 
 import { SessionList } from "@/components/sidebar/SessionList";
 import { LoomMark } from "@/components/brand/LoomMark";
 import { api } from "@/lib/api";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
+import { useSessionStatusStore } from "@/lib/session-status-store";
 import { formatRelative, shortenSid } from "@/lib/utils";
 
 const SIDEBAR_OPEN_KEY = "pentaloom:left-sidebar:open";
@@ -50,7 +51,37 @@ export function AppLayout() {
   const { data: sessions, mutate } = useSWR("sessions", () =>
     api.listSessions(),
   );
+  const { mutate: globalMutate } = useSWRConfig();
   const inElectronShell = isElectronShell();
+
+  // 全局会话状态 SSE 长连 — 一份覆盖所有 session, 让 sidebar 实时显示 spinner /
+  // 等审批 / idle. App 挂载时 open, 卸载关. 浏览器 EventSource 自动重连.
+  // 收到 running event 时顺手 mutate("sessions") 让新会话立刻拉到 (这是 Fix A
+  // 的辅助 — sentinel 让 fetch resolve, mutate 拉的列表才能看到新 session).
+  const setStatus = useSessionStatusStore((s) => s.setStatus);
+  const openStream = useSessionStatusStore((s) => s.openStream);
+  const closeStream = useSessionStatusStore((s) => s.closeStream);
+  useEffect(() => {
+    openStream();
+    return () => closeStream();
+  }, [openStream, closeStream]);
+  // running event 触发 sessions 列表重拉 — 让"新会话立刻出现"的兜底链路更稳:
+  // 即使 EmptyPage 的 mutate("sessions") 因为 race / dedup 漏了, status SSE
+  // 这边一旦看到 running 就会再调一次. 同 sid 重复 mutate 是廉价幂等操作.
+  useEffect(() => {
+    const unsub = useSessionStatusStore.subscribe((state, prevState) => {
+      for (const [sid, status] of state.statuses) {
+        if (status === "running" && prevState.statuses.get(sid) !== "running") {
+          globalMutate("sessions");
+          break;
+        }
+      }
+    });
+    return unsub;
+  }, [globalMutate]);
+  // setStatus 没在这里直接用, 但 EventSource onmessage 走 store 的 setStatus, 抓 ref
+  // 防 dead code elimination (eslint 也别 warn 了).
+  void setStatus;
 
   // client-side title 过滤. sessions 规模化后 (>200 条? 还要看真实) 再考虑加后端
   // GET /sessions?q=... 全文搜接口. 当前 LRU 8 + DB 历史不大, 拉全量足够.

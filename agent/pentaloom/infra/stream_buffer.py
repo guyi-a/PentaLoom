@@ -182,6 +182,10 @@ class StreamBuffer:
                 iter(self._pending_approval_chunks.values())
             )
 
+    def has_pending(self) -> bool:
+        """当前 buffer 是否仍有挂着的 HITL 审批. session_status 状态机用."""
+        return bool(self._pending_approval_chunks)
+
     def append(self, chunk: str) -> None:
         """加一条 SSE chunk 并推所有订阅者. chunk 必须是完整的 "data: ...\\n\\n"."""
         self.chunks.append(chunk)
