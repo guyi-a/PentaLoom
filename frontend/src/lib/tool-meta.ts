@@ -130,7 +130,8 @@ export function oneLineSummary(
   if (name === WEAVE_APP_WRITE_FILE_TOOL_NAME || name === WEAVE_APP_EDIT_FILE_TOOL_NAME) {
     const appName = typeof input.app_name === "string" ? input.app_name : "";
     const relPath = typeof input.rel_path === "string" ? input.rel_path : "";
-    return [appName, relPath].filter(Boolean).join("/");
+    // appName/basename(rel_path) — 跟 file_path 工具一致只显文件名, 完整路径走 title attr.
+    return [appName, relPath ? basename(relPath) : ""].filter(Boolean).join("/");
   }
   if (name === WEAVE_APP_TOOL_NAME || name === WEAVE_APP_FINALIZE_TOOL_NAME) {
     const appName = typeof input.name === "string" ? input.name : "";
@@ -155,10 +156,12 @@ export function oneLineSummary(
     const wfName = typeof input.name === "string" ? input.name : "";
     return wfName;
   }
+  // 路径类字段 — chip summary 只显 basename 防长路径挤掉信息.
+  // 完整路径仍走 title attr (鼠标 hover 看), 展开 expansion 也能看完整 input.
   if (n.includes("read") && typeof input.file_path === "string")
-    return input.file_path;
+    return basename(input.file_path);
   if ((n.includes("write") || n.includes("edit")) && typeof input.file_path === "string")
-    return input.file_path;
+    return basename(input.file_path);
   if (n.includes("bash") && typeof input.command === "string")
     return truncate(input.command, 100);
   if (n.includes("glob") && typeof input.pattern === "string") return input.pattern;
@@ -171,7 +174,7 @@ export function oneLineSummary(
   }
   if (name === "Skill" && typeof input.skill === "string") return input.skill;
   if (name === RUN_SCRIPT_TOOL_NAME && typeof input.script_path === "string")
-    return input.script_path;
+    return basename(input.script_path);
   if (name === INSTALL_LIBS_TOOL_NAME && Array.isArray(input.libs))
     return input.libs.map((x) => String(x)).join(" ");
   if (name === INSTALL_BROWSER_USE_TOOL_NAME && typeof input.step === "string")
@@ -180,7 +183,9 @@ export function oneLineSummary(
     return browserCommandSummary(input.command, 56);
   if (name === BROWSER_BRIDGE_TOOL_NAME) return browserBridgeSummary(input, 56);
   if (name === COMPUTER_USE_TOOL_NAME) return computerUseSummary(input, 56);
-  if (typeof input.path === "string") return input.path;
+  // input.path 通常是绝对路径 (file_verify 等用), basename 即可.
+  // input.url 不是文件路径, 不 basename.
+  if (typeof input.path === "string") return basename(input.path);
   if (typeof input.url === "string") return input.url;
   return "";
 }

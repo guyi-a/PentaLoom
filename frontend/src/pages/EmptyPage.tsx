@@ -14,11 +14,12 @@ import {
   type ClipboardEvent,
   type FormEvent,
 } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useOutletContext } from "react-router";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
-import { ArrowUp, Folder, FolderPlus, Paperclip, X } from "lucide-react";
+import { ArrowUp, Folder, FolderPlus, PanelLeftOpen, Paperclip, X } from "lucide-react";
 
+import type { SidebarLayoutContext } from "@/components/layout/AppLayout";
 import { LoomMark } from "@/components/brand/LoomMark";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { FolderPicker } from "@/components/permission/FolderPicker";
@@ -63,6 +64,7 @@ function formatBytes(n: number): string {
 export function EmptyPage() {
   const navigate = useNavigate();
   const { mutate } = useSWRConfig();
+  const layout = useOutletContext<SidebarLayoutContext>();
 
   const [prompt, setPrompt] = useState("");
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
@@ -236,7 +238,8 @@ export function EmptyPage() {
     };
 
     return (
-      <div className="flex h-full min-h-0">
+      <div className="relative flex h-full min-h-0">
+        <SidebarExpandTrigger layout={layout} />
         <div className="min-w-0 flex-1">
           <ChatStream
             sessionId={liveSid ?? ""}
@@ -272,6 +275,7 @@ export function EmptyPage() {
   return (
     <>
       <div className="relative h-full overflow-y-auto">
+        <SidebarExpandTrigger layout={layout} />
         <div className="mx-auto flex min-h-full max-w-[720px] flex-col justify-center px-6 py-16">
           {/* 标题区 — LoomMark 大版 + Fraunces italic 标语 + body 副标语 */}
           <div className="mb-10">
@@ -478,5 +482,23 @@ export function EmptyPage() {
         />
       )}
     </>
+  );
+}
+
+// sidebar 折叠 + Electron 时, 在主区顶左、macOS 三圆点下方浮一个
+// 展开按钮. 跟 ChatHeader 内的同款按钮共享视觉规范, 但 EmptyPage 没 header,
+// 所以用 absolute 浮在主区顶上.
+function SidebarExpandTrigger({ layout }: { layout: SidebarLayoutContext }) {
+  if (!layout.inElectronShell || layout.sidebarOpen) return null;
+  return (
+    <button
+      type="button"
+      onClick={layout.showSidebar}
+      title="Show sidebar"
+      // macOS hiddenInset 三圆点大致位于 x=28/68/108, y=28; 这里放到下方并居中在三圆点组下方.
+      className="app-no-drag absolute left-[66px] top-[54px] z-30 inline-flex h-7 w-7 items-center justify-center rounded-[5px] text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+    >
+      <PanelLeftOpen size={14} />
+    </button>
   );
 }

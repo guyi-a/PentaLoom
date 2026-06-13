@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
-import { GitBranch, PanelLeftClose, PanelLeftOpen, Search, Settings, SquarePen, X } from "lucide-react";
+import { GitBranch, PanelLeftClose, Search, Settings, SquarePen, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 
 import { SessionList } from "@/components/sidebar/SessionList";
@@ -12,11 +12,9 @@ import { formatRelative, shortenSid } from "@/lib/utils";
 
 const SIDEBAR_OPEN_KEY = "pentaloom:left-sidebar:open";
 const SIDEBAR_WIDTH_KEY = "pentaloom:left-sidebar:width";
-const SIDEBAR_MIN = 220;
-const SIDEBAR_DEFAULT = 260;
+const SIDEBAR_MIN = 260;
+const SIDEBAR_DEFAULT = 320;
 const SIDEBAR_MAX = 420;
-const SIDEBAR_COLLAPSED = 56;
-const SIDEBAR_ELECTRON_COLLAPSED = 212;
 const RIGHT_PANEL_RESERVE = 340;
 
 function clamp(value: number, min: number, max: number): number {
@@ -27,7 +25,7 @@ function initialSidebarOpen(): boolean {
   if (typeof window === "undefined") return true;
   const saved = window.localStorage.getItem(SIDEBAR_OPEN_KEY);
   if (saved !== null) return saved !== "false";
-  return !("__PENTALOOM__" in window);
+  return true;
 }
 
 function initialSidebarWidth(): number {
@@ -39,6 +37,14 @@ function initialSidebarWidth(): number {
 function isElectronShell(): boolean {
   if (typeof window === "undefined") return false;
   return "__PENTALOOM__" in window;
+}
+
+// outlet context — ChatPage / EmptyPage 用 useOutletContext<SidebarLayoutContext>()
+// 拿到 sidebar 状态 + 展开 callback, 自行在自己 header 里处理三圆点让位 + 展开按钮.
+export interface SidebarLayoutContext {
+  sidebarOpen: boolean;
+  showSidebar: () => void;
+  inElectronShell: boolean;
 }
 
 export function AppLayout() {
@@ -95,11 +101,9 @@ export function AppLayout() {
 
   const searching = searchOpen && searchQuery.trim().length > 0;
   const noMatches = searching && filteredSessions.length === 0;
-  const sidebarDisplayWidth = sidebarOpen
-    ? sidebarWidth
-    : inElectronShell
-      ? SIDEBAR_ELECTRON_COLLAPSED
-      : SIDEBAR_COLLAPSED;
+  // offcanvas 折叠模式 — sidebar 整块隐藏 (width 0), 主区从左边缘起;
+  // main 顶部加 floating 展开按钮替代折叠态 brand row.
+  const sidebarDisplayWidth = sidebarOpen ? sidebarWidth : 0;
 
   function closeSearch() {
     setSearchOpen(false);
@@ -155,81 +159,47 @@ export function AppLayout() {
     <div className="weave-texture relative flex h-full w-full">
       {/* ── 侧栏 ─────────────────────────────────────────────── */}
       <aside
-        className="relative flex h-full shrink-0 flex-col transition-[width] duration-150"
+        className="relative flex h-full shrink-0 flex-col overflow-hidden transition-[width] duration-150"
         style={{ width: sidebarDisplayWidth }}
       >
-        {inElectronShell && <div className="app-titlebar-spacer" />}
-
-        {/* brand — 展开态: 整块 LoomMark + 标题点回首页, 右侧独立折叠按钮.
-            Electron 下方独立留系统三色灯空间, 不和品牌硬挤在一行.
-            折叠态: 只 LoomMark, 点它 = 展开 sidebar (替代展开按钮职责, 避免两个 icon 挤). */}
+        {/* brand 区 — Electron 下分两行:
+              row 1: 48px 纯 drag spacer, macOS hiddenInset 三圆点漂在这里
+              row 2: brand row (logo + title + 弹性 + 搜索 + 收起)
+            非 Electron: 没三圆点, brand row 直接占顶部. */}
         {sidebarOpen ? (
-          <div className="flex items-center gap-1 px-3 pb-3 pt-1">
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              title="Back to start"
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-2 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
-            >
-              <LoomMark size={20} active={false} />
-              <span className="font-display min-w-0 flex-1 truncate text-left text-[18px] font-medium leading-none tracking-[-0.01em] text-[color:var(--color-paper)]">
-                PentaLoom
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchOpen(true)}
-              title="Search threads"
-              className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
-            >
-              <Search size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(false)}
-              title="Collapse sidebar"
-              className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
-            >
-              <PanelLeftClose size={13} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1 px-3 pb-3 pt-1">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              title="Expand sidebar"
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-2 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
-            >
-              <LoomMark size={20} active={false} />
-              {inElectronShell && (
-                <span className="font-display min-w-0 flex-1 truncate text-left text-[18px] font-medium leading-none tracking-[-0.01em] text-[color:var(--color-paper)]">
+          <>
+            {inElectronShell && <div className="app-drag-region h-12" />}
+            <div className="flex items-center gap-1 px-3 pb-2">
+              <button
+                type="button"
+                onClick={() => navigate("/")}
+                title="Back to start"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-2 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
+              >
+                <LoomMark size={18} active={false} />
+                <span className="font-display min-w-0 flex-1 truncate text-left text-[16px] font-medium leading-none tracking-[-0.006em] text-[color:var(--color-paper)]">
                   PentaLoom
                 </span>
-              )}
-            </button>
-            {inElectronShell && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setSearchOpen(true)}
-                  title="Search threads"
-                  className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
-                >
-                  <Search size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSidebarOpen(true)}
-                  title="Expand sidebar"
-                  className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
-                >
-                  <PanelLeftOpen size={13} />
-                </button>
-              </>
-            )}
-          </div>
-        )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                title="Search threads"
+                className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
+              >
+                <Search size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                title="Collapse sidebar"
+                className="shrink-0 rounded-[5px] border border-transparent p-1.5 text-[color:var(--color-ink)] transition-colors hover:border-[color:var(--color-line)] hover:bg-[color:var(--color-bg-card)] hover:text-[color:var(--color-paper)]"
+              >
+                <PanelLeftClose size={13} />
+              </button>
+            </div>
+          </>
+        ) : null}
 
         {sidebarOpen && (
           <>
@@ -294,7 +264,13 @@ export function AppLayout() {
       {/* ── 主区 ─────────────────────────────────────────────── */}
       <main className="relative flex-1 overflow-hidden">
         {inElectronShell && <div className="app-window-drag-strip" />}
-        <Outlet />
+        <Outlet
+          context={{
+            sidebarOpen,
+            showSidebar: () => setSidebarOpen(true),
+            inElectronShell,
+          }}
+        />
       </main>
 
       {searchOpen && (
