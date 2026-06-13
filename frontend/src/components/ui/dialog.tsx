@@ -1,6 +1,6 @@
-// Radix Dialog 薄封装 — 仅导出 lightbox 真正用到的 5 个原语 (Root / Trigger /
-// Portal / Overlay / Content). Title/Description/Header/Footer 等 form-style
-// 配套件没用到, 不抄, 后续真要用再补.
+// Radix Dialog 薄封装 — 默认 overlay 是 bg-black/50 不带模糊 (功能性 modal
+// 主流做法; rename / 设置 / 输入 等); lightbox 等需要"后景虚化突出主体" 的场景
+// 用 overlayClassName 显式开模糊.
 //
 // 主题 className 走 PentaLoom Nordic Light tokens, 不照搬 shadcn 默认.
 
@@ -15,15 +15,19 @@ export const DialogClose = DialogPrimitive.Close;
 
 export function DialogContent({
   className,
+  overlayClassName,
   children,
   ...props
-}: ComponentProps<typeof DialogPrimitive.Content>) {
+}: ComponentProps<typeof DialogPrimitive.Content> & {
+  overlayClassName?: string;
+}) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
         className={cn(
-          "fixed inset-0 z-50 bg-black/60 backdrop-blur-sm",
+          "fixed inset-0 z-50 bg-black/50",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+          overlayClassName,
         )}
       />
       <DialogPrimitive.Content

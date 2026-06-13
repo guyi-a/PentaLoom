@@ -6,24 +6,30 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Sidebar 单条时间戳 — 紧凑相对格式, 单位 ≤ 4 字符 防撞 title.
+// 全部走 "N + 单位" 统一格式: 不区分 "yesterday" / "just now" 这种长字符串,
+// 视觉跟 1d / 5h / 23m 整齐对齐. 超 4 周走绝对日期.
+//   < 1m  → "now"        // 跟 "23m" 长度对齐, 不再 "just now" 撞 title
+//   < 1h  → "Nm"         // 23m
+//   < 1d  → "Nh"         // 5h (含原 "yesterday": 24h 内仍是 23h 之类)
+//   < 7d  → "Nd"         // 3d (原 "yesterday" 跨天后变 "1d", 4 字符内)
+//   < 4w  → "Nw"         // 2w
+//   ≥ 4w  → "Mar 14" / "Mar 14, 2025"
 export function formatRelative(iso: string): string {
   const t = new Date(iso).getTime();
-  const now = Date.now();
-  const sec = Math.max(0, Math.floor((now - t) / 1000));
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h`;
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const startOfYesterday = new Date(startOfToday.getTime() - 86400000);
-  if (t >= startOfYesterday.getTime() && t < startOfToday.getTime()) {
-    return "yesterday";
-  }
-  const day = Math.floor((now - t) / 86400000);
-  if (day < 7) return `${day}d`;
-  // 一年内显示 "Mar 14"; 跨年加年份
+  const diffMs = Math.max(0, Date.now() - t);
+  const MIN = 60 * 1000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+  const WEEK = 7 * DAY;
+
+  if (diffMs < MIN) return "now";
+  if (diffMs < HOUR) return `${Math.floor(diffMs / MIN)}m`;
+  if (diffMs < DAY) return `${Math.floor(diffMs / HOUR)}h`;
+  if (diffMs < WEEK) return `${Math.floor(diffMs / DAY)}d`;
+  if (diffMs < 4 * WEEK) return `${Math.floor(diffMs / WEEK)}w`;
+
+  // > 4 weeks: 一年内 "Mar 14", 跨年加年份
   const d = new Date(iso);
   const sameYear = d.getFullYear() === new Date().getFullYear();
   return d.toLocaleDateString("en-US", {

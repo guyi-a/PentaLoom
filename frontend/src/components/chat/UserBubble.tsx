@@ -98,6 +98,8 @@ function ImageThumb({ src }: { src: string }) {
       </DialogTrigger>
       <DialogContent
         className="cursor-zoom-out"
+        // lightbox 后景虚化, 突出大图主体 (功能性 dialog 不开, 这里显式开)
+        overlayClassName="bg-black/60 backdrop-blur-sm"
         onClick={() => setOpen(false)}
       >
         <img

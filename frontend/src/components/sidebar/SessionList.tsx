@@ -1,19 +1,34 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   AlertCircle,
-  Check,
+  Ellipsis,
   GitBranch,
   Loader2,
   Pencil,
   Trash2,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { LoomMark } from "@/components/brand/LoomMark";
 import { SidebarGroup } from "@/components/sidebar/SidebarGroup";
 import { WeaverGroup } from "@/components/sidebar/WeaverGroup";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
 import { useSessionStatus } from "@/lib/session-status-store";
 import type { SessionMeta } from "@/lib/types";
@@ -123,30 +138,46 @@ function SessionRow({
   onChanged: () => void;
 }) {
   const navigate = useNavigate();
-  const [editing, setEditing] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState<null | "rename" | "delete">(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // dialog 关闭过渡期 session 引用还在但 title 显示要保持 — 防 dialog fade-out
+  // 时 description 文字塌陷成空.
+  const lastDeleteTitleRef = useRef<string>("");
 
   useEffect(() => {
-    if (!editing) setDraft(session.title ?? "");
-  }, [editing, session.title]);
+    if (!renameOpen) setDraft(session.title ?? "");
+  }, [renameOpen, session.title]);
 
   const fallbackTitle = shortenSid(session.session_id);
   const displayTitle = session.title || fallbackTitle;
 
+  function openRename() {
+    setDraft(session.title ?? "");
+    setRenameOpen(true);
+  }
+
+  function openDelete() {
+    lastDeleteTitleRef.current = displayTitle;
+    setDeleteOpen(true);
+  }
+
   async function commitRename() {
     const next = draft.trim();
-    setEditing(false);
-    if (next === (session.title ?? "")) return;
+    if (next === (session.title ?? "")) {
+      setRenameOpen(false);
+      return;
+    }
     setBusy("rename");
     try {
       await api.patchSession(session.session_id, { title: next === "" ? null : next });
       toast.success("Renamed");
+      setRenameOpen(false);
       onChanged();
     } catch (err) {
       toast.error(`Rename failed: ${String(err)}`);
-      setDraft(session.title ?? "");
     } finally {
       setBusy(null);
     }
@@ -157,27 +188,26 @@ function SessionRow({
     try {
       await api.deleteSession(session.session_id);
       toast.success("Deleted");
+      setDeleteOpen(false);
       if (active) navigate("/");
       onChanged();
     } catch (err) {
       toast.error(`Delete failed: ${String(err)}`);
     } finally {
       setBusy(null);
-      setConfirmingDelete(false);
     }
   }
+
+  // hover 时让 ⋯ 顶替时间戳显示. menuOpen 时强制 ⋯ 可见 (即使鼠标已挪开).
+  const showMenuTrigger = menuOpen;
 
   return (
     <li>
       <div
         role="button"
         tabIndex={0}
-        onClick={() => {
-          if (editing || confirmingDelete) return;
-          navigate(`/s/${session.session_id}`);
-        }}
+        onClick={() => navigate(`/s/${session.session_id}`)}
         onKeyDown={(e) => {
-          if (editing || confirmingDelete) return;
           if (e.key !== "Enter" && e.key !== " ") return;
           e.preventDefault();
           navigate(`/s/${session.session_id}`);
@@ -185,10 +215,14 @@ function SessionRow({
         title={`${displayTitle} · ${session.mounted_dirs.length} mount${session.mounted_dirs.length !== 1 ? "s" : ""}`}
         className={cn(
           "group relative rounded-[8px] transition-all duration-150",
+          // 三层级视觉:
+          //   idle    → 透明 (= sidebar bg-soft 米灰)
+          //   active  → bg-card 纯白 + shadow + 钢蓝竖条 (PentaLoom brand)
+          //   hover   → idle 行变 bg-raised 冷灰; active 行不动 bg, 仅加深 shadow
+          //             轻微浮起 — active 焦点态保持视觉稳定, 不被 hover 干扰
           active
-            ? "bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.04)]"
+            ? "bg-[color:var(--color-bg-card)] shadow-[0_1px_2px_rgba(20,30,50,0.04)] hover:shadow-[0_2px_8px_rgba(20,30,50,0.08)]"
             : "hover:bg-[color:var(--color-bg-raised)]",
-          (editing || confirmingDelete) && "cursor-default",
         )}
       >
         {/* active 左侧 2px 钢蓝竖条 — file 主色, 视觉锚 + 强 active 信号 */}
@@ -196,133 +230,155 @@ function SessionRow({
           <span className="pointer-events-none absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-[color:var(--color-thread-file)]" />
         )}
 
-        {confirmingDelete ? (
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          {/* 状态 icon: idle GitBranch / running spinner / waiting_approval AlertCircle */}
+          <SessionStatusIcon sid={session.session_id} />
+          {/* title */}
           <div
-            className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] text-[color:var(--color-paper-dim)]"
-            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              "min-w-0 flex-1 truncate text-[13px] leading-snug",
+              active
+                ? "font-medium text-[color:var(--color-paper)]"
+                : "text-[color:var(--color-paper-dim)]",
+            )}
           >
-            <span className="truncate">Delete this thread?</span>
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                disabled={busy === "delete"}
-                onClick={deleteSession}
-                className="rounded-[3px] px-1.5 py-0.5 text-[color:var(--color-error)] hover:bg-[color:var(--color-error)]/10 disabled:opacity-50"
+            {session.title ?? (
+              <span className="font-mono text-[12px] text-[color:var(--color-ink)]">
+                {fallbackTitle}
+              </span>
+            )}
+          </div>
+          {/* 右侧: 时间 (默认显) ↔ ⋯ 菜单触发 (hover 或菜单打开时显). 同尺寸占位防跳动. */}
+          <div className="relative flex w-12 shrink-0 items-center justify-end">
+            <span
+              className={cn(
+                "tabular font-mono text-[10.5px] text-[color:var(--color-ink)] transition-opacity",
+                showMenuTrigger ? "opacity-0" : "group-hover:opacity-0",
+              )}
+            >
+              {formatRelative(session.last_active_at)}
+            </span>
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => e.stopPropagation()}
+                  className={cn(
+                    "absolute right-0 inline-flex h-6 w-6 items-center justify-center rounded-[5px] text-[color:var(--color-ink)] transition-opacity hover:bg-[color:var(--color-line)] hover:text-[color:var(--color-paper)]",
+                    showMenuTrigger ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                  )}
+                  title="More actions"
+                >
+                  <Ellipsis size={14} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                onClick={(e) => e.stopPropagation()}
+                onCloseAutoFocus={(e) => e.preventDefault()}
               >
-                {busy === "delete" ? "…" : "Delete"}
-              </button>
+                <DropdownMenuItem onSelect={() => openRename()}>
+                  <Pencil />
+                  <span>Rename</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => openDelete()}>
+                  <Trash2 />
+                  <span>Delete</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+
+      {/* Rename Dialog — autoFocus + Enter 保存 / Esc 关 + 显式 Save/Cancel.
+          不靠 onBlur 自动提交, 避免点 backdrop / 切焦点时误提交. */}
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent
+          className="w-[min(420px,90vw)] rounded-[12px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-card)] p-5 shadow-[0_20px_60px_rgba(20,30,50,0.18)]"
+          onOpenAutoFocus={(e) => {
+            // 自定义 focus — 让 input autoFocus 生效, 不被 Dialog 默认 focus 抢走
+            e.preventDefault();
+          }}
+        >
+          <h2 className="font-display text-[16px] font-medium tracking-[-0.005em] text-[color:var(--color-paper)]">
+            Rename thread
+          </h2>
+          <p className="mt-1 text-[12px] text-[color:var(--color-paper-dim)]">
+            Give this thread a new title (or leave empty to use the session id).
+          </p>
+          <input
+            autoFocus
+            value={draft}
+            disabled={busy === "rename"}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitRename();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setRenameOpen(false);
+              }
+            }}
+            placeholder={fallbackTitle}
+            className="mt-3 block w-full rounded-[6px] border border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-2.5 py-1.5 text-[13px] text-[color:var(--color-paper)] focus:border-[color:var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]/15 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setRenameOpen(false)}
+              disabled={busy === "rename"}
+              className="rounded-[6px] px-3 py-1.5 text-[12px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={commitRename}
+              disabled={busy === "rename"}
+              className="rounded-[6px] bg-[color:var(--color-accent)] px-3 py-1.5 text-[12px] text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {busy === "rename" ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete AlertDialog — title 走 lastDeleteTitleRef 防关闭过渡期文字塌陷 */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogTitle>Delete this thread?</AlertDialogTitle>
+          <AlertDialogDescription>
+            <span className="text-[color:var(--color-paper)]">
+              "{lastDeleteTitleRef.current}"
+            </span>
+            {" 跟它的所有消息会被永久删除. 这一步不可恢复."}
+          </AlertDialogDescription>
+          <div className="mt-4 flex justify-end gap-2">
+            <AlertDialogCancel asChild>
               <button
                 type="button"
                 disabled={busy === "delete"}
-                onClick={() => setConfirmingDelete(false)}
-                className="rounded-[3px] px-1.5 py-0.5 text-[color:var(--color-ink)] hover:bg-[color:var(--color-bg-raised)] disabled:opacity-50"
+                className="rounded-[6px] px-3 py-1.5 text-[12px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:opacity-50"
               >
                 Cancel
               </button>
-            </div>
-          </div>
-        ) : editing ? (
-          <div className="flex items-center gap-1 px-3 py-2">
-            <input
-              autoFocus
-              value={draft}
-              disabled={busy === "rename"}
-              onChange={(e) => setDraft(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onBlur={commitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  (e.target as HTMLInputElement).blur();
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setDraft(session.title ?? "");
-                  setEditing(false);
-                }
-              }}
-              placeholder={fallbackTitle}
-              className="min-w-0 flex-1 rounded-[4px] border border-[color:var(--color-accent)] bg-[color:var(--color-bg-card)] px-1.5 py-0.5 text-[13px] text-[color:var(--color-paper)] focus:outline-none"
-            />
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={(e) => {
-                e.stopPropagation();
-                commitRename();
-              }}
-              className="rounded-[3px] p-0.5 text-[color:var(--color-accent)] hover:bg-[color:var(--color-bg-raised)]"
-              title="Save title"
-            >
-              <Check size={12} />
-            </button>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={(e) => {
-                e.stopPropagation();
-                setDraft(session.title ?? "");
-                setEditing(false);
-              }}
-              className="rounded-[3px] p-0.5 text-[color:var(--color-ink)] hover:bg-[color:var(--color-bg-raised)]"
-              title="Cancel rename"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 px-3 py-2.5">
-            {/* 状态 icon: idle 时默认 GitBranch (五瓣丝线主题), running 时换 spinner,
-                waiting_approval 时换 AlertCircle (橙色, 提示用户去看). */}
-            <SessionStatusIcon sid={session.session_id} />
-            {/* title */}
-            <div
-              className={cn(
-                "min-w-0 flex-1 truncate text-[13px] leading-snug",
-                active
-                  ? "font-medium text-[color:var(--color-paper)]"
-                  : "text-[color:var(--color-paper-dim)]",
-              )}
-            >
-              {session.title ?? (
-                <span className="font-mono text-[12px] text-[color:var(--color-ink)]">
-                  {fallbackTitle}
-                </span>
-              )}
-            </div>
-            {/* 右侧: 时间 (默认显) ↔ rename/delete 按钮 (hover 显) */}
-            <span className="tabular shrink-0 font-mono text-[10.5px] text-[color:var(--color-ink)] transition-opacity group-hover:opacity-0">
-              {formatRelative(session.last_active_at)}
-            </span>
-            <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setConfirmingDelete(false);
-                  setEditing(true);
-                }}
-                className="rounded-[3px] bg-[color:var(--color-bg-card)] p-0.5 text-[color:var(--color-ink)] shadow-sm hover:text-[color:var(--color-paper)]"
-                title="Rename thread"
+                onClick={deleteSession}
+                disabled={busy === "delete"}
+                className="rounded-[6px] bg-[color:var(--color-error)] px-3 py-1.5 text-[12px] text-white transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                <Pencil size={11} />
+                {busy === "delete" ? "Deleting…" : "Delete"}
               </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditing(false);
-                  setConfirmingDelete(true);
-                }}
-                className="rounded-[3px] bg-[color:var(--color-bg-card)] p-0.5 text-[color:var(--color-ink)] shadow-sm hover:text-[color:var(--color-error)]"
-                title="Delete thread"
-              >
-                <Trash2 size={11} />
-              </button>
-            </div>
+            </AlertDialogAction>
           </div>
-        )}
-      </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </li>
   );
 }
