@@ -19,10 +19,12 @@
 // - 用户手动 toggle 后写 localStorage, 优先级高于默认
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useParams } from "react-router";
+import { useOutletContext, useParams } from "react-router";
 import { toast } from "sonner";
 import useSWR, { useSWRConfig } from "swr";
-import { Check, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
+import { Check, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
+
+import type { SidebarLayoutContext } from "@/components/layout/AppLayout";
 
 import { ChatStream } from "@/components/chat/ChatStream";
 import { FilePreviewPanel } from "@/components/right-panel/file-preview/FilePreviewPanel";
@@ -78,6 +80,7 @@ function initialPanelWidth(): number {
 export function ChatPage() {
   const { sid } = useParams();
   const { mutate: globalMutate } = useSWRConfig();
+  const layout = useOutletContext<SidebarLayoutContext>();
 
   const {
     data: meta,
@@ -418,6 +421,9 @@ export function ChatPage() {
         title={meta.title}
         panelOpen={panelOpen}
         onTogglePanel={() => setPanelOpen(!panelOpen)}
+        sidebarOpen={layout.sidebarOpen}
+        onShowSidebar={layout.showSidebar}
+        inElectronShell={layout.inElectronShell}
         onTitleChange={async (next) => {
           try {
             await api.patchSession(meta.session_id, { title: next });
@@ -519,12 +525,18 @@ function ChatHeader({
   title,
   panelOpen,
   onTogglePanel,
+  sidebarOpen,
+  onShowSidebar,
+  inElectronShell,
   onTitleChange,
 }: {
   sessionId: string;
   title: string | null;
   panelOpen: boolean;
   onTogglePanel: () => void;
+  sidebarOpen: boolean;
+  onShowSidebar: () => void;
+  inElectronShell: boolean;
   onTitleChange: (next: string | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -541,8 +553,29 @@ function ChatHeader({
     onTitleChange(next === "" ? null : next);
   }
 
+  // sidebar 折叠 + Electron 时, header 左 padding 只给 macOS 三圆点让位
+  // (三圆点最右边缘约 x=116). 展开按钮改浮在三圆点下方, 不再挤占标题横向空间.
+  const needsSidebarSlot = inElectronShell && !sidebarOpen;
+
   return (
-    <div className="app-drag-region relative z-20 border-b border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] px-6 py-3">
+    <div
+      className={cn(
+        "app-drag-region relative z-20 border-b border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)] py-3",
+        needsSidebarSlot ? "pl-[120px] pr-6" : "px-6",
+      )}
+    >
+      {/* sidebar 折叠 + Electron: 展开按钮 absolute 浮在 macOS 三圆点下方
+          (跟 EmptyPage 同款位置), 让标题和右按钮与三圆点保持平行. */}
+      {needsSidebarSlot && (
+        <button
+          type="button"
+          onClick={onShowSidebar}
+          title="Show sidebar"
+          className="app-no-drag absolute left-[66px] top-[54px] inline-flex h-7 w-7 items-center justify-center rounded-[5px] text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+        >
+          <PanelLeftOpen size={14} />
+        </button>
+      )}
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {editing ? (
