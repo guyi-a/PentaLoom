@@ -73,3 +73,18 @@ export function AlertDialogDescription({
     />
   );
 }
+
+export function AlertDialogFooter({
+  className,
+  children,
+  ...props
+}: ComponentProps<"div">) {
+  return (
+    <div
+      className={cn("mt-4 flex items-center justify-end gap-3", className)}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}

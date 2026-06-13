@@ -11,6 +11,10 @@
       rel="stylesheet"
     />
     <title>PentaLoom — 五瓣织机</title>
+    <!-- 防 FOUC: React hydrate 前先读 localStorage 设 dark class -->
+    <script>
+      try { if (localStorage.getItem("pentaloom:theme") === "dark") document.documentElement.classList.add("dark"); } catch {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

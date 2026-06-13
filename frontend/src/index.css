@@ -65,6 +65,41 @@
   --radius-lg: 8px;
 }
 
+/* ── 暗色主题 — .dark 加在 <html> 上, 覆盖 @theme 里的浅色值 ── */
+.dark {
+  /* ── 基底 (深墨 → 卡片微亮 → 凸起更亮) ─────────────────────── */
+  --color-bg:        #1a1c20;  /* 主背景 = 墨蓝黑 */
+  --color-bg-soft:   #20242a;  /* 侧栏 / header */
+  --color-bg-card:   #272a30;  /* 卡片 / hover */
+  --color-bg-raised: #2e3238;  /* active / 选中态 */
+  --color-bg-deep:   #14161a;  /* 输入框 / 代码块 (比主背景更深) */
+
+  /* ── 线 (暗色下线比背景亮一档, 极克制) ─────────────────────── */
+  --color-line:        #33373e;
+  --color-line-soft:   #2a2e34;
+  --color-line-strong: #4a4f58;
+
+  /* ── 字 (paper = 亮前景, ink = 暗注释, 跟浅色反转) ────────── */
+  --color-paper:      #e2e4e9;  /* 主前景 = 冷白 */
+  --color-paper-dim:  #b0b4bc;  /* 次级 */
+  --color-ink:        #8a8f9a;  /* 注释 */
+  --color-ink-dim:    #5a5f68;  /* 极弱 */
+
+  /* ── 五瓣 agent 线色 — 暗色下提亮饱和度, 避免被深背景吞掉 ── */
+  --color-thread-file:     #6b9ac4;
+  --color-thread-app:      #9ca3af;
+  --color-thread-browser:  #7fb893;
+  --color-thread-computer: #e8a56e;
+  --color-thread-search:   #a3bddb;
+
+  /* ── 语义色 — 暗色下稍提亮保可读 ────────────────────────── */
+  --color-accent:      #6b9ac4;
+  --color-accent-dim:  #4a6a88;
+  --color-warn:        #e8a56e;
+  --color-error:       #e06060;
+  --color-success:     #7fb893;
+}
+
 /* ────────────── 全局 reset + 基础 ────────────── */
 * {
   box-sizing: border-box;
@@ -94,8 +129,8 @@ body,
    用在 EmptyPage 主区域底; 之后想全局加再说. */
 .weave-texture {
   background-image:
-    linear-gradient(to right, rgba(28, 31, 38, 0.035) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(28, 31, 38, 0.035) 1px, transparent 1px);
+    linear-gradient(to right, var(--color-line-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line-soft) 1px, transparent 1px);
   background-size: 32px 32px;
   background-position: center center;
 }
@@ -162,7 +197,7 @@ body,
 /* ────────────── selection ────────────── */
 ::selection {
   background: var(--color-accent);
-  color: #ffffff;
+  color: var(--color-bg-card);
 }
 
 /* ────────────── focus ring ────────────── */

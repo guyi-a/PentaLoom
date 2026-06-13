@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Outlet, useNavigate, useParams } from "react-router";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { GitBranch, PanelLeftClose, Search, Settings, SquarePen, X } from "lucide-react";
 import useSWR, { useSWRConfig } from "swr";
 
@@ -9,6 +10,7 @@ import { api } from "@/lib/api";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
 import { useSessionStatusStore } from "@/lib/session-status-store";
 import { formatRelative, shortenSid } from "@/lib/utils";
+import { applyTheme, watchSystemTheme, type Theme, type ResolvedTheme } from "@/lib/theme";
 
 const SIDEBAR_OPEN_KEY = "pentaloom:left-sidebar:open";
 const SIDEBAR_WIDTH_KEY = "pentaloom:left-sidebar:width";
@@ -45,15 +47,52 @@ export interface SidebarLayoutContext {
   sidebarOpen: boolean;
   showSidebar: () => void;
   inElectronShell: boolean;
+  theme: Theme;
+  setTheme: (t: Theme) => void;
 }
 
 export function AppLayout() {
   const { sid } = useParams();
   const navigate = useNavigate();
+
+  // 切换会话时自动关闭设置 overlay
+  useEffect(() => {
+    setSettingsOpen(false);
+  }, [sid]);
   const [sidebarOpen, setSidebarOpenRaw] = useState(initialSidebarOpen);
   const [sidebarWidth, setSidebarWidthRaw] = useState(initialSidebarWidth);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ── 主题初始化 + 系统偏好监听 ──
+  const { data: cfg } = useSWR("settings", api.getSettings);
+  const [currentTheme, setCurrentTheme] = useState<Theme>(
+    (cfg?.theme as Theme) ?? "light",
+  );
+
+  // 首次拿到后端 theme 后 apply
+  useEffect(() => {
+    if (cfg?.theme) {
+      setCurrentTheme(cfg.theme as Theme);
+      applyTheme(cfg.theme as Theme);
+    }
+  }, [cfg?.theme]);
+
+  // theme=system 时监听 OS 变化
+  useEffect(() => {
+    if (currentTheme !== "system") return;
+    return watchSystemTheme((resolved: ResolvedTheme) => {
+      if (resolved === "dark") {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
+      try {
+        window.localStorage.setItem("pentaloom:theme", resolved);
+      } catch {}
+    });
+  }, [currentTheme]);
   const { data: sessions, mutate } = useSWR("sessions", () =>
     api.listSessions(),
   );
@@ -108,6 +147,12 @@ export function AppLayout() {
   function closeSearch() {
     setSearchOpen(false);
     setSearchQuery("");
+  }
+
+  function setThemeValue(next: Theme) {
+    setCurrentTheme(next);
+    applyTheme(next);
+    api.patchSettings({ theme: next }).catch(() => {});
   }
 
   function setSidebarOpen(next: boolean) {
@@ -172,7 +217,7 @@ export function AppLayout() {
             <div className="flex items-center gap-1 px-3 pb-2">
               <button
                 type="button"
-                onClick={() => navigate("/")}
+                onClick={() => { navigate("/"); setSettingsOpen(false); }}
                 title="Back to start"
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-2 py-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)]"
               >
@@ -206,7 +251,7 @@ export function AppLayout() {
             {/* 新建会话按钮 — ghost 风, 不抢戏; hover 才显 bg, 跟下面分组标题节奏一致 */}
             <button
               type="button"
-              onClick={() => navigate("/")}
+              onClick={() => { navigate("/"); setSettingsOpen(false); }}
               className="mx-2 mt-2 flex items-center gap-2 rounded-[6px] px-3 py-1.5 text-left text-[13px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
             >
               <SquarePen
@@ -240,9 +285,14 @@ export function AppLayout() {
             <div className="px-4 py-3">
               <button
                 type="button"
+                onClick={() => setSettingsOpen((v) => !v)}
                 title="Settings"
                 aria-label="Settings"
-                className="rounded-[5px] p-1.5 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+                className={`rounded-[5px] p-1.5 transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] ${
+                  settingsOpen
+                    ? "text-[color:var(--color-accent)]"
+                    : "text-[color:var(--color-ink)]"
+                }`}
               >
                 <Settings size={14} />
               </button>
@@ -264,13 +314,19 @@ export function AppLayout() {
       {/* ── 主区 ─────────────────────────────────────────────── */}
       <main className="relative flex-1 overflow-hidden">
         {inElectronShell && <div className="app-window-drag-strip" />}
-        <Outlet
-          context={{
-            sidebarOpen,
-            showSidebar: () => setSidebarOpen(true),
-            inElectronShell,
-          }}
-        />
+        {settingsOpen ? (
+          <SettingsPage theme={currentTheme} setTheme={setThemeValue} />
+        ) : (
+          <Outlet
+            context={{
+              sidebarOpen,
+              showSidebar: () => setSidebarOpen(true),
+              inElectronShell,
+              theme: currentTheme,
+              setTheme: setThemeValue,
+            }}
+          />
+        )}
       </main>
 
       {searchOpen && (

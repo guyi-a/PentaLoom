@@ -1,9 +1,15 @@
 // HTTP + SSE helpers. 后端在 vite proxy /api → 127.0.0.1:8090.
 
 import type {
+  AddEmailAccountBody,
   AppDetailResponse,
   AppWatchFilesResponse,
   BrowseResponse,
+  ConnectionStatus,
+  EmailAccountListResponse,
+  EmailMutationResult,
+  EmailProviderListResponse,
+  EmailTestResult,
   FilePreviewMeta,
   Frame,
   FsTreeNode,
@@ -13,6 +19,7 @@ import type {
   PermissionDecisionBody,
   PermissionDecisionResp,
   SessionMeta,
+  SettingsResponse,
   TextPreviewResult,
   WeaverProductsResponse,
   WorkflowDetailResponse,
@@ -129,6 +136,22 @@ export const api = {
   // 跟 /fs/preview/file 同一份 endpoint, 鉴权走 query string.
   getPreviewFileUrl: (sessionId: string, path: string): string =>
     `${BASE}/fs/preview/file?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+
+  // ──── Settings ──────────────────────────────────────────────
+  getSettings: () => http<SettingsResponse>("/settings"),
+  getConnections: () => http<ConnectionStatus>("/settings/connections"),
+  patchSettings: (body: { theme: string }) =>
+    http<SettingsResponse>("/settings", { method: "PATCH", json: body }),
+
+  // ──── Email ────────────────────────────────────────────────
+  getEmailProviders: () => http<EmailProviderListResponse>("/email/providers"),
+  getEmailAccounts: () => http<EmailAccountListResponse>("/email/accounts"),
+  addEmailAccount: (body: AddEmailAccountBody) =>
+    http<EmailMutationResult>("/email/accounts", { method: "POST", json: body }),
+  deleteEmailAccount: (id: string) =>
+    http<EmailMutationResult>(`/email/accounts/${id}`, { method: "DELETE" }),
+  testEmailAccount: (id: string) =>
+    http<EmailTestResult>(`/email/accounts/${id}/test`, { method: "POST" }),
 };
 
 // ──── chat SSE ───────────────────────────────────────────────

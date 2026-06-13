@@ -67,3 +67,5 @@ agent/tests/
 
 # Claude Code / built-in skills (local only — not distributed via git)
 .claude/
+# CodeFlicker / MyFlicker IDE 本地配置
+.codeflicker/
