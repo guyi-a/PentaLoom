@@ -46,6 +46,72 @@ export interface PermissionDecisionResp {
   added_allowlist_key: string | null;
 }
 
+// ──── Settings ──────────────────────────────────────────────
+
+export interface SettingsResponse {
+  theme: string;
+  version: string;
+}
+
+export interface BrowserSummary {
+  browser_id: string;
+  label: string;
+}
+
+export interface ConnectionStatus {
+  browser_bridge_ready: boolean;
+  browser_bridge_browsers: number;
+  browser_bridge_detail: BrowserSummary[];
+  email_connected: boolean;
+  email_account: string | null;
+}
+
+// ──── Email ─────────────────────────────────────────────────
+
+export interface EmailProviderInfo {
+  id: string;
+  display_name: string;
+  email_suffix: string;
+}
+
+export interface EmailProviderListResponse {
+  providers: EmailProviderInfo[];
+}
+
+export interface EmailAccountResponse {
+  id: string;
+  provider: string;
+  email: string;
+  display_name: string | null;
+  is_default: boolean;
+}
+
+export interface EmailAccountListResponse {
+  accounts: EmailAccountResponse[];
+  default_account_id: string | null;
+}
+
+export interface EmailMutationResult {
+  ok: boolean;
+  message: string;
+  error_code: string | null;
+  account_id: string | null;
+  email: string | null;
+}
+
+export interface EmailTestResult {
+  ok: boolean;
+  message: string;
+  error_code: string | null;
+}
+
+export interface AddEmailAccountBody {
+  provider: string;
+  email: string;
+  password: string;
+  display_name?: string;
+}
+
 // ──── SSE frames (chat.py _serialize 的产出) ──────────────────
 
 export type Frame =

@@ -22,10 +22,12 @@ from pentaloom.infra.loom_pool import LoomPool
 from pentaloom.routers import (
     browser_bridge,
     chat,
+    email,
     fs,
     health,
     preview,
     sessions,
+    settings as settings_router,
     weaver,
 )
 
@@ -135,6 +137,8 @@ app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(fs.router)
 app.include_router(preview.router)
+app.include_router(settings_router.router, prefix="/settings", tags=["settings"])
+app.include_router(email.router, prefix="/email", tags=["email"])
 app.include_router(weaver.router)
 # Chrome 扩展 (Kro Browser Bridge) 桥接 — 路径硬编码 /chrome-bridge/{ping,ws}.
 # 扩展端写死, router 内的路径也写死, 不能加 prefix.

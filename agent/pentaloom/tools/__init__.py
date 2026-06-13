@@ -47,6 +47,12 @@ from pentaloom.tools.workspace import (
     build_hitl_hooks,
     make_can_use_tool,
 )
+from pentaloom.tools.email import (
+    EMAIL_FULL_NAME,
+    EMAIL_MCP_SERVER,
+    EMAIL_MCP_SERVER_NAME,
+    EMAIL_TOOL_NAME,
+)
 
 # 向后兼容旧 import 名 (LoomPool / routers 还在用 WORKSPACE_REGISTRY).
 WORKSPACE_REGISTRY = PERMISSION_REGISTRY
@@ -90,4 +96,9 @@ __all__ = [
     "build_hitl_hooks",
     "build_weaver_mcp_server",
     "make_can_use_tool",
+    # email
+    "EMAIL_FULL_NAME",
+    "EMAIL_MCP_SERVER",
+    "EMAIL_MCP_SERVER_NAME",
+    "EMAIL_TOOL_NAME",
 ]
