@@ -29,6 +29,8 @@ from claude_agent_sdk import (
 from loguru import logger
 
 from pentaloom.capabilities.browser import extract_action_verb
+from pentaloom.infra.approval.destructive import is_destructive
+from pentaloom.infra.approval.policy import ApprovalModeRef, get_policy
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools.browser import (
     BROWSER_USE_FULL_NAME,
@@ -370,12 +372,21 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     return None
 
 
-def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
-    """生成闭包 sid + allowlists 的 can_use_tool callback.
+def make_can_use_tool(
+    sid: str,
+    *,
+    allowlists: dict[str, set[str]],
+    approval_mode_ref: ApprovalModeRef | None = None,
+):
+    """生成闭包 sid + allowlists + approval_mode_ref 的 can_use_tool callback.
 
     allowlists: dict[tool_name, set[免审 key]]. 引用传递 — LoomPool 持着同一个 dict,
     router 在 allow_session 时往里加 entry, 这里读到的就是最新的. dict + 每个 set
     都跟 _Entry 共生命周期, evict 时清空.
+
+    approval_mode_ref: ApprovalModeRef. 三档审批策略 (default/auto/full_access).
+    引用传递 — settings 改 mode 立刻生效, 不需要 rebuild client. None 时退化为
+    default 行为 (现状), 兼容老调用方.
     """
 
     async def can_use_tool(
@@ -424,6 +435,32 @@ def make_can_use_tool(sid: str, *, allowlists: dict[str, set[str]]):
         tool_use_id = context.tool_use_id or ""
         if not tool_use_id:
             return PermissionResultDeny(message="missing tool_use_id from SDK")
+
+        # 三档 Policy 自动批 (default/auto/full_access).
+        # destructive 永远走人工审批 — 跨所有模式 (full_access 也不能跳过).
+        # 命中 destructive 不在这里 deny, 让它落到下面 register Future, 由用户拍板.
+        is_destructive_call = is_destructive(tool_name, tool_input)
+        if not is_destructive_call and approval_mode_ref is not None:
+            policy = get_policy(approval_mode_ref.value)
+            auto_approved, reason = await policy.should_auto_approve(
+                tool_name, tool_input,
+            )
+            if auto_approved:
+                logger.info(
+                    f"{tool_name} auto-approved policy={approval_mode_ref.value} "
+                    f"sid={sid} tool_use_id={tool_use_id} reason={reason}"
+                )
+                # 推 permission_resolved 帧让前端立刻 dismiss 审批栏 (跟 allowlist 命中
+                # 同处理 — 否则前端只看到 tool_use, 没 dismiss 信号会闪一下审批栏).
+                buf = stream_buffers.get(sid)
+                if buf is not None:
+                    payload = {
+                        "type": "permission_resolved",
+                        "tool_use_id": tool_use_id,
+                        "decision": f"auto_{reason}" if reason else "auto",
+                    }
+                    buf.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+                return PermissionResultAllow()
 
         # 快路径: 命中本会话 allowlist 直接 allow, 不打扰用户.
         key = allowlist_key(tool_name, tool_input)

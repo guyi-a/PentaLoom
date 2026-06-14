@@ -47,6 +47,7 @@ from pydantic import BaseModel
 
 from pentaloom.config import get_settings
 from pentaloom.crud import chat_session as crud_chat
+from pentaloom.infra.approval.policy import APPROVAL_MODES
 from pentaloom.infra.attachments import (
     AttachmentTooLarge,
     commit_attachment,
@@ -741,6 +742,50 @@ async def chat_permission(
         "added_path": added_path,
         "added_allowlist_key": added_allowlist_key,
     }
+
+
+class ApprovalModeBody(BaseModel):
+    mode: str
+
+
+@router.get(
+    "/chat/{sid}/approval-mode",
+    summary="读会话当前审批模式 (default / auto / full_access)",
+)
+async def get_approval_mode(sid: str, request: Request) -> dict[str, str]:
+    """前端 picker 初始化 / 切换会话 tab 时调. 会话不存在 (尚未 build) 返 default."""
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(500, "LoomPool not initialized")
+    mode = pool.get_approval_mode(sid)
+    return {"mode": mode or "default"}
+
+
+@router.patch(
+    "/chat/{sid}/approval-mode",
+    summary="切换会话审批模式 (per-session 仅内存, evict 后丢失)",
+)
+async def set_approval_mode(
+    sid: str, body: ApprovalModeBody, request: Request,
+) -> dict[str, str]:
+    """切换立刻被 can_use_tool closure 读到, 不 rebuild client.
+
+    语义: 已经 await fut 等审的请求不受影响 — 用户必须答完它们; 之后进的
+    工具调用走新模式. 切到 full_access 不会自动放行已弹的 pending.
+    """
+    if body.mode not in APPROVAL_MODES:
+        raise HTTPException(
+            422, f"mode must be one of {list(APPROVAL_MODES)}",
+        )
+    pool = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise HTTPException(500, "LoomPool not initialized")
+    ok = pool.set_approval_mode(sid, body.mode)
+    if not ok:
+        # session 还没 build (用户刚开新对话还没发第一条消息) — 暂时不支持预设.
+        # 前端可以先存本地, 第一次 send 之后再 PATCH.
+        raise HTTPException(404, "session not active; send a message first")
+    return {"mode": body.mode}
 
 
 @router.post(
