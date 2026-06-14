@@ -714,6 +714,37 @@ export interface XlsxWorkbookPreview {
   size: number;
 }
 
+// /fs/preview/archive/zip — 只列 metadata 不解压.
+export interface ZipEntry {
+  path: string;
+  size: number;
+  compressed_size: number;
+  is_dir: boolean;
+}
+
+export interface ArchivePreview {
+  entries: ZipEntry[];
+  total_entries: number;
+  truncated: boolean;
+  size: number;
+}
+
+// /fs/preview/office/sqlite — 列表名 / 列名 / 前 200 行 / 行数.
+export interface SqliteTable {
+  name: string;
+  columns: string[];
+  rows: string[][];
+  row_count: number;
+  truncated: boolean;
+}
+
+export interface DatabasePreview {
+  tables: SqliteTable[];
+  total_tables: number;
+  truncated: boolean;
+  size: number;
+}
+
 // PATCH /sessions/{sid}/mounts: dirs / add / remove 三种用法之一即可.
 export interface PatchMountsBody {
   dirs?: string[];

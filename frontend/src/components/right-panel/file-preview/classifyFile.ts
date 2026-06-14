@@ -22,6 +22,8 @@ export type FilePreviewKind =
   | "docx"
   | "xlsx"
   | "pptx"
+  | "archive"
+  | "database"
   | "unsupported";
 
 const MARKDOWN_EXTS = new Set(["md", "markdown", "mdx"]);
@@ -36,6 +38,10 @@ const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus"]);
 const TABLE_EXTS = new Set(["csv", "tsv"]);
 const NOTEBOOK_EXTS = new Set(["ipynb"]);
 const XLSX_EXTS = new Set(["xlsx", "xlsm"]);
+// archive — 第一版只支持 zip. tar/gz/7z 后续 PR 加.
+const ARCHIVE_EXTS = new Set(["zip"]);
+// database — sqlite 三种常见扩展名 (.db / .sqlite / .sqlite3).
+const DATABASE_EXTS = new Set(["db", "sqlite", "sqlite3"]);
 
 // 主流编程语言 + 配置 + 文本. shiki 之外的 ext 命中也归 code, 让 CodePreview 走兜底高亮.
 const CODE_EXTS = new Set([
@@ -75,6 +81,8 @@ export function classifyFile(ext: string, basename?: string): FilePreviewKind {
   if (e === "docx") return "docx";
   if (e === "pptx") return "pptx";
   if (XLSX_EXTS.has(e)) return "xlsx";
+  if (ARCHIVE_EXTS.has(e)) return "archive";
+  if (DATABASE_EXTS.has(e)) return "database";
   if (CODE_EXTS.has(e)) return "code";
 
   // basename 兜底 — Dockerfile / .env 这种无 ext 文件
