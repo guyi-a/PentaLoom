@@ -21,6 +21,7 @@ import { ArrowUp, Folder, FolderPlus, PanelLeftOpen, Paperclip, X } from "lucide
 
 import type { SidebarLayoutContext } from "@/components/layout/AppLayout";
 import { LoomMark } from "@/components/brand/LoomMark";
+import { ApprovalModePicker } from "@/components/chat/ApprovalModePicker";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { FolderPicker } from "@/components/permission/FolderPicker";
 import { RightPanel } from "@/components/right-panel/RightPanel";
@@ -29,7 +30,8 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import { chatStream, chatStreamWithAttachments } from "@/lib/api";
+import { api, chatStream, chatStreamWithAttachments } from "@/lib/api";
+import { useApprovalModeStore } from "@/lib/approval-mode-store";
 import { appendFrame } from "@/lib/frames";
 import type { Frame, SessionMeta } from "@/lib/types";
 import { cn, shortenPath } from "@/lib/utils";
@@ -194,6 +196,12 @@ export function EmptyPage() {
             mountedDirs: mounts,
           });
       setLiveSid(handle.sessionId);
+      // 用户在 EmptyPage picker 切的 mode 暂存在 store.pendingMode, 这里移交
+      // 给新 sid + 同步给后端 (LoomPool 已 build, PATCH 一定成功). 失败吞.
+      const committed = useApprovalModeStore.getState().commitPendingTo(handle.sessionId);
+      if (committed !== "default") {
+        api.setApprovalMode(handle.sessionId, committed).catch(() => {});
+      }
       navigate(`/s/${handle.sessionId}`);
       mutate("sessions");
       // 落盘附件 → 立刻 mutate fs:tree 让 ChatPage 接管时 Workspace 树看得到.
@@ -390,14 +398,17 @@ export function EmptyPage() {
             />
 
             <div className="flex items-center justify-between gap-3 border-t border-[color:var(--color-line-soft)] px-3 py-2.5">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach files"
-                className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
-              >
-                <Paperclip size={17} />
-              </button>
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach files"
+                  className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+                >
+                  <Paperclip size={17} />
+                </button>
+                <ApprovalModePicker sessionId={null} />
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"

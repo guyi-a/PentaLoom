@@ -4,6 +4,7 @@ import type {
   AddEmailAccountBody,
   AppDetailResponse,
   AppWatchFilesResponse,
+  ApprovalMode,
   BrowseResponse,
   ConnectionStatus,
   EmailAccountListResponse,
@@ -115,6 +116,17 @@ export const api = {
   // Idempotent, 重复调返 204; 跑完已经无 buffer 也返 204 不报错.
   stopChat: (sid: string) =>
     http<void>(`/chat/${sid}/stop`, { method: "POST" }),
+
+  // 审批模式 — per-session 仅内存. session 还没 build (新对话还没发第一条) 时
+  // GET 返默认 default; PATCH 返 404, 调用方应吞掉 (用户的偏好留前端 store,
+  // 第一次 send 之后再同步一次).
+  getApprovalMode: (sid: string) =>
+    http<{ mode: ApprovalMode }>(`/chat/${sid}/approval-mode`),
+  setApprovalMode: (sid: string, mode: ApprovalMode) =>
+    http<{ mode: ApprovalMode }>(`/chat/${sid}/approval-mode`, {
+      method: "PATCH",
+      json: { mode },
+    }),
 
   // M19 file preview — sandbox/mount 鉴权同 fs/open.
   getPreviewMeta: (sessionId: string, path: string) =>

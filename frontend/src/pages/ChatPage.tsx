@@ -35,6 +35,7 @@ import {
   chatStreamWithAttachments,
   resumeChat,
 } from "@/lib/api";
+import { useApprovalModeStore } from "@/lib/approval-mode-store";
 import { appendFrame } from "@/lib/frames";
 import { MAIN_CONTENT_MIN_WIDTH } from "@/lib/layout-constraints";
 import {
@@ -278,6 +279,12 @@ export function ChatPage() {
           })
         : await chatStream({ prompt, sessionId: sid });
       abortRef.current = handle.abort;
+      // 用户在 picker 切的 mode 此前可能 PATCH 失败 (session 还没 build, 404).
+      // chatStream 触发 LoomPool.get 已经 build 完, 这里兜底再同步一次. 失败仍吞.
+      const desiredMode = useApprovalModeStore.getState().getMode(sid);
+      if (desiredMode !== "default") {
+        api.setApprovalMode(sid, desiredMode).catch(() => {});
+      }
       // turn 一开起来就 mutate fs:tree (TreeRoot 的 SWR key) — 让右栏 Workspace
       // 立刻看到新落盘的 attachments/. 仅落盘附件触发, 内嵌图不落盘, 不刷.
       if (files.length > 0) {

@@ -42,6 +42,8 @@ import {
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
+import { ApprovalModePicker } from "./ApprovalModePicker";
+
 // composer state — 跟 plan §6.1 DraftAttachment 对齐. id 用 randomUUID 让删除
 // 时不依赖文件名/大小做 key (重名文件能各自存活).
 export interface DraftAttachment {
@@ -68,6 +70,8 @@ interface Props {
   onStop?: () => void;
   disabled?: boolean;
   placeholder?: string;
+  // 给 ApprovalModePicker 用. null = 新对话还没 build (EmptyPage), picker 不渲.
+  sessionId?: string | null;
 }
 
 function formatBytes(n: number): string {
@@ -77,7 +81,13 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-export function PromptInput({ onSend, onStop, disabled, placeholder }: Props) {
+export function PromptInput({
+  onSend,
+  onStop,
+  disabled,
+  placeholder,
+  sessionId,
+}: Props) {
   const [value, setValue] = useState("");
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
@@ -272,15 +282,18 @@ export function PromptInput({ onSend, onStop, disabled, placeholder }: Props) {
             className="block w-full resize-none rounded-t-[16px] bg-transparent px-5 pt-5 pb-3 text-[15px] leading-relaxed text-[color:var(--color-paper)] placeholder:font-display placeholder:italic placeholder:text-[color:var(--color-ink-dim)] focus:outline-none disabled:cursor-not-allowed"
           />
           <div className="flex items-center justify-between gap-3 border-t border-[color:var(--color-line-soft)] px-3 py-2.5">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled}
-              title="Attach files"
-              className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Paperclip size={17} />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={disabled}
+                title="Attach files"
+                className="flex h-10 w-10 items-center justify-center rounded-[8px] text-[color:var(--color-paper-dim)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Paperclip size={17} />
+              </button>
+              <ApprovalModePicker sessionId={sessionId ?? null} disabled={disabled} />
+            </div>
             <input
               ref={fileInputRef}
               type="file"

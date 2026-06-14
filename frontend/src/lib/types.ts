@@ -46,6 +46,21 @@ export interface PermissionDecisionResp {
   added_allowlist_key: string | null;
 }
 
+// ──── Approval mode (per-session 仅内存) ─────────────────────
+
+// 三档审批策略, 对应后端 infra/approval/policy.py.
+//   default      — 现状, 每个 HITL 工具调用都弹审批
+//   auto         — Bash 无害命令静默放行, destructive 永远拦, 其他走 LLM 兜底
+//   full_access  — 所有非 destructive 自动放行, destructive 仍要审
+// 用户在 PromptInput 工具栏 picker 里切换. 每个会话独立, evict / 重启重置 default.
+export type ApprovalMode = "default" | "auto" | "full_access";
+
+export const APPROVAL_MODES: readonly ApprovalMode[] = [
+  "default",
+  "auto",
+  "full_access",
+] as const;
+
 // ──── Settings ──────────────────────────────────────────────
 
 export interface SettingsResponse {
