@@ -60,3 +60,8 @@ watchdog>=4.0.0
 # call_llm step 用. 显式声明: 当前是 claude-agent-sdk 的 transitive 依赖, 但 SDK
 # 升级时可能砍掉, 这里钉死防 workflow 静默崩.
 anthropic>=0.86,<1.0
+
+# ---------- 内置 LLM 调用 (infra/llm/) ----------
+# DeepSeek / Qwen / GLM 等 OpenAI 兼容 provider 都走 openai SDK.
+# 当前消费方: infra/approval/classifier.py (auto 模式 LLM 兜底裁判).
+openai>=1.50,<2.0

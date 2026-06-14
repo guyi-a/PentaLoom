@@ -303,6 +303,7 @@ export function ChatStream({
         onStop={onStop}
         disabled={inputDisabled}
         placeholder={inputDisabled ? "Sending…" : "Continue the thread…"}
+        sessionId={sessionId}
       />
     </div>
   );

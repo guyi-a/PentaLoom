@@ -37,6 +37,7 @@ from loguru import logger
 from pentaloom.app import PentaLoom
 from pentaloom.capabilities.weaver import assemble_weaver
 from pentaloom.config import get_settings
+from pentaloom.infra.approval.policy import APPROVAL_MODES, ApprovalModeRef
 from pentaloom.infra.session_store import SQLiteSessionStore
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import PERMISSION_REGISTRY, make_can_use_tool
@@ -64,6 +65,10 @@ class _Entry:
     # 引用共享, 不需要 rebuild client. Entry evict 时随 dataclass 一起 gc, 不持久化.
     # 例: {"Bash": {"ls -al"}, "mcp__pentaloom_env__install_python_libs": {"numpy\nopenpyxl"}}
     hitl_allowlists: dict[str, set[str]] = field(default_factory=dict)
+    # 审批模式 ref — make_can_use_tool 闭包跟 _Entry 共享同一引用对象.
+    # 改 .value 立刻被 closure 读到, 不需要 rebuild. 全局 settings 变更走
+    # broadcast_approval_mode, per-session 临时切换走 set_approval_mode.
+    approval_mode_ref: ApprovalModeRef = field(default_factory=ApprovalModeRef)
     # weaver hot reload (Spike 1+2+3 verified): weave_* / edit_weaver / delete_weaver
     # 成功时设 True, 当前 turn 的 stream_end 之后 chat router 调 pool.evict(sid).
     # 用户下条 message 触发 LoomPool.get → resume rebuild, 新 weaver 内容生效.
@@ -113,12 +118,14 @@ class LoomPool:
                     f"LoomPool rebuild session={session_id} mounts {entry.mounted_dirs} -> {mounted_dirs}"
                 )
                 await entry.pl.__aexit__(None, None, None)
-                # rebuild 时保留 hitl_allowlists — 重建动机是挂载目录变了, 跟用户对
-                # 工具调用的信任无关, 没必要让他再点一遍同样的命令/包.
+                # rebuild 时保留 hitl_allowlists 跟 approval_mode_ref — 重建动机是挂载
+                # 目录变了, 跟用户对工具调用的信任 / 审批模式无关, 不应重置.
                 old_allowlists = entry.hitl_allowlists
+                old_mode_ref = entry.approval_mode_ref
                 entry = await self._build(
                     session_id, mounted_dirs, resume=True,
                     hitl_allowlists=old_allowlists,
+                    approval_mode_ref=old_mode_ref,
                 )
                 self._registry[session_id] = entry
             else:
@@ -148,12 +155,18 @@ class LoomPool:
         *,
         resume: bool,
         hitl_allowlists: dict[str, set[str]] | None = None,
+        approval_mode_ref: ApprovalModeRef | None = None,
     ) -> _Entry:
         sandbox = self._settings.sandbox_dir_for(session_id)
         sandbox.mkdir(parents=True, exist_ok=True)
         # dict 必须先建好再传给 make_can_use_tool, 让 closure 跟 _Entry 持同一引用 —
         # 之后 router add_hitl_allowed 改 dict 才能立刻被 can_use_tool 读到.
         allowlists = hitl_allowlists if hitl_allowlists is not None else {}
+        # approval_mode_ref 同理 — 引用类型, 闭包跟 _Entry 共享. 首次 build 默认
+        # "default" 模式 (per-conversation 仅内存语义: 每个新会话从 default 起步,
+        # 用户在对话框 picker 切换); rebuild 由 caller 传入旧 ref 保留状态.
+        if approval_mode_ref is None:
+            approval_mode_ref = ApprovalModeRef("default")
 
         # weaver: 启动 sync skill symlinks + 注入 mcp_server / agents / skills.
         # weave_* 工具完成时回调 mark_pending_rebuild — closure 持 sid + self.
@@ -172,7 +185,11 @@ class LoomPool:
             resume=session_id if resume else None,
             cwd=sandbox,
             add_dirs=list(mounted_dirs),
-            can_use_tool=make_can_use_tool(session_id, allowlists=allowlists),
+            can_use_tool=make_can_use_tool(
+                session_id,
+                allowlists=allowlists,
+                approval_mode_ref=approval_mode_ref,
+            ),
         )
         await pl.__aenter__()
         # rebuild 时 sid 已在 _registry, size 应取 len(); 首次 build 时 caller 还没插
@@ -181,11 +198,38 @@ class LoomPool:
         logger.info(
             f"LoomPool built session={session_id} sandbox={sandbox} "
             f"mounts={mounted_dirs} resume={resume} (size={projected_size}) "
+            f"approval_mode={approval_mode_ref.value} "
             f"weaver_skills={weaver_skill_names}"
         )
         return _Entry(
-            pl=pl, mounted_dirs=list(mounted_dirs), hitl_allowlists=allowlists
+            pl=pl,
+            mounted_dirs=list(mounted_dirs),
+            hitl_allowlists=allowlists,
+            approval_mode_ref=approval_mode_ref,
         )
+
+    def set_approval_mode(self, session_id: str, mode: str) -> bool:
+        """切换会话审批模式. 改 ref.value 立刻被 closure 读到, 不 rebuild.
+
+        语义: 已经在 await fut 等审的请求不受影响 (用户必须答完); 之后进的
+        工具调用走新模式. 返回 True = 成功; False = mode 不合法或 session 不存在.
+        """
+        if mode not in APPROVAL_MODES:
+            logger.warning(f"set_approval_mode: invalid mode {mode!r}, ignored")
+            return False
+        entry = self._registry.get(session_id)
+        if entry is None:
+            return False
+        entry.approval_mode_ref.value = mode
+        logger.info(f"approval_mode changed sid={session_id} mode={mode}")
+        return True
+
+    def get_approval_mode(self, session_id: str) -> str | None:
+        """读会话当前审批模式. 用于前端 picker 初始化 / 刷新页面."""
+        entry = self._registry.get(session_id)
+        if entry is None:
+            return None
+        return entry.approval_mode_ref.value
 
     def add_hitl_allowed(self, session_id: str, tool_name: str, key: str) -> bool:
         """会话级 HITL 免审表加一条. 给 chat_permission router 走 allow_session 时调.

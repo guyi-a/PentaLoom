@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field("", alias="TAVILY_API_KEY")
     bocha_api_key: str = Field("", alias="BOCHA_API_KEY")
 
+    # --- 内置 LLM (infra/llm/) ---
+    # 给 approval auto 模式 LLM classifier / 后续 summarize / 标题生成等内部场景用.
+    # 跟主对话的 ClaudeSDKClient 完全独立 (不污染历史). DeepSeek 走 OpenAI 兼容 API.
+    # 缺 key 时 classifier 调用直接 fall back 到偏严的 deny + reason='missing_api_key'.
+    # API key 不带 PENTALOOM_ 前缀 — 跟 ANTHROPIC_API_KEY / TAVILY_API_KEY 同档,
+    # 这些是第三方服务的标准命名. PentaLoom 自有配置 (model / behavior) 才带前缀.
+    deepseek_api_key: str = Field("", alias="DEEPSEEK_API_KEY")
+    internal_llm_model: str = Field("deepseek-chat", alias="PENTALOOM_INTERNAL_LLM_MODEL")
+
     # --- 模型 ---
     model: str = Field("pa/claude-opus-4-7", alias="PENTALOOM_MODEL")
 
