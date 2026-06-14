@@ -1,9 +1,11 @@
-// Shiki 代码高亮 — CodePreview 用. 精简版 (light only, 跟 PentaLoom 主题一致).
+// Shiki 代码高亮 — CodePreview 用. 双主题, 跟 PentaLoom 暗色模式协调.
 //
 // 设计:
 //   - lazy createHighlighter (~首次调用时初始化, 之后复用)
 //   - 按需 loadLanguage (不一开始就把所有语言塞 bundle, 第一个文件预览拉对应 lang)
 //   - 文件路径 → BundledLanguage 解析 (含 ext + 特殊 basename)
+//   - 双主题 (light + dark) 一次产 2 段 HTML, CodePreview 用 dark:hidden /
+//     hidden dark:block 切换. 切主题不重跑 shiki, 0 闪烁.
 //
 // 跟 markdown / chat stream 用的 highlight 不冲突 (那俩第一版不引 shiki).
 
@@ -15,8 +17,12 @@ import {
   type Highlighter,
 } from "shiki";
 
-// 用 GitHub Light — 跟 PentaLoom 雾白底协调, 衬线感强的代码高亮里它最干净.
-export const SHIKI_THEME: BundledTheme = "github-light";
+// github-light + github-dark 经典对. 选 github-dark 而不是 one-dark-pro —
+// 后者暖紫调跟 PentaLoom Nordic 冷蓝调 (--color-bg-deep #14161a) 不搭.
+export const SHIKI_THEMES: [BundledTheme, BundledTheme] = [
+  "github-light",
+  "github-dark",
+];
 
 // 构建 lookup: shiki id + aliases → 真正的 BundledLanguage id
 const langLookup: Record<string, BundledLanguage> = {};
@@ -64,7 +70,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 async function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: [SHIKI_THEME],
+      themes: SHIKI_THEMES,
       langs: [], // 按需加载
     });
   }
@@ -74,8 +80,8 @@ async function getHighlighter(): Promise<Highlighter> {
 export async function highlightCode(
   code: string,
   lang: BundledLanguage,
-  options?: { showLineNumbers?: boolean },
-): Promise<string> {
+  options?: { showLineNumbers?: boolean; startLine?: number },
+): Promise<[string, string]> {
   const hl = await getHighlighter();
   if (!hl.getLoadedLanguages().includes(lang)) {
     try {
@@ -85,25 +91,37 @@ export async function highlightCode(
     }
   }
   const actualLang = hl.getLoadedLanguages().includes(lang) ? lang : FALLBACK_LANG;
-  const transformers = options?.showLineNumbers ? [lineNumberTransformer()] : [];
-  return hl.codeToHtml(code, {
+  const startLine = options?.startLine ?? 1;
+  const transformers = options?.showLineNumbers
+    ? [createLineNumberTransformer(startLine)]
+    : [];
+  const lightHtml = hl.codeToHtml(code, {
     lang: actualLang,
-    theme: SHIKI_THEME,
+    theme: SHIKI_THEMES[0],
     transformers,
   });
+  const darkHtml = hl.codeToHtml(code, {
+    lang: actualLang,
+    theme: SHIKI_THEMES[1],
+    transformers,
+  });
+  return [lightHtml, darkHtml];
 }
 
-function lineNumberTransformer() {
+// startLine 给 chat stream 里 file_read 工具回显复用 (本 PR file-preview 场景
+// 永远 1; agent 工具回显时可能从中间某行开始, 接口先到位).
+function createLineNumberTransformer(startLine: number) {
   return {
     name: "pl-line-numbers",
     line(node: { children: unknown[] }, line: number) {
+      const lineNumber = startLine + line - 1;
       node.children.unshift({
         type: "element",
         tagName: "span",
         properties: {
           className: ["pl-line-no"],
         },
-        children: [{ type: "text", value: String(line) }],
+        children: [{ type: "text", value: String(lineNumber) }],
       });
     },
   };
