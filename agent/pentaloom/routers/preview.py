@@ -372,6 +372,201 @@ async def preview_xlsx(
         wb.close()
 
 
+# zip 解析上限. 不读内容只读目录, 零 zip-bomb 数据风险, 仅靠 entry count cap
+# 防"几百万空文件名"这种 metadata bomb.
+ZIP_SIZE_LIMIT = 100 * 1024 * 1024
+ZIP_MAX_ENTRIES = 5000
+
+
+class ZipEntry(BaseModel):
+    path: str             # zip 内相对路径
+    size: int             # 解压后字节数
+    compressed_size: int
+    is_dir: bool
+
+
+class ArchivePreview(BaseModel):
+    entries: list[ZipEntry]
+    total_entries: int    # 真实总数 (可能 > len(entries) 当 truncated)
+    truncated: bool
+    size: int             # 文件大小
+
+
+@router.get("/archive/zip", response_model=ArchivePreview)
+async def preview_zip(
+    session_id: str = Query(...),
+    path: str = Query(...),
+) -> ArchivePreview:
+    """zip 文件结构预览 — 只列 metadata 不解压内容, 零 zip-bomb 数据风险.
+
+    cap: 5000 entries 防 metadata bomb. 文件 100MB. tar/gz 第一版不支持.
+    """
+    target = await resolve_session_scoped_path(session_id, path, require_file=True)
+    ext = _ext_of(target)
+    if ext != "zip":
+        raise HTTPException(415, f"zip endpoint 不支持 ext={ext!r}")
+    stat = target.stat()
+    if stat.st_size > ZIP_SIZE_LIMIT:
+        raise HTTPException(
+            413, f"file size {stat.st_size} exceeds zip limit {ZIP_SIZE_LIMIT}",
+        )
+
+    # zipfile 是 stdlib, 不必延迟 import (跟 xlsx 的 openpyxl 不同, 后者很重).
+    import zipfile
+
+    entries: list[ZipEntry] = []
+    try:
+        with zipfile.ZipFile(str(target)) as zf:
+            infolist = zf.infolist()
+            total = len(infolist)
+            for info in infolist[:ZIP_MAX_ENTRIES]:
+                # ZipInfo.is_dir() 看 filename 末尾 /. 处理 "目录/" 跟 "文件" 两类.
+                entries.append(ZipEntry(
+                    path=info.filename,
+                    size=info.file_size,
+                    compressed_size=info.compress_size,
+                    is_dir=info.is_dir(),
+                ))
+    except zipfile.BadZipFile as e:
+        raise HTTPException(422, f"corrupted zip: {e}") from e
+
+    return ArchivePreview(
+        entries=entries,
+        total_entries=total,
+        truncated=total > ZIP_MAX_ENTRIES,
+        size=stat.st_size,
+    )
+
+
+# sqlite 解析上限. cap 跟 xlsx 同档 — 数据库单表大概率超 200 行, 截断后给前端
+# 提示 "看了前 200, 共 N 行".
+SQLITE_SIZE_LIMIT = 50 * 1024 * 1024
+SQLITE_MAX_TABLES = 20
+SQLITE_MAX_ROWS = 200
+SQLITE_MAX_COLS = 50
+SQLITE_MAX_CELLS = 50_000
+
+
+class SqliteTable(BaseModel):
+    name: str
+    columns: list[str]    # 列名 (不带 type, 第一版只渲名字)
+    rows: list[list[str]] # 每行每列的 str 表示, None → ""
+    row_count: int        # 真实总行数 (COUNT(*))
+    truncated: bool       # 行 > MAX_ROWS 或 列 > MAX_COLS 或 cells 超 budget
+
+
+class DatabasePreview(BaseModel):
+    tables: list[SqliteTable]
+    total_tables: int     # 真实总表数 (可能 > len(tables))
+    truncated: bool       # tables / cells 超 cap
+    size: int
+
+
+def _quote_sqlite_name(name: str) -> str:
+    """SQLite identifier 双引号 quote, 内部 " 转义为 "". 防表名/列名注入."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+@router.get("/office/sqlite", response_model=DatabasePreview)
+async def preview_sqlite(
+    session_id: str = Query(...),
+    path: str = Query(...),
+) -> DatabasePreview:
+    """sqlite 数据库预览 — 列表名 / 列名 / 前 200 行 / 行数. 只读模式打开防误改.
+
+    cap: 20 tables × 200 rows × 50 cols, 50k cells 整库. 文件 50MB.
+    """
+    target = await resolve_session_scoped_path(session_id, path, require_file=True)
+    ext = _ext_of(target)
+    if ext not in ("db", "sqlite", "sqlite3"):
+        raise HTTPException(415, f"sqlite endpoint 不支持 ext={ext!r}")
+    stat = target.stat()
+    if stat.st_size > SQLITE_SIZE_LIMIT:
+        raise HTTPException(
+            413, f"file size {stat.st_size} exceeds sqlite limit {SQLITE_SIZE_LIMIT}",
+        )
+
+    # 延迟 import — 跟 openpyxl 同模式 (sqlite3 是 stdlib 不慢, 但保持一致).
+    import sqlite3
+
+    # mode=ro 只读防误改; immutable=1 告诉 sqlite "文件不会被并发改", 跳过 wal /
+    # 锁检查, 启动快. 我们读 metadata + 几百行不需要 wal 语义.
+    uri = f"file:{target}?mode=ro&immutable=1"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as e:
+        raise HTTPException(422, f"corrupted sqlite: {e}") from e
+
+    try:
+        # 跳过 sqlite_* 内部表 (sqlite_master / sqlite_sequence 等)
+        names_cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+        all_names = [r[0] for r in names_cursor.fetchall()]
+        total_tables = len(all_names)
+        sample_names = all_names[:SQLITE_MAX_TABLES]
+
+        tables: list[SqliteTable] = []
+        total_cells = 0
+        for name in sample_names:
+            if total_cells >= SQLITE_MAX_CELLS:
+                break
+            quoted = _quote_sqlite_name(name)
+
+            # 列名 (从 PRAGMA table_info, 字段顺序: cid/name/type/...)
+            col_cursor = conn.execute(f"PRAGMA table_info({quoted})")
+            all_columns = [r[1] for r in col_cursor.fetchall()]
+            columns = all_columns[:SQLITE_MAX_COLS]
+            cols_truncated = len(all_columns) > SQLITE_MAX_COLS
+
+            # 总行数
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+
+            # 前 200 行 — 只取被 cap 的列
+            if columns:
+                quoted_cols = ", ".join(_quote_sqlite_name(c) for c in columns)
+                rows_cursor = conn.execute(
+                    f"SELECT {quoted_cols} FROM {quoted} LIMIT ?",
+                    (SQLITE_MAX_ROWS,),
+                )
+            else:
+                # 没列 (空 schema 表) — 跳过 row 取
+                rows_cursor = []  # type: ignore[assignment]
+
+            limited_rows: list[list[str]] = []
+            for r in rows_cursor:
+                if total_cells + len(r) > SQLITE_MAX_CELLS:
+                    break
+                row_strs = ["" if v is None else str(v) for v in r]
+                limited_rows.append(row_strs)
+                total_cells += len(row_strs)
+
+            tables.append(SqliteTable(
+                name=name,
+                columns=columns,
+                rows=limited_rows,
+                row_count=row_count,
+                truncated=(
+                    cols_truncated
+                    or row_count > SQLITE_MAX_ROWS
+                    or total_cells >= SQLITE_MAX_CELLS
+                ),
+            ))
+
+        return DatabasePreview(
+            tables=tables,
+            total_tables=total_tables,
+            truncated=(
+                total_tables > SQLITE_MAX_TABLES
+                or total_cells >= SQLITE_MAX_CELLS
+            ),
+            size=stat.st_size,
+        )
+    finally:
+        conn.close()
+
+
 @router.get("/file")
 async def preview_file(
     session_id: str = Query(...),

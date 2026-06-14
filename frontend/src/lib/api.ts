@@ -5,8 +5,10 @@ import type {
   AppDetailResponse,
   AppWatchFilesResponse,
   ApprovalMode,
+  ArchivePreview,
   BrowseResponse,
   ConnectionStatus,
+  DatabasePreview,
   EmailAccountListResponse,
   EmailMutationResult,
   EmailProviderListResponse,
@@ -143,6 +145,16 @@ export const api = {
   getPreviewXlsx: (sessionId: string, path: string) =>
     http<XlsxWorkbookPreview>(
       `/fs/preview/office/xlsx?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+    ),
+  // sqlite 结构化预览 (sqlite3 stdlib 只读模式). 返表名/列名/前 200 行/行数.
+  getPreviewSqlite: (sessionId: string, path: string) =>
+    http<DatabasePreview>(
+      `/fs/preview/office/sqlite?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+    ),
+  // zip 文件结构 (zipfile stdlib, 只列 metadata 不解压).
+  getPreviewArchive: (sessionId: string, path: string) =>
+    http<ArchivePreview>(
+      `/fs/preview/archive/zip?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
     ),
   // 直接拼 URL — 给 <img|iframe|video src=> 用, 不走 fetch + JSON 解析.
   // 跟 /fs/preview/file 同一份 endpoint, 鉴权走 query string.

@@ -1,7 +1,8 @@
 // 代码 / 文本预览 — shiki 服务端预渲染高亮 + 行号.
 //
 // shiki 按需加载语言 — 第一次预览 .py 文件才拉 python grammar, .ts 拉 typescript.
-// theme: github-light, 跟 PentaLoom 雾白底协调.
+// 双主题 (github-light + github-dark) 一次产 2 段 HTML, 用 dark:hidden /
+// hidden dark:block 切换 — 切主题 0 闪烁, 不重跑 shiki.
 
 import { useEffect, useState } from "react";
 
@@ -14,7 +15,7 @@ interface Props {
 }
 
 export function CodePreview({ content, fileName }: Props) {
-  const [html, setHtml] = useState<string | null>(null);
+  const [html, setHtml] = useState<[string, string] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,10 +38,16 @@ export function CodePreview({ content, fileName }: Props) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="scrollbar-hidden min-h-0 flex-1 overflow-auto">
         {html ? (
-          <div
-            className="pl-shiki-host"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <>
+            <div
+              className="pl-shiki-host dark:hidden"
+              dangerouslySetInnerHTML={{ __html: html[0] }}
+            />
+            <div
+              className="pl-shiki-host hidden dark:block"
+              dangerouslySetInnerHTML={{ __html: html[1] }}
+            />
+          </>
         ) : (
           // shiki 加载期间走 plain text 兜底, 不闪 spinner (大多数 ms 级)
           <pre className="whitespace-pre p-3 font-mono text-[11.5px] leading-[1.55] text-[color:var(--color-paper)]">

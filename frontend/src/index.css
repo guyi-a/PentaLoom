@@ -1,6 +1,13 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Tailwind v4 默认 dark: 看 OS 偏好 (prefers-color-scheme), 但 PentaLoom 暗色
+   走 <html>.dark class (theme.ts 切). 这条 custom-variant 让 dark: 工具类跟
+   PentaLoom 主题同步 — 否则 macOS 暗色 + PentaLoom 亮色时 dark: 会错位激活
+   (e.g. CodePreview 里 dark:hidden 让 light HTML 隐了, 显示了 dark token 的浅
+   白字配米白背景, 看不清). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* 字体 — bunny.net 是 Google Fonts 的隐私镜像 (不发跟踪头). 套 Electron 前应该
    切 self-host woff2 (放 public/fonts/), 离线场景才不会拉空白. */
 @import url("https://fonts.bunny.net/css?family=fraunces:300i,400,400i,500,500i,600|geist:300,400,500,600|jetbrains-mono:400,500&display=swap");

@@ -17,7 +17,9 @@ import type { PreviewFile } from "@/lib/preview-store";
 import { useFilePreview } from "./useFilePreview";
 import { classifyFile } from "./classifyFile";
 import { FilePreviewHeader } from "./FilePreviewHeader";
+import { ArchivePreview } from "./renderers/ArchivePreview";
 import { CodePreview } from "./renderers/CodePreview";
+import { DatabasePreview } from "./renderers/DatabasePreview";
 import { DocxPreview } from "./renderers/DocxPreview";
 import { ImagePreview } from "./renderers/ImagePreview";
 import { MarkdownPreview } from "./renderers/MarkdownPreview";
@@ -123,6 +125,12 @@ export function FilePreview({ file, sessionId, onClose }: Props) {
             )}
             {kind === "pptx" && (
               <PptxPreview sessionId={sessionId} path={meta.path} />
+            )}
+            {kind === "archive" && (
+              <ArchivePreview sessionId={sessionId} path={meta.path} />
+            )}
+            {kind === "database" && (
+              <DatabasePreview sessionId={sessionId} path={meta.path} />
             )}
             {kind === "unsupported" && (
               <UnsupportedPreview meta={meta} sessionId={sessionId} />
