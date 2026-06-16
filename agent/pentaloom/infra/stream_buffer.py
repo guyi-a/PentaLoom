@@ -167,7 +167,13 @@ class StreamBuffer:
         return False
 
     def mark_pending(self, tool_use_id: str, chunk: str) -> None:
-        """记一条 pending 审批 chunk. tool_use 帧 emit 完调."""
+        """记一条 pending 审批 chunk. permission_request 帧 emit 后调.
+
+        之前是 tool_use 帧到达时按工具名静态判断 mark, 跟 backend register
+        Future 时机不同步 (auto 模式 LLM classifier 慢路径下用户能点幽灵审批栏
+        → 404). 现在 workspace.py make_can_use_tool 在 REGISTRY.register 之后
+        emit permission_request 帧 + mark_pending, 单一权威 trigger.
+        """
         self._pending_approval_chunks[tool_use_id] = chunk
         self._pending_approval_chunk = chunk
 

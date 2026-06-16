@@ -6,7 +6,7 @@
   - GET /fs/preview/file?session_id=&path=     → 二进制流 (img/iframe/video src 用)
 
 设计:
-  - 预留 token 参数 — 现在直接 sid+path query 鉴权, M19.1 加短 TTL token 时只改这层
+  - 预留 token 参数 — 现在直接 sid+path query 鉴权, 加短 TTL token 时只改这层
   - HITL 不审 — 用户点击触发的 UI action, 不是 LLM 工具
   - text 限制 max_bytes (默认 512KB), 二进制 (NUL 字节探测) 拒绝走 text endpoint
   - file endpoint 注入 Content-Type + Content-Disposition: inline (PDF iframe 必需,

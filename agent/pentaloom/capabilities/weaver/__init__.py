@@ -1,8 +1,4 @@
-"""自进化能力 — agent 沉淀方法论 / 管理自己产物库.
-
-M14 范围: Skill 沉淀 + 6 个 meta-tool (list / inspect / edit / delete / run / tail_logs).
-Workflow / Subagent / App 留给 M16-M18.
-"""
+"""自进化能力 — 管理用户织造的 skill、app 与 workflow 产物."""
 
 from pentaloom.capabilities.weaver.index import WeaverError
 from pentaloom.capabilities.weaver.loader import assemble_weaver

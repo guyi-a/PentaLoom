@@ -1,13 +1,12 @@
-"""6 个 meta-tool 的业务 logic. tools/weaver.py 的工具体只做参数解析 + 调这里.
+"""weaver meta-tool 的业务逻辑. tools/weaver.py 只做参数解析与封装.
 
-实施范围:
-  - list_weaver / inspect_weaver / edit_weaver / delete_weaver  (skill + app 实装)
-  - tail_weaver_logs                                             (app 实装, skill 仍 NotImplementedError)
-  - run_weaver                                                   (注册但 NotImplementedError; workflow milestone 才支持)
+覆盖:
+  - list_weaver / inspect_weaver / edit_weaver / delete_weaver
+  - tail_weaver_logs
+  - run_weaver
 
 **weaver = 用户私人产物**. 内置 skill (report-generator 等) 是 PentaLoom 出厂能力,
 不在任何 meta-tool 的视野里 — 用户视角 / agent 视角都一致, 防概念混淆.
-agent 想看内置 SKILL.md 直接 Read agent/.claude/skills/<name>/SKILL.md.
 
 list / inspect / tail_logs 是只读, 不弹 HITL; edit / delete 弹 HITL (设计文档 §8.2).
 """
@@ -94,9 +93,20 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             raise index.WeaverError(f"app {name!r} 不存在")
         meta = app_biz.read_meta(settings, name)
         summary = app_biz.manifest_invocations_summary(settings, name)
-        # D-3-min: 加 running services snapshot (lazy import 防循环)
-        from pentaloom.capabilities.weaver.service_registry import service_registry
-        running_services = service_registry().list_for_app(name)
+        # service / schedule / watch 全走 launchd plist, 读 launchctl 状态.
+        from pentaloom.capabilities.weaver import launchd_plist
+        from pentaloom.weaver_runner import read_port_file
+        plist_states = launchd_plist.list_for_app(name)
+        running_services = [
+            {
+                "name": s["comp_name"],
+                "status": "running" if s["loaded"] and s["pid"] else "dead",
+                "pid": s["pid"],
+                "port": read_port_file(settings, name, s["comp_name"]),
+                "last_exit_status": s["last_exit_status"],
+            }
+            for s in plist_states if s["kind"] == "svc"
+        ]
         return {
             "name": name,
             "kind": "app",
@@ -104,10 +114,10 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             "description": entry.description,
             "summary": summary,
             "meta": meta.model_dump(mode="json") if meta else None,
-            "running_services": running_services,  # [{name, status, port, pid, started_at, restart_count, log_path}]
+            "running_services": running_services,
         }
     if k == "workflow":
-        # M17 dynamic workflow — inspect 返 definition + meta + recent_runs
+        # dynamic workflow — inspect 返 definition + meta + recent_runs
         from pentaloom.capabilities.weaver import workflow as workflow_biz
         from pentaloom.capabilities.weaver import workflow_runtime
         entry = index.find_entry(settings, "workflow", name)
@@ -126,7 +136,7 @@ def inspect_weaver(settings: Settings, kind: str, name: str) -> dict[str, Any]:
             **summary,  # 含 step_count / steps_summary / definition / meta
             "recent_runs": recent_runs,
         }
-    # subagent — 在 M17 subagent UI 里程碑实装
+    # subagent 运行暂未启用.
     raise index.WeaverError(
         f"inspect_weaver(kind={kind}) 只支持 skill / app / workflow; "
         f"{kind} 在后续里程碑实装"
@@ -206,7 +216,7 @@ def run_weaver(
         )
     if k == "subagent":
         raise index.WeaverError(
-            "subagent 通过 Task 工具派单, 不走 run_weaver. M17 才有 UI 配置"
+            "subagent 通过 Task 工具派单, 不走 run_weaver. UI 配置暂未启用"
         )
     if k == "workflow":
         # workflow 是异步 runtime, 必须在 async 上下文里跑. _run_weaver 工具体走特殊
@@ -286,5 +296,5 @@ def tail_weaver_logs(
         runs = workflow_runtime.tail_workflow_run_logs(settings, name, limit=max(1, n))
         return {"name": name, "kind": "workflow", "mode": "runs", "runs": runs}
     raise NotImplementedError(
-        f"tail_weaver_logs(kind={kind}) 未支持 (subagent 在 M17 subagent UI 里程碑)"
+        f"tail_weaver_logs(kind={kind}) 未支持"
     )

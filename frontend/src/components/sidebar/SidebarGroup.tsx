@@ -1,5 +1,4 @@
-// 通用 collapsible 分组组件 — sidebar 用. M11 只有一个 "Threads" 分组, M12 加
-// app_gen 时复用此组件多加一个 "Apps" 分组, 不返工.
+// 通用 collapsible 分组组件 — sidebar 用.
 //
 // 设计:
 //   - label: Fraunces italic 11px ink-dim 小字, 杂志编辑部目录页风
@@ -16,7 +15,7 @@ interface Props {
   children: ReactNode;
   defaultExpanded?: boolean;
   className?: string;
-  // 右侧 action 槽 — 给排序 / 新建之类按钮留位. M11 不用, M12 Apps 分组可能加 "New App"
+  // 右侧 action 槽 — 给排序 / 新建之类按钮留位.
   rightSlot?: ReactNode;
 }
 

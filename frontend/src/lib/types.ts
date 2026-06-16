@@ -143,6 +143,7 @@ export type Frame =
   | ErrorFrame
   | StreamEndFrame
   | UserPromptFrame
+  | PermissionRequestFrame
   | PermissionResolvedFrame;
 
 // 流式 turn 中, 后端按 token 推 text_delta / thinking_delta; 前端 reducer 把同
@@ -241,6 +242,18 @@ export interface UserPromptFrame {
   inline_image_count?: number;
 }
 
+// backend make_can_use_tool 在 REGISTRY.register Future 之后推一帧, 告诉
+// 前端"这个 tool_use 真的需要用户审批". 之前前端单看 tool_use 帧名字 ∈
+// TOOLS_NEEDING_APPROVAL 静态名单, 跟 backend register 时机异步, auto 模式 LLM
+// classifier 慢路径 (1-3s) 期间用户看到幽灵审批栏 → 点击 → 404. 现在前端只信
+// 这帧才弹审批栏. ToolRow 仍用 isHitl 作视觉双保险.
+export interface PermissionRequestFrame {
+  type: "permission_request";
+  tool_use_id: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+}
+
 // 后端在 POST /chat/permission 完成 resolve 后推一帧. 让审批栏立刻消失,
 // ToolRow 回退到 in-progress (等真正的 tool_result 进来), 而不是傻等几分钟.
 // 重连重放也带这一帧, 解决"刷新后看到已 resolve 的审批栏又被点一次→404"的 bug.
@@ -294,7 +307,7 @@ export const WEAVE_SKILL_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_skill";
 export const WEAVE_APP_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_app";
-// 递进式 weave 子工具 (Phase B.5, auto-pass — app 主 weave HITL 通过后, 子操作免审).
+// 递进式 weave 子工具 (auto-pass — app 主 weave HITL 通过后, 子操作免审).
 export const WEAVE_APP_WRITE_FILE_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_app_write_file";
 export const WEAVE_APP_EDIT_FILE_TOOL_NAME =
@@ -311,7 +324,7 @@ export const RUN_WEAVER_TOOL_NAME =
 // browser_bridge / computer_use): 首次审完整会话所有 invoke_app 免审.
 export const INVOKE_APP_TOOL_NAME =
   "mcp__pentaloom_weaver__invoke_app";
-// M17 dynamic workflow — 织流程 + 收口 + 调流程.
+// dynamic workflow — 织流程 + 收口 + 调流程.
 export const WEAVE_WORKFLOW_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_workflow";
 export const WEAVE_WORKFLOW_FINALIZE_TOOL_NAME =
@@ -323,6 +336,16 @@ export const INVOKE_WORKFLOW_TOOL_NAME =
 // 跟静态版分开常量, 但 enabled-once 行为一致.
 export const INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME =
   "mcp__pentaloom_weaver__invoke_workflow_dynamic";
+// ephemeral service 织造期工具 — 跟 invoke_app 同款 enabled-once 信任
+export const WEAVE_SERVICE_START_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_service_start";
+export const WEAVE_SERVICE_RESTART_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_service_restart";
+// window 开关 — agent 主动 open/close, 跟 invoke_app 同款 enabled-once
+export const OPEN_APP_WINDOW_TOOL_NAME =
+  "mcp__pentaloom_weaver__open_app_window";
+export const CLOSE_APP_WINDOW_TOOL_NAME =
+  "mcp__pentaloom_weaver__close_app_window";
 
 export const BASH_TOOL_NAME = "Bash";
 // SDK / CLI 内置 WebFetch — 拉单个 URL 抽信息. 单 key "enabled" 模式同 web_search.
@@ -352,6 +375,10 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   INVOKE_APP_TOOL_NAME,
   INVOKE_WORKFLOW_TOOL_NAME,
   INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
+  WEAVE_SERVICE_START_TOOL_NAME,
+  WEAVE_SERVICE_RESTART_TOOL_NAME,
+  OPEN_APP_WINDOW_TOOL_NAME,
+  CLOSE_APP_WINDOW_TOOL_NAME,
 ];
 
 // 支持 "allow_session" 决策的工具集合 — 跟后端 ALLOW_SESSION_TOOLS 对齐.
@@ -369,6 +396,10 @@ export const ALLOW_SESSION_TOOLS: readonly string[] = [
   INVOKE_APP_TOOL_NAME,
   INVOKE_WORKFLOW_TOOL_NAME,
   INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
+  WEAVE_SERVICE_START_TOOL_NAME,
+  WEAVE_SERVICE_RESTART_TOOL_NAME,
+  OPEN_APP_WINDOW_TOOL_NAME,
+  CLOSE_APP_WINDOW_TOOL_NAME,
 ];
 
 export interface WorkspacePermissionRequest {
@@ -410,7 +441,7 @@ export interface OpenFileResp {
   opened: string;
 }
 
-// weaver 4 个产物里 M14 唯一实装的是 Skill. 其他 3 类用空 list 占位, M16/M17/M18 上线.
+// weaver 4 个产物, 当前实装 Skill. 其他 3 类用空 list 占位.
 // 工具调用走 SDK in-process MCP, 不走 REST; REST 只给 sidebar / 设置页面读 source.
 export type WeaverSource = "builtin" | "agent_woven" | "user_imported" | "user_handwritten";
 
@@ -432,7 +463,7 @@ export interface AppSummary {
   component_counts: Record<string, number>;  // {scripts: 2, windows: 1, ...}
 }
 
-// M17 dynamic workflow — sidebar 用. 跟 AppSummary 平行的瘦摘要.
+// dynamic workflow — sidebar 用. 跟 AppSummary 平行的瘦摘要.
 export interface WorkflowSummary {
   name: string;
   description: string;
@@ -444,7 +475,7 @@ export interface WorkflowSummary {
 
 export interface WeaverProductsResponse {
   skills: SkillSummary[];
-  subagents: unknown[];  // M17
+  subagents: unknown[];  // 占位
   workflows: WorkflowSummary[];
   apps: AppSummary[];
 }
@@ -494,22 +525,40 @@ export interface AppMeta {
 export interface AppRunLog {
   run_id: string;
   invocation_id: string;
-  status: string;       // success / failed / skipped (Phase E race / overlap)
+  status: string;       // success / failed / skipped (race / overlap)
   duration_ms: number;
   started_at: string;
   error?: string;
-  trigger?: "user" | "schedule" | "watch" | "workflow";  // Phase E + M17 workflow; 旧 entry 缺字段默认 user
+  trigger?: "user" | "schedule" | "watch" | "workflow";  // 旧 entry 缺字段默认 user
 }
 
-// D-4: Phase D service runtime snapshot — inspect_weaver / detail endpoint 都返这个
+// launchd 接管后, service 状态由 read_app_detail.runtime row 拼出.
+// 注意: launchd 不暴露 restart_count, 字段已废弃; started_at / uptime_seconds 由
+// psutil.Process(pid).create_time() 算 — 进程不在 (status='dead') 时为 null.
 export interface AppRunningService {
   name: string;
   status: "running" | "dead";
-  port: number;
+  port: number | null;            // 从 .runtime/<svc>.port 读, 没起过为 null
   pid: number | null;
-  started_at: number;  // unix ts
-  restart_count: number;
+  last_exit_status: number | null;
+  started_at: number | null;      // unix ts; psutil 推断, 失败为 null
+  uptime_seconds: number | null;  // now - started_at; 失败为 null
+  log_path: string | null;        // launchd plist StandardOutPath; 没渲过 plist 为 null
+}
+
+// ephemeral service (agent 织造期 weave_service_start 起的 memory-only
+// subprocess, 跟 declared launchd service 双轨). PentaLoom 重启全清.
+// log_path 落盘在 sandbox/.ephemeral-logs/<svc>.log, 跨重启可看.
+export interface AppEphemeralService {
+  app_name: string;
+  service_name: string;
+  pid: number;
+  port: number;
+  started_at: number;
+  uptime_s: number;
   log_path: string;
+  alive: boolean;
+  exit_code: number | null;
 }
 
 // E (watch): 单个 watch component 暴露的文件清单 — lazy fetch
@@ -529,25 +578,31 @@ export interface AppWatchFilesResponse {
   note?: string;
 }
 
-// Phase E (M16): schedule / watch trigger 运行态 snapshot
-// 来自后端 trigger_registry().list_for_app(), inline 在 AppDetailResponse.triggers
+// schedule / watch trigger 运行态 — launchd plist 状态 + app.json join.
+// 来自 read_app_detail; 后端 launchd plist 不直接暴露 events / debounce_ms (这些是
+// 织造期声明, 非运行态), 真要看进 inspect_weaver. 这里只列 row 渲染必需字段.
 export interface AppScheduleTrigger {
   name: string;
-  schedule: string;       // cron 表达式
-  invocation_id: string;
-  next_fire_at: number | null;  // unix ts, null 表示循环还没算出 (异常)
-  last_fired_at: number | null; // unix ts
-  in_flight: boolean;
+  schedule: string;              // cron 表达式 (从 app.json join)
+  invocation_id: string;         // 从 app.json join
+  loaded: boolean;               // launchctl 状态 — 是否在 launchd registry
+  pid: number | null;            // launchd 起了 wrapper 才有 pid
+  last_exit_status: number | null;
+  next_fire_at: number | null;   // croniter 算; 表达式不合法时为 null
+  last_fired_at: number | null;  // 倒读 runs.jsonl trigger='schedule' 拿
+  in_flight: boolean;            // 推断: loaded + pid != null
+  log_path: string | null;       // launchd plist StandardOutPath
 }
 export interface AppWatchTrigger {
   name: string;
-  path: string;
-  events: ("modify" | "create" | "delete" | "move")[];
-  invocation_id: string;        // 注: snapshot 只列 invocation_id 非 null 的 (browse-only 不上 trigger)
-  debounce_ms: number;
-  last_event_at: number | null;
-  last_fired_at: number | null;
+  path: string;                  // 从 app.json join
+  invocation_id: string;         // browse-only watch 后端不渲 plist 不会出现在这
+  loaded: boolean;
+  pid: number | null;
+  last_exit_status: number | null;
+  last_fired_at: number | null;  // 倒读 runs.jsonl trigger='watch'
   in_flight: boolean;
+  log_path: string | null;
 }
 export interface AppTriggersState {
   schedules: AppScheduleTrigger[];
@@ -560,10 +615,11 @@ export interface AppDetailResponse {
   meta: AppMeta | null;
   recent_runs: AppRunLog[];
   running_services?: AppRunningService[];  // D-4: 后端可能没返这字段, 前端默认空数组
-  triggers?: AppTriggersState;             // Phase E: schedules + watches 运行态
+  ephemeral_services?: AppEphemeralService[];  // 织造期 ephemeral, declared 之外的并列 section
+  triggers?: AppTriggersState;             // schedules + watches 运行态
 }
 
-// ──── M17 dynamic workflow ──────────────────────────────────
+// ──── dynamic workflow ──────────────────────────────────
 
 // 3 种 step (跟后端 models.py 的 InvokeAppStep / CallLlmStep / SetVarStep 平行).
 // kind 是 discriminator, 其它字段按 kind 不同.
@@ -653,7 +709,7 @@ export interface FsTreeNode {
   truncated?: boolean;
 }
 
-// ──── M19 文件预览 ──────────────────────────────────────────
+// ──── 文件预览 ──────────────────────────────────────────
 
 // GET /fs/preview/stat 返
 export interface FilePreviewMeta {

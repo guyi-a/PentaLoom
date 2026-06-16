@@ -88,6 +88,19 @@ class Settings(BaseSettings):
         """
         return self.data_dir / "sandboxes"
 
+    # --- loom / loomer / loomctl binary 路径 ---
+    # 默认 ~/.pentaloom/bin/<name>, 'make loom-install' 部署到这里. 开发态可用
+    # PENTALOOM_LOOM_BIN / PENTALOOM_LOOMER_BIN / PENTALOOM_LOOMCTL_BIN 指向 .bin/.
+    loom_bin: Path = Field(
+        default=Path("~/.pentaloom/bin/loom").expanduser(), alias="PENTALOOM_LOOM_BIN"
+    )
+    loomer_bin: Path = Field(
+        default=Path("~/.pentaloom/bin/loomer").expanduser(), alias="PENTALOOM_LOOMER_BIN"
+    )
+    loomctl_bin: Path = Field(
+        default=Path("~/.pentaloom/bin/loomctl").expanduser(), alias="PENTALOOM_LOOMCTL_BIN"
+    )
+
     @computed_field
     @property
     def python_env_dir(self) -> Path:

@@ -65,8 +65,7 @@ function EmptyState() {
 }
 
 export function SessionList({ sessions, currentSid, onChanged }: Props) {
-  // 时间分组 — 按 last_active_at 落桶. SidebarGroup label "Threads" 顶层包住,
-  // M12 加 app_gen 时在它前面加个 <SidebarGroup label="Apps">, 这里代码零改.
+  // 时间分组 — 按 last_active_at 落桶. SidebarGroup label "Threads" 顶层包住.
   const grouped = useMemo(() => {
     const buckets = new Map<TimeGroup, SessionMeta[]>();
     for (const s of sessions) {

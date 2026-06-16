@@ -3,8 +3,8 @@
 只 macOS. 调用方走 tools/computer_use.py 的 in-process MCP 工具. 本模块提供:
   - _platform: 平台守卫
   - _models: Pydantic 数据模型
-  - service: AX/NSWorkspace/CGEvent 调用实现 (M8)
-  - screenshot / mouse / paste: M9 视觉 + 鼠标 + 粘贴
+  - service: AX/NSWorkspace/CGEvent 调用实现
+  - screenshot / mouse / paste: 视觉 + 鼠标 + 粘贴
 """
 
 from pentaloom.capabilities.computer import mouse, paste, screenshot, service

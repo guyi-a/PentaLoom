@@ -406,6 +406,7 @@ async def run_app_script(
     command: list[str],
     stdin_data: bytes,
     timeout: int,
+    extra_env: dict[str, str] | None = None,
 ) -> ScriptResult:
     """Invocable App 的 script invocation runtime.
 
@@ -415,10 +416,15 @@ async def run_app_script(
     syntax 错的话 spawn 自然 fail).
 
     走 uv run --project 共享 python_env_dir, 复用 install_python_libs 装好的依赖.
+
+    extra_env: 注入 PENTALOOM_LOOM / FILES_DIR / RUNTIME_DIR 等 weaver
+    上下文 (见 capabilities/weaver/app_env.py); script 拿这些反向调能力.
     """
     env = build_env(settings)
+    if extra_env:
+        env.update(extra_env)
     # 第一个 token 是 "python" / "node" / "bash" 等. python 类的走 uv 隔离, 其他
-    # 直接 exec (PATH 走 env). M16 Phase B 只验 python; 其他类型留 Phase C+.
+    # 直接 exec (PATH 走 env). 当前只验 python; 其他类型后续扩展.
     if command and command[0] == "python":
         uv_cmd = [
             uv_bin(env), "run", "--project", str(settings.python_env_dir),

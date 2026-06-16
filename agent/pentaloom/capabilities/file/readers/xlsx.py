@@ -49,7 +49,7 @@ def read_xlsx(
 
     # data_only=True: 公式被替换为 Excel 上次打开时的计算结果. 没打开过的文件
     # 会拿到 None — agent 应该感知到 (但 openpyxl 不区分 "未求值" 和 "真为空"),
-    # M2 不专门 warning, 留给 file_verify 后续扩展.
+    # 不专门 warning, 留给 file_verify 后续扩展.
     wb = load_workbook(str(path), data_only=True, read_only=True)
     try:
         sheet_names = list(wb.sheetnames)

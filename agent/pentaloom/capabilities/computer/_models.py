@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 class SubsystemPermission(BaseModel):
-    """单类 TCC 权限的状态. M9 起 Accessibility / Screen Recording 分开报."""
+    """单类 TCC 权限的状态. Accessibility / Screen Recording 分开报."""
 
     trusted: bool                # 当前是否已授权
     prompt_triggered: bool       # 这次调用是否触发了系统授权弹窗

@@ -23,6 +23,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from pentaloom.capabilities.weaver import WeaverError, app as app_biz, meta_tools, skill
 from pentaloom.capabilities.weaver import app_runtime
+from pentaloom.capabilities.weaver import ephemeral_service
 from pentaloom.capabilities.weaver import workflow as workflow_biz
 from pentaloom.capabilities.weaver import workflow_runtime
 from pentaloom.config import Settings
@@ -46,6 +47,16 @@ DELETE_WEAVER_TOOL_NAME = "delete_weaver"
 RUN_WEAVER_TOOL_NAME = "run_weaver"
 TAIL_WEAVER_LOGS_TOOL_NAME = "tail_weaver_logs"
 
+# ephemeral service 织造期 toolset (跟 declared launchd service 双轨)
+WEAVE_SERVICE_START_TOOL_NAME = "weave_service_start"
+WEAVE_SERVICE_STOP_TOOL_NAME = "weave_service_stop"
+WEAVE_SERVICE_RESTART_TOOL_NAME = "weave_service_restart"
+WEAVE_SERVICE_LOGS_TOOL_NAME = "weave_service_logs"
+
+# window 开关 — agent 主动开窗 / 关窗 (跟 invoke_app 同档免审, 用户主动让 agent 干就默认信任)
+OPEN_APP_WINDOW_TOOL_NAME = "open_app_window"
+CLOSE_APP_WINDOW_TOOL_NAME = "close_app_window"
+
 WEAVE_SKILL_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SKILL_TOOL_NAME}"
 WEAVE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_TOOL_NAME}"
 WEAVE_APP_WRITE_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_WRITE_FILE_TOOL_NAME}"
@@ -62,6 +73,12 @@ EDIT_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{EDIT_WEAVER_TOOL_NAME}
 DELETE_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{DELETE_WEAVER_TOOL_NAME}"
 RUN_WEAVER_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{RUN_WEAVER_TOOL_NAME}"
 TAIL_WEAVER_LOGS_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{TAIL_WEAVER_LOGS_TOOL_NAME}"
+WEAVE_SERVICE_START_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SERVICE_START_TOOL_NAME}"
+WEAVE_SERVICE_STOP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SERVICE_STOP_TOOL_NAME}"
+WEAVE_SERVICE_RESTART_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SERVICE_RESTART_TOOL_NAME}"
+WEAVE_SERVICE_LOGS_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SERVICE_LOGS_TOOL_NAME}"
+OPEN_APP_WINDOW_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{OPEN_APP_WINDOW_TOOL_NAME}"
+CLOSE_APP_WINDOW_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{CLOSE_APP_WINDOW_TOOL_NAME}"
 
 ALL_WEAVER_FULL_NAMES = (
     WEAVE_SKILL_FULL_NAME,
@@ -108,7 +125,7 @@ def build_weaver_mcp_server(
     """per-session 构造 weaver MCP server. mark_rebuild 是 LoomPool 注入的回调.
 
     weave / edit / delete 成功时 mark_rebuild() — LoomPool 在当前 turn stream_end
-    之后 evict, 用户下条 message 触发 rebuild 拿到新内容 (Spike 1+2+3 verified).
+    之后 evict, 用户下条 message 触发 rebuild 拿到新内容.
     """
 
     @tool(
@@ -143,10 +160,26 @@ def build_weaver_mcp_server(
     @tool(
         WEAVE_APP_TOOL_NAME,
         (
-            "织一个 invocable app 骨架 — 这步只建 manifest + app.json + 空 files/ 目录, "
+            "织一个 invocable app 骨架 — 这步只建 manifest + app.json + 空 files/ 目录. "
+            "硬规则: "
+            "(1) 调本工具前必须先 Skill('app-patterns'); 涉及 window/service 时再按需 "
+            "Skill('app-window') / Skill('app-service'). "
+            "(2) 当 app 含 window/service/schedule/watch 任 2 个以上组件时, "
+            "**调本工具前必须先 TodoWrite 拆步骤** (是真调 TodoWrite 工具, 不是 Bash "
+            "echo 一行 / 回复里 markdown 列表 — 那些不算, 右栏 Todo 面板看不到), "
+            "至少含: load skills → 设计 → "
+            "write 每个组件 → 每个组件 verify (service 用 weave_service_start, "
+            "window 用 open_app_window) → finalize. 一口气 write 完一把 finalize 错只能"
+            "事后回头改, 中间 verify 才能早发现错. "
+            "(3) description 参数必须跟 manifest_json 里的 \"description\" 字段**字面量一致** "
+            "(两处写同一句, 复制粘贴防错). "
+            "(4) app_json 的 components.schedules[] 每项**必须含 invocation_id** "
+            "(引用 manifest.invocations[].id). components.watches[] 同款, watch 不触发 "
+            "invocation 时设 invocation_id=None (= browse-only). 漏 invocation_id 是 "
+            "weave_app 最常见 schema 错. "
             "**不**写源码. 写源码用 weave_app_write_file 增量写, 写完用 "
             "weave_app_finalize 收口. status 初始为 'draft', invoke_app 拒 draft. "
-            "manifest_json 必填 (含至少 1 个 invocation); app_json 必填 (Phase B+ runtime 需要); "
+            "manifest_json 必填 (含至少 1 个 invocation); app_json 必填 (runtime 需要); "
             "files 可选 (向后兼容老 caller, 给了也只是写盘, status 仍 draft)."
         ),
         {
@@ -186,11 +219,40 @@ def build_weaver_mcp_server(
         except Exception as e:
             return _err(f"weave_app 未预期错误 {type(e).__name__}: {e}")
         mark_rebuild()
-        return _ok_text(
-            f"已建 app {meta.name!r} 骨架 (status=draft). "
-            "下一步: 用 weave_app_write_file 写源码, 写完用 weave_app_finalize 收口. "
-            "invoke_app 只允许 status=ready."
-        )
+        # 给 LLM 看的下一步引导 — 多组件 app 强引导 build-verify-show 循环,
+        # 不要一把 write + finalize. tool_result 出现在当前 turn, 比 system prompt
+        # 早期段更显眼. 注意 TodoWrite 应该在调本工具**之前**就拆好 (description
+        # 硬规则), 这里 result 假设 todo 已经存在, 强调"继续推进"而不是"现在拆".
+        comp = app_biz.read_app_definition(settings, meta.name)
+        n_components = 0
+        if comp is not None:
+            n_components = (
+                len(comp.components.windows)
+                + len(comp.components.services)
+                + len(comp.components.scripts)
+                + len(comp.components.schedules)
+                + len(comp.components.watches)
+            )
+        if n_components >= 2:
+            hint = (
+                f"已建 app {meta.name!r} 骨架 (status=draft, 含 {n_components} 个组件).\n\n"
+                "**继续按你的 TodoWrite 推进** (如果没拆 todo, 现在补一份):\n"
+                "  1. ✓ weave_app 骨架 (刚做完)\n"
+                "  2. weave_app_write_file 写每个组件源码\n"
+                "  3. **每个组件分别 verify** — service 用 weave_service_start "
+                "起 ephemeral + weave_service_logs 看错; window 用 "
+                "open_app_window 看 UI 渲不渲; script 用 invoke_app 跑一次\n"
+                "  4. 全部 verify 过再 weave_app_finalize 收口装 launchd plist\n\n"
+                "中间 verify 出错就改, 别带病 finalize."
+            )
+        else:
+            hint = (
+                f"已建 app {meta.name!r} 骨架 (status=draft). "
+                "下一步: weave_app_write_file 写源码 → 写完 verify (service 用 "
+                "weave_service_start, window 用 open_app_window, script 用 invoke_app) "
+                "→ weave_app_finalize 收口. invoke_app 只允许 status=ready."
+            )
+        return _ok_text(hint)
 
     @tool(
         WEAVE_APP_WRITE_FILE_TOOL_NAME,
@@ -275,9 +337,19 @@ def build_weaver_mcp_server(
         },
     )
     async def _weave_app_finalize(args: dict[str, Any]) -> dict[str, Any]:
+        app_name = str(args.get("app_name", ""))
+        # declared launchd 接管前先 stop 同名 ephemeral, 防 .runtime/<svc>.port
+        # 被 PentaLoom-持有 subprocess 占着导致 launchd 重启的真 service 拿不到端口.
+        try:
+            stopped = await ephemeral_service.get_registry().stop_all_for_app(app_name)
+            if stopped:
+                pass  # log 在 ephemeral 内已经打
+        except Exception:
+            # ephemeral 清理失败不阻塞 finalize — finalize 关键是 plist 装好
+            pass
         try:
             result = app_biz.finalize_app(
-                settings, app_name=str(args.get("app_name", "")),
+                settings, app_name=app_name,
             )
         except WeaverError as e:
             return _err(f"weave_app_finalize 校验失败: {e}")
@@ -549,7 +621,7 @@ def build_weaver_mcp_server(
     @tool(
         DELETE_WEAVER_TOOL_NAME,
         (
-            "软删某产物 (整个目录搬到 weaver/.trash/). 30 天后清理 (M14 暂不实装清理). "
+            "软删某产物 (整个目录搬到 weaver/.trash/). 30 天后清理 (暂不实装清理). "
             "成功后 mark rebuild, 用户下条 message 起 agent 看不到这个产物."
         ),
         {
@@ -562,11 +634,20 @@ def build_weaver_mcp_server(
         },
     )
     async def _delete_weaver(args: dict[str, Any]) -> dict[str, Any]:
+        kind = str(args.get("kind", ""))
+        name = str(args.get("name", ""))
+        # 删 app 前先 stop 同名 ephemeral, 否则 .trash/ 下 .runtime/ 还有
+        # 端口文件 + ephemeral subprocess 还在跑.
+        if kind == "app":
+            try:
+                await ephemeral_service.get_registry().stop_all_for_app(name)
+            except Exception:
+                pass
         try:
             result = meta_tools.delete_weaver(
                 settings,
-                kind=str(args.get("kind", "")),
-                name=str(args.get("name", "")),
+                kind=kind,
+                name=name,
             )
         except WeaverError as e:
             return _err(f"delete_weaver 失败: {e}")
@@ -578,7 +659,7 @@ def build_weaver_mcp_server(
     @tool(
         RUN_WEAVER_TOOL_NAME,
         (
-            "运行某产物. M14 占位 — workflow 实装在 M16, 当前调用会抛 NotImplemented. "
+            "运行某产物. 占位 — 当前调用会抛 NotImplemented. "
             "skill / subagent 不走这条 (skill 被动加载, subagent 走 Task 派单)."
         ),
         {
@@ -660,6 +741,234 @@ def build_weaver_mcp_server(
             return _err(str(e))
         return _ok_json(result)
 
+    # ──────────────────────────────────────────────────────────────────
+    # ephemeral service toolset (织造期临时跑 service, 跟 declared
+    # launchd 双轨). 写同一份 .runtime/<svc>.port, _invoke_service 不区分.
+    # finalize_app 触发 reload_for_app 前自动 stop_all_for_app, declared launchd
+    # 接管. 这套工具让 agent 在织 app 中就能验证 service 真起得来 + invoke_app
+    # 走一遍, 不用每次都 finalize 装 launchd plist.
+    # ──────────────────────────────────────────────────────────────────
+
+    @tool(
+        WEAVE_SERVICE_START_TOOL_NAME,
+        (
+            "织造期临时启动 app 的某个 service (subprocess + 动态端口, "
+            "memory-only). PentaLoom 重启全清. 同 (app, service) 已在跑 → "
+            "先 stop 再 start (idempotent). 写 .runtime/<svc>.port 让 invoke_app "
+            "立刻能调. 适用: 织 service 类 app 时验真起得来 / 看错没. "
+            "**finalize 后会被自动 stop, declared launchd 接管** — 这套是 dev-time "
+            "工具, 长寿命用 weave_app_finalize. "
+            "返: pid / port / log_path / uptime. ready probe (5s 内 TCP 能连 port) "
+            "失败但进程没死 → warning 不抛错, agent 用 weave_service_logs 自查."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "service_name": {"type": "string"},
+            },
+            "required": ["app_name", "service_name"],
+        },
+    )
+    async def _weave_service_start(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            svc = await ephemeral_service.get_registry().start(
+                settings,
+                app_name=str(args.get("app_name", "")),
+                service_name=str(args.get("service_name", "")),
+            )
+        except ephemeral_service.EphemeralError as e:
+            return _err(f"weave_service_start 失败: {e}")
+        except Exception as e:
+            return _err(
+                f"weave_service_start 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json(svc.to_dict())
+
+    @tool(
+        WEAVE_SERVICE_STOP_TOOL_NAME,
+        (
+            "停一个织造期 ephemeral service (SIGTERM 3s + 不退 SIGKILL 2s). "
+            "顺手删 .runtime/<svc>.port (declared 接管时不留 stale 端口). "
+            "返 stopped=true/false (服务不在 / 已死返 false, 真停了返 true)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "service_name": {"type": "string"},
+            },
+            "required": ["app_name", "service_name"],
+        },
+    )
+    async def _weave_service_stop(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            stopped = await ephemeral_service.get_registry().stop(
+                app_name=str(args.get("app_name", "")),
+                service_name=str(args.get("service_name", "")),
+            )
+        except Exception as e:
+            return _err(
+                f"weave_service_stop 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json({"stopped": stopped})
+
+    @tool(
+        WEAVE_SERVICE_RESTART_TOOL_NAME,
+        (
+            "stop + start 一个 ephemeral service. 等价 weave_service_stop + "
+            "weave_service_start, 但是原子化 + 一条工具调用. 改完 service 源码 "
+            "想重跑用这个. 返同 weave_service_start."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "service_name": {"type": "string"},
+            },
+            "required": ["app_name", "service_name"],
+        },
+    )
+    async def _weave_service_restart(args: dict[str, Any]) -> dict[str, Any]:
+        app_name = str(args.get("app_name", ""))
+        service_name = str(args.get("service_name", ""))
+        try:
+            reg = ephemeral_service.get_registry()
+            await reg.stop(app_name=app_name, service_name=service_name)
+            svc = await reg.start(
+                settings,
+                app_name=app_name,
+                service_name=service_name,
+            )
+        except ephemeral_service.EphemeralError as e:
+            return _err(f"weave_service_restart 失败: {e}")
+        except Exception as e:
+            return _err(
+                f"weave_service_restart 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json(svc.to_dict())
+
+    @tool(
+        WEAVE_SERVICE_LOGS_TOOL_NAME,
+        (
+            "读 ephemeral service 的 stdout/stderr log 末尾 n 行 (每行含 "
+            "[stdout]/[stderr] 前缀). 进程已死也能读 (落盘在 "
+            ".ephemeral-logs/<service>.log). declared service log 走 "
+            "tail_weaver_logs(kind='app', mode='service:<svc>') — 别混. "
+            "返: lines (list[str]) / alive / pid / port / log_path."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "service_name": {"type": "string"},
+                "n": {
+                    "type": "integer",
+                    "description": "末尾多少行, 默认 50.",
+                },
+            },
+            "required": ["app_name", "service_name"],
+        },
+    )
+    async def _weave_service_logs(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await ephemeral_service.get_registry().tail_logs(
+                app_name=str(args.get("app_name", "")),
+                service_name=str(args.get("service_name", "")),
+                n=int(args.get("n") or 50),
+            )
+        except ephemeral_service.EphemeralError as e:
+            return _err(f"weave_service_logs 失败: {e}")
+        except Exception as e:
+            return _err(
+                f"weave_service_logs 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json(result)
+
+    # ──────────────────────────────────────────────────────────────────
+    # window 开关 — agent 主动开 / 关 window
+    # window invocation 最常见的两个动作就是 open / close 本身, 给 agent 原生
+    # 工具; 用户主动让 agent 做事时 open 不叫突兀, 是交互. 之后再调
+    # invoke_app(target=window) 推数据给 JS handler.
+    # ──────────────────────────────────────────────────────────────────
+
+    @tool(
+        OPEN_APP_WINDOW_TOOL_NAME,
+        (
+            "开 app 的 window — spawn loomer 子进程渲 webview, 关 PentaLoom 主壳"
+            "也仍活. window_name 不传走 components.windows[0] (单窗 app 最常见). "
+            "用户说 '打开 xx' / '弹个 xx 窗口' / 或要 invoke_app 推数据但 window "
+            "还没开时调. 返 {window_id, pid}. 已经开着的 window 不去重 — 再调一次"
+            "就再开一个 (loom registry findByName 后续 invoke 路由到先开的)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "window_name": {
+                    "type": "string",
+                    "description": "可选, 不传走 components.windows[0]",
+                },
+            },
+            "required": ["app_name"],
+        },
+    )
+    async def _open_app_window(args: dict[str, Any]) -> dict[str, Any]:
+        app_name = str(args.get("app_name", "")).strip()
+        window_name_raw = args.get("window_name")
+        window_name = (
+            str(window_name_raw).strip() if window_name_raw else None
+        ) or None
+        try:
+            result = await app_biz.open_window_for_app(
+                settings, app_name, window_name=window_name,
+            )
+        except WeaverError as e:
+            return _err(f"open_app_window 失败: {e}")
+        except Exception as e:
+            return _err(
+                f"open_app_window 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json(result)
+
+    @tool(
+        CLOSE_APP_WINDOW_TOOL_NAME,
+        (
+            "关 app 的 window — kill loomer 子进程. window_name 不传走 "
+            "components.windows[0]. 用户说 '关掉 xx' / '不需要了' 时调. 返 "
+            "{closed: bool, window_name}; 窗本来就没开返 closed=false (不是错). "
+            "**注意**: 多窗同名时全杀 (重复 open 同名是异常 case)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "window_name": {
+                    "type": "string",
+                    "description": "可选, 不传走 components.windows[0]",
+                },
+            },
+            "required": ["app_name"],
+        },
+    )
+    async def _close_app_window(args: dict[str, Any]) -> dict[str, Any]:
+        app_name = str(args.get("app_name", "")).strip()
+        window_name_raw = args.get("window_name")
+        window_name = (
+            str(window_name_raw).strip() if window_name_raw else None
+        ) or None
+        try:
+            result = await app_biz.close_window_for_app(
+                settings, app_name, window_name=window_name,
+            )
+        except WeaverError as e:
+            return _err(f"close_app_window 失败: {e}")
+        except Exception as e:
+            return _err(
+                f"close_app_window 未预期错误 {type(e).__name__}: {e}"
+            )
+        return _ok_json(result)
+
     return create_sdk_mcp_server(
         name=WEAVER_MCP_SERVER_NAME,
         tools=[
@@ -679,5 +988,11 @@ def build_weaver_mcp_server(
             _delete_weaver,
             _run_weaver,
             _tail_weaver_logs,
+            _weave_service_start,
+            _weave_service_stop,
+            _weave_service_restart,
+            _weave_service_logs,
+            _open_app_window,
+            _close_app_window,
         ],
     )

@@ -1,7 +1,7 @@
 // CSV / TSV 预览 — 简版 HTML table.
 //
 // 第一版用最朴素 split: 不处理引号转义 / 多行 cell. 复杂 csv 走 `unsupported` + 系统 app 兜底.
-// M19.1 接 papaparse 之类正经 csv 解析.
+// TODO: 接 papaparse 之类正经 csv 解析.
 
 import { useMemo } from "react";
 

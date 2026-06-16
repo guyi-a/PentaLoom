@@ -69,3 +69,6 @@ agent/tests/
 .claude/
 # CodeFlicker / MyFlicker IDE 本地配置
 .codeflicker/
+
+# loom + loomer build 产物 (开发用; 装系统走 ~/.pentaloom/bin/)
+/.bin/

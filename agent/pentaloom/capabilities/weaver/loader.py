@@ -1,12 +1,9 @@
-"""LoomPool _build() 启动时调 assemble_weaver(), 返主 agent ClaudeAgentOptions 要的两个东西:
+"""LoomPool build 时组装用户织造的 agent 扩展.
 
   - subagent_defs: dict[name, AgentDefinition] (跟内置 agents 合并)
   - skill_names:   list[str]                   (跟 ENABLED_SKILLS 合并)
 
-副作用: 把每个 skill symlink 到 data_dir/.claude/skills/<name>/, SDK 爬升能找到
-(Spike 3 extras Test 1 verified).
-
-M14 阶段 subagent_defs 永远是空 (subagent UI 配置 M17 才实装).
+副作用: 把每个 skill symlink 到 data_dir/.claude/skills/<name>/, 供 agent 加载.
 """
 
 from __future__ import annotations
@@ -38,7 +35,7 @@ async def assemble_weaver(
             # 单个 skill 损坏不阻塞整个启动
             logger.warning(f"skill {entry.name} symlink 失败, skip: {e}")
 
-    # subagent 部分 M17 实装. 留 dict 接口给 LoomPool 直接 merge.
+    # subagent 扩展暂未启用, 保留接口给 LoomPool 合并.
     subagent_defs: dict[str, Any] = {}
 
     if skill_names:

@@ -4,7 +4,7 @@
 (Noto Sans SC) — 至少在装了 Noto 的机器上能渲对.
 
 不真嵌入字体 — 仅修改 a:rPr/a:ea/@typeface. 查看端没装该字体仍 fallback,
-M5+ 再补真嵌入 ([Content_Types].xml + ppt/fonts/* + presentation.xml 的 embeddedFontLst).
+后续再补真嵌入 ([Content_Types].xml + ppt/fonts/* + presentation.xml 的 embeddedFontLst).
 """
 
 from __future__ import annotations

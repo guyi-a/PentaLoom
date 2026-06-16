@@ -1,13 +1,13 @@
-"""沉淀 + 删 Skill 的业务 logic. 不碰 SDK, 不碰 tool 注册 — 纯写盘 + index.
+"""沉淀 + 删 Skill 的业务逻辑. 不碰 tool 注册 — 纯写盘 + index.
 
 weave_skill 流程:
   1. 校验 markdown frontmatter (必有 name / description; when_to_use 可选但推荐)
   2. 校验名字冲突 (跨 kind 不重名)
   3. 写 SKILL.md + meta.json 到 weaver/skills/<name>/
   4. 加进 index.json
-  5. symlink 到 data_dir/.claude/skills/<name>/ (SDK 爬升能找到)
+  5. symlink 到 data_dir/.claude/skills/<name>/ (供 agent 加载)
 
-delete 是软删: 整个 skill 目录搬到 .trash/, 30 天后清理 (清理逻辑 M14 不实装).
+delete 是软删: 整个 skill 目录搬到 .trash/.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ _VALID_NAME = "abcdefghijklmnopqrstuvwxyz0123456789-"
 def _validate_name(name: str) -> str:
     """skill name 必须 kebab-case (小写字母 / 数字 / 短横线), 跟目录 + SKILL.md frontmatter 三处一致.
 
-    防 path injection (../) + 跟 SDK skill 加载约定对齐.
+    防 path injection (../) + 跟 skill 加载约定对齐.
     """
     name = name.strip()
     if not name:
@@ -52,7 +52,7 @@ def _validate_name(name: str) -> str:
 def _parse_frontmatter(content: str) -> tuple[SkillFrontmatter, str]:
     """从 SKILL.md 顶部 --- YAML --- 块解 frontmatter, 返回 (frontmatter, body).
 
-    SDK skill loader 要求 SKILL.md 必有 frontmatter, 我们提前校验避免写盘后才报错.
+    skill loader 要求 SKILL.md 必有 frontmatter, 我们提前校验避免写盘后才报错.
     """
     if not content.startswith("---\n"):
         raise index.WeaverError(
@@ -150,10 +150,7 @@ def weave_skill(
 def edit_skill(
     settings: Settings, name: str, new_content: str
 ) -> SkillMeta:
-    """改 SKILL.md 全文. frontmatter.name 不允许改 (改名 = 删 + 新 weave).
-
-    Spike 3 extras Test 2 验过: SDK 无 cache, 改文件后 rebuild 即生效.
-    """
+    """改 SKILL.md 全文. frontmatter.name 不允许改 (改名 = 删 + 新 weave)."""
     name = _validate_name(name)
     entry = index.find_entry(settings, "skill", name)
     if entry is None:
@@ -195,7 +192,7 @@ def delete_skill_soft(settings: Settings, name: str) -> Path | None:
     """软删: 整个目录搬到 weaver/.trash/skill-<name>-<ts>/, 同时撤 symlink 跟 index.
 
     若物理目录已不存在 (孤儿条目: index 有但目录被外部清掉了), 只清 index entry +
-    symlink, 返 None — 不抛错 (Fix 6, 防 agent 绕过 meta-tool 直接改 index).
+    symlink, 返 None — 不抛错, 避免调用方绕过 meta-tool 直接改 index.
     """
     name = _validate_name(name)
     entry = index.find_entry(settings, "skill", name)

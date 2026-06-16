@@ -74,11 +74,11 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   [COMPUTER_USE_TOOL_NAME]: Terminal,
   // pentaloom_files 下的 file_read / file_write 等
   "mcp__pentaloom_files__file_read": FileText,
-  // weaver app 递进式子工具 (Phase B.5)
+  // weaver app 递进式子工具
   "mcp__pentaloom_weaver__weave_app_write_file": FilePlus2,
   "mcp__pentaloom_weaver__weave_app_edit_file": Pencil,
   "mcp__pentaloom_weaver__weave_app_finalize": ShieldCheck,
-  // M17 dynamic workflow
+  // dynamic workflow
   [WEAVE_WORKFLOW_TOOL_NAME]: GitBranch,
   [WEAVE_WORKFLOW_FINALIZE_TOOL_NAME]: ShieldCheck,
   [INVOKE_WORKFLOW_TOOL_NAME]: Network,

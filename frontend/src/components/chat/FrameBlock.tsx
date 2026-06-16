@@ -105,9 +105,11 @@ export function FrameBlock({ frame }: Props) {
       return <ErrorBlock message={frame.message} />;
     case "stream_end":
       return null;
+    case "permission_request":
     case "permission_resolved":
-      // 控制帧: 仅用于让 ChatStream 的 pendingApprovalIds reducer 知道审批已落定,
-      // UI 上不渲染卡片 — 否则 "Allow → 卡片立刻消失" 的体验就被这块兜底破坏了.
+      // 控制帧: permission_request 让 ChatStream pendingApprovalIds 知道要弹审批
+      // (审批 UI 渲染在 ToolRow 卡片底部, 不在这), permission_resolved 让 set 移除.
+      // FrameBlock 这里返 null — 这两帧不在主对话流里独立渲染卡片.
       return null;
     default:
       // 兜底: 未知 frame, 不该有, 但别挂掉

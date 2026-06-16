@@ -188,7 +188,7 @@ class PentaLoom:
             skills=skills_for_options,
             # "project" → CLI 从 cwd (= sandbox 目录) 往上找 .claude/, 命中
             # repo-root .claude/skills/<name>/SKILL.md (内置) +
-            # data_dir/.claude/skills/<name>/ (weaver symlink, Spike 3 extras Test 1 verified).
+            # data_dir/.claude/skills/<name>/ (weaver symlink).
             # 不读 user 全局 .claude/, 避免跟用户自己的 Claude Code 配置串味.
             # 关键: skills= 传 list 时, SDK 的 _apply_skills_defaults 只在
             # setting_sources is None 时才默认填 ["user","project"]; 显式 [] 会

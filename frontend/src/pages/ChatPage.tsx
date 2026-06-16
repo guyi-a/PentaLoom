@@ -270,18 +270,22 @@ export function ChatPage() {
     try {
       // 有附件 / 内嵌图片走 multipart, 都没有走 JSON — 两条返同款 SSE 流.
       const hasAnyAttachment = files.length > 0 || inlineImages.length > 0;
+      // 首条消息直接把 picker 选的 mode 喂给 POST body, 让 backend build _Entry
+      // 时一次到位. 之前是事后 PATCH 兜底, PATCH 在 turn 启动后才到, 第一个工具
+      // 调用走 default 弹审批. PATCH 仍保留作为已 build session 切 mode 的路径.
+      const desiredMode = useApprovalModeStore.getState().getMode(sid);
       const handle = hasAnyAttachment
         ? await chatStreamWithAttachments({
             prompt,
             sessionId: sid,
             files,
             inlineImages,
+            approvalMode: desiredMode,
           })
-        : await chatStream({ prompt, sessionId: sid });
+        : await chatStream({ prompt, sessionId: sid, approvalMode: desiredMode });
       abortRef.current = handle.abort;
-      // 用户在 picker 切的 mode 此前可能 PATCH 失败 (session 还没 build, 404).
-      // chatStream 触发 LoomPool.get 已经 build 完, 这里兜底再同步一次. 失败仍吞.
-      const desiredMode = useApprovalModeStore.getState().getMode(sid);
+      // 兜底 PATCH: 已 build session 切 mode 走这条; 首条消息已经在 POST body 里
+      // 传过, 这里再设一次同值无害.
       if (desiredMode !== "default") {
         api.setApprovalMode(sid, desiredMode).catch(() => {});
       }
@@ -407,9 +411,15 @@ export function ChatPage() {
   }
 
   if (!meta) {
+    // 后端冷启动 (lifespan 跑 cursor_overlay helper / DB create_all 等) 期间 GET
+    // /sessions/{sid} 会卡 ~5s, 这里给跟 ChatStream "Working on it…" 同款的紫色
+    // pulse dot, 文案换成 Agent 初始化中, 让用户知道是 server 没就绪不是页面卡死.
     return (
-      <div className="flex h-full items-center justify-center px-6 text-[12px] text-[color:var(--color-ink)]">
-        Loading…
+      <div className="flex h-full items-center justify-center px-6">
+        <div className="flex items-center gap-2 text-[12px] text-[color:var(--color-ink)]">
+          <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--color-accent)]" />
+          <span>Agent 初始化中…</span>
+        </div>
       </div>
     );
   }

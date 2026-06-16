@@ -1,4 +1,4 @@
-"""Workflow 业务层 — M17 dynamic workflow.
+"""Workflow 业务层.
 
 跟 app.py / skill.py 平级, 但比 app 简单 (workflow 没 files/ 子树, 整个就一个
 workflow.json 主文件 + meta.json + logs/runs.jsonl).
