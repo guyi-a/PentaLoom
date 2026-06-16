@@ -1,12 +1,12 @@
-"""weaver/ 目录路径辅助. 单 entry point 算路径, 避免散落 string 拼.
+"""weaver/ 目录路径辅助. 单入口算路径, 避免散落 string 拼接.
 
-物理布局 (Spike 3 extras Test 1 + 2 锁定):
+物理布局:
     data_dir/
     ├── weaver/skills/<name>/SKILL.md      物理位置 (用户 vscode 直接看)
     ├── weaver/index.json                  产物总索引
     ├── weaver/.trash/<name>-<ts>/         软删的旧产物
     ├── .claude/skills/<name>/             symlink → ../weaver/skills/<name>/
-    └── sandboxes/<sid>/                   cwd, SDK 爬 2 层命中 ../.claude/skills/
+    └── sandboxes/<sid>/                   agent cwd, 向上查找可命中 skill 镜像
 """
 
 from __future__ import annotations
@@ -64,8 +64,7 @@ def builtin_skill_md(name: str) -> Path:
 
 
 def skills_link_root(settings: Settings) -> Path:
-    """SDK 爬升能找到的 skill 镜像目录. data_dir 在 sandbox 父父目录,
-    SDK 从 sandboxes/<sid>/ 爬 2 层正好命中这里 (Spike 3 extras Test 1 verified)."""
+    """agent 从 sandbox 向上查找时能命中的 skill 镜像目录."""
     return settings.data_dir / ".claude" / "skills"
 
 
@@ -73,7 +72,7 @@ def skill_symlink(settings: Settings, name: str) -> Path:
     return skills_link_root(settings) / name
 
 
-# ─── Invocable App 路径 (App-Invocable-HTML, docs/app-invocable-exploration.md v2) ──
+# ─── Invocable App 路径 ─────────────────────────────────────────────────────
 
 def apps_dir(settings: Settings) -> Path:
     return weaver_root(settings) / "apps"
@@ -135,7 +134,7 @@ def ensure_app_dirs(settings: Settings, name: str) -> None:
     app_runs_dir(settings, name).mkdir(parents=True, exist_ok=True)
 
 
-# ─── Workflow 路径 (M17) ────────────────────────────────────────────────────
+# ─── Workflow 路径 ──────────────────────────────────────────────────────────
 # 跟 app 同 weaver_root 平级, 但物理位置独立 — workflow 没 files/ 子树, 只有
 # workflow.json 主文件 + meta + 独立 logs/runs.jsonl + runs/<run_id>/.
 
@@ -157,7 +156,7 @@ def workflow_meta(settings: Settings, name: str) -> Path:
 
 
 def workflow_logs_dir(settings: Settings, name: str) -> Path:
-    """独立 logs/runs.jsonl 不混 app log (GPT review #3 要点)."""
+    """独立 logs/runs.jsonl, 不混 app log."""
     return workflow_dir(settings, name) / "logs"
 
 
@@ -182,6 +181,6 @@ def ensure_dirs(settings: Settings) -> None:
     weaver_root(settings).mkdir(parents=True, exist_ok=True)
     skills_dir(settings).mkdir(parents=True, exist_ok=True)
     apps_dir(settings).mkdir(parents=True, exist_ok=True)
-    workflows_dir(settings).mkdir(parents=True, exist_ok=True)  # M17
+    workflows_dir(settings).mkdir(parents=True, exist_ok=True)
     trash_dir(settings).mkdir(parents=True, exist_ok=True)
     skills_link_root(settings).mkdir(parents=True, exist_ok=True)

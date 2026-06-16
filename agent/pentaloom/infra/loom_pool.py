@@ -69,11 +69,11 @@ class _Entry:
     # 改 .value 立刻被 closure 读到, 不需要 rebuild. 全局 settings 变更走
     # broadcast_approval_mode, per-session 临时切换走 set_approval_mode.
     approval_mode_ref: ApprovalModeRef = field(default_factory=ApprovalModeRef)
-    # weaver hot reload (Spike 1+2+3 verified): weave_* / edit_weaver / delete_weaver
+    # weaver hot reload: weave_* / edit_weaver / delete_weaver
     # 成功时设 True, 当前 turn 的 stream_end 之后 chat router 调 pool.evict(sid).
     # 用户下条 message 触发 LoomPool.get → resume rebuild, 新 weaver 内容生效.
     # 必须**推迟到 stream_end** 而不是 weave_* 返回那一刻 — 否则 SIGTERM SDK 子进程
-    # turn 卡死 (Spike 笔记 docs/spikes/01-02-infra.md "evict 时机" 段).
+    # turn 卡死.
     pending_rebuild: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_used: float = field(default_factory=time.monotonic)
@@ -94,8 +94,16 @@ class LoomPool:
         self._build_lock = asyncio.Lock()
 
     async def get(
-        self, session_id: str, mounted_dirs: list[str]
+        self,
+        session_id: str,
+        mounted_dirs: list[str],
+        *,
+        approval_mode: str | None = None,
     ) -> tuple[PentaLoom, asyncio.Lock]:
+        """approval_mode: 仅 entry 不存在 (首次 build) 时生效, 让首条消息直接用
+        指定 mode (前端 picker 切到 auto/full_access 时传). entry 已存在 / rebuild
+        路径都 ignore — 那两条路径有自己的 mode ref 来源.
+        """
         _validate_sid(session_id)
         async with self._build_lock:
             entry = self._registry.get(session_id)
@@ -111,7 +119,15 @@ class LoomPool:
                 # 在调 _run_chat_turn 之前 commit_attachment 的 mkdir) 提前建出 sandbox dir,
                 # 都会被误判 resume → SDK 起进程 exit 1.
                 resume_existing = await self._has_sdk_transcript(session_id)
-                entry = await self._build(session_id, mounted_dirs, resume=resume_existing)
+                # 首次 build 用 caller 传的 mode (默认 default)
+                initial_mode_ref = (
+                    ApprovalModeRef(approval_mode)
+                    if approval_mode in APPROVAL_MODES else None
+                )
+                entry = await self._build(
+                    session_id, mounted_dirs, resume=resume_existing,
+                    approval_mode_ref=initial_mode_ref,
+                )
                 self._registry[session_id] = entry
             elif sorted(entry.mounted_dirs) != sorted(mounted_dirs):
                 logger.info(

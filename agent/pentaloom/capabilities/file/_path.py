@@ -3,7 +3,7 @@
 为什么不做 mounted_dirs 白名单 (跟 plan 略有偏差):
   - 现存 in-process 工具 (install_python_libs / run_python_script) 也都不做.
   - 真要做需要把 session_id 注入 @tool 装饰函数 (走 ContextVar 或 per-session
-    server), 引入新机制. M2 先对齐现状, M3 统一给所有 in-process 工具加白名单.
+    server), 引入新机制. 后续统一给所有 in-process 工具加白名单.
   - 当前安全模型: SDK 子进程的 add_dirs 拘束 Read/Write/Bash; in-process 工具
     完全信任 agent. 这跟 Anthropic Claude Code 默认 trust-the-agent 模型一致.
 """

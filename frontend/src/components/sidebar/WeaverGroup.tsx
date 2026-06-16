@@ -1,5 +1,5 @@
 // Sidebar Weaver 分组 — 取代旧 ProjectsPlaceholder.
-// M14: Skills 真实数据 (内置 + 用户织的); Subagents / Workflows / Apps 占位 (M17/M16/M18).
+// Skills 真实数据 (内置 + 用户织的); Subagents / Workflows / Apps 占位.
 //
 // 视觉层级:
 //   - 外层 SidebarGroup "Weaver" — 跟 Threads 同款 12px italic, 默认展开
@@ -126,7 +126,7 @@ export function WeaverGroup({ currentSid }: Props) {
 
         <SubSection label="Subagents">
           <PlaceholderText icon={<Boxes size={10} />}>
-            Coming with M17.
+            Coming soon.
           </PlaceholderText>
         </SubSection>
       </div>

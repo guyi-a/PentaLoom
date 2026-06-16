@@ -1,7 +1,7 @@
 """PentaLoom 主 agent 提示词组装.
 
-五段式: identity → style → capabilities (工具 + 可加载 skills) → env (运行时字体清单) →
-context (mounted_dirs). 空段省略.
+六段式: identity → style → principles → capabilities (工具 + 可加载 skills) → env
+(运行时字体清单) → context (mounted_dirs). 空段省略.
 
 调用入口:
     from pentaloom.prompts import assemble_main_prompt
@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pentaloom.prompts import capabilities, context, env, fingerprint
 from pentaloom.prompts.identity import MAIN_IDENTITY
+from pentaloom.prompts.principles import WORKING_PRINCIPLES
 from pentaloom.prompts.skills import ENABLED_SKILLS
 from pentaloom.prompts.style import GLOBAL_STYLE
 from pentaloom.prompts.tools import TOOL_PROMPT_INSTRUCTIONS
@@ -52,6 +53,7 @@ def assemble_main_prompt(
     sections: list[tuple[str, str]] = [
         ("identity", MAIN_IDENTITY.strip()),
         ("style", GLOBAL_STYLE.strip()),
+        ("principles", WORKING_PRINCIPLES.strip()),
         (
             "capabilities",
             capabilities.render(

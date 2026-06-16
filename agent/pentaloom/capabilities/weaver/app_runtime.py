@@ -1,21 +1,15 @@
-"""Invocable App runtime — Phase B (script subprocess) 实施.
+"""Invocable App 调用执行器.
 
 invoke_app(app_name, invocation_id, args) → {run_id, status, duration_ms, output}:
-  1. 读 manifest + app.json (manifest 必填, app.json 必填 — Phase A 宽松省了的话拒)
-  2. 找 invocation_id + target — Phase B 只支持 target.component='script'
+  1. 读 manifest + app.json
+  2. 找 invocation_id + target
   3. JSON Schema 校验 input
-  4. spawn script via uv venv subprocess, stdin 喂 {invocation_id, args, run_id} JSON;
-     cwd = files/<script.workdir> (workdir 可选, 不写就是 files/ 根)
+  4. 按 target.component 分发到 script / service / window 路径
   5. parse stdout JSON, JSON Schema 校验 output
   6. 写 InvocationRun 日志到 logs/runs.jsonl (单文件 append, 简单 query)
   7. 返 {run_id, status, duration_ms, output} — output 是 handler 实际返的;
      run_id / duration_ms 给 agent 排查日志 + 反馈用户耗时. handler 输出包在
      output 里, 不平铺到 top-level 是为了不跟 run_id 等元字段名字撞.
-
-Phase C (window) / Phase D (service) 留后续, 各自走不同 runtime path.
-
-不在 Phase B:
-  - WorkflowRun DB 表 — 不引 DB (跟 weaver M14 一致, 文件 SoT)
 """
 
 from __future__ import annotations
@@ -125,10 +119,9 @@ def _append_run_log(
 ) -> None:
     """invocation 历史落到 logs/runs.jsonl — 单文件 append-only.
 
-    status: success / failed / skipped (M16 Phase E 加 skipped — schedule overlap /
-    watch in-flight / status race).
+    status: success / failed / skipped.
     trigger: user (default, MCP tool / window WS 调用) / schedule / watch / workflow
-    (M17, workflow_runtime.invoke_workflow 调用 invoke_app step 时透传).
+    (workflow_runtime.invoke_workflow 调用 invoke_app step 时透传).
 
     不引 DB. tail_weaver_logs(kind='app') 反过来读这文件; 旧 entry 缺 trigger 字段
     读取时默认 user 兼容.
@@ -157,7 +150,7 @@ async def invoke_app(
     args: dict[str, Any] | None = None,
     trigger: str = "user",
 ) -> dict[str, Any]:
-    """Phase B 入口 — 调一个 invocable app 的 script invocation.
+    """调一个 invocable app 的 invocation.
 
     trigger: user (MCP tool / window WS, default) / schedule (cron 触发) /
     watch (fs event 触发). 透传到 _invoke_*, runs.jsonl 落地以区分来源.
@@ -168,7 +161,7 @@ async def invoke_app(
     started_at_ms = int(datetime.utcnow().timestamp() * 1000)
     run_id = _new_run_id()
 
-    # ─── 1. 读 manifest + app.json + meta (Phase B 必须有 app.json + status=ready) ───
+    # ─── 1. 读 manifest + app.json + meta ──────────────────────────────
     try:
         manifest = app_biz.read_manifest(settings, app_name)
     except index.WeaverError as e:
@@ -177,10 +170,10 @@ async def invoke_app(
     app_def = app_biz.read_app_definition(settings, app_name)
     if app_def is None:
         raise InvokeError(
-            f"app {app_name!r} 缺 app.json (Phase B 必填; Phase A 宽松不行了)"
+            f"app {app_name!r} 缺 app.json (invoke_app 必填)"
         )
 
-    # 状态机收口 (Fix 1 / GPT): 只允许 status=ready 的 app 被 invoke.
+    # 只允许 finalize 通过的 app 被 invoke.
     # draft / dirty / failed 都拒, 让 agent 先 weave_app_finalize.
     meta = app_biz.read_meta(settings, app_name)
     if meta is None:
@@ -199,7 +192,7 @@ async def invoke_app(
     inv = _find_invocation(manifest, invocation_id)
     if inv.target is None:
         raise InvokeError(
-            f"invocation {invocation_id!r} 缺 target (Phase B 必填 — Phase A 占位不再宽松)"
+            f"invocation {invocation_id!r} 缺 target (invoke_app 必填)"
         )
     target_kind = inv.target.component
     if target_kind == "script":
@@ -228,55 +221,92 @@ async def _invoke_window(
     started_at_ms: int,
     trigger: str = "user",
 ) -> dict[str, Any]:
-    """target.component='window' 路径 — 走 WebSocket 推到 window registered handler.
+    """target.component='window' 路径 — 走 loom socket 调 JS 端注册的 handler.
 
-    跟 _invoke_script 平级. registry 找不到 ws → 拒"window not open"; 找得到 →
-    推 invoke 消息 + 等 result Future (with timeout) → 校 output_schema → return.
+    路径:
+      Python → loom socket window.invoke → loom 找 (app, window_name) 子进程
+      → loomer stdin NDJSON → JS handler (window.pentaloom.registerInvocation)
+      → JS handler async 返值 → loomer stdout NDJSON → loom → socket → 这里
+
+    window 必须先开 (用户在 sidebar 点 Open Window 或 loomctl open). 不主动 open
+    — 避免 agent 隐式弹窗的 UX 突兀.
+
+    timeout: 走 inv.timeout_ms (manifest 声明), loom 端 select 超时返 error 但
+    **不 kill loomer** — handler 慢不该让窗死.
     """
-    from pentaloom.capabilities.weaver.window_registry import window_registry
+    from pentaloom.infra import loom_client
 
     _validate_input(args, inv.input_schema)
-    reg = window_registry()
-    ws = reg.get_one(app_name)
-    if ws is None:
-        raise InvokeError(
-            f"app {app_name!r} 的 window 没打开 — agent 无法调 window invocation. "
-            f"让用户在 sidebar 点 Open 先开窗, 或后续 Phase 加 auto-open"
-        )
 
-    request_id, fut = reg.new_request()
+    window_name = inv.target.name
     timeout_s = max(1, inv.timeout_ms // 1000)
     logger.info(
-        f"invoke_app(window): {app_name}/{inv.id} run={run_id} request={request_id} "
-        f"timeout={timeout_s}s"
+        f"invoke_app(window): {app_name}/{inv.id} run={run_id} "
+        f"window_name={window_name} timeout={timeout_s}s"
     )
 
     try:
-        await ws.send_json({
-            "type": "invoke",
-            "request_id": request_id,
-            "invocation_id": inv.id,
-            "args": args,
-        })
-    except Exception as e:
-        reg.resolve(request_id, {})  # 清 pending
-        raise InvokeError(f"window ws send 失败 (run {run_id}): {e}") from e
-
-    try:
-        msg = await asyncio.wait_for(fut, timeout=timeout_s)
-    except asyncio.TimeoutError as e:
-        raise InvokeError(
-            f"window invocation {inv.id!r} 超时 ({timeout_s}s, run {run_id})"
-        ) from e
+        output = await loom_client.invoke_window(
+            app_name, window_name, inv.id, args,
+            timeout_s=float(timeout_s),
+        )
+    except loom_client.LoomCommandFailed as e:
+        # window 没开就自己开一次再 retry 一次 — 用户主动 invoke 时不该要求"先点
+        # Open Window 再来", 该 agent 自救. retry 1 次, 还不行就抛.
+        if "no window with" in str(e).lower():
+            logger.info(
+                f"invoke_app(window): {app_name}/{window_name} 没开, 自动 open + retry"
+            )
+            try:
+                await app_biz.open_window_for_app(
+                    settings, app_name, window_name=window_name,
+                )
+                # window JS bundle 加载 + handler 注册需要一点时间; loom_client
+                # invoke 内部已经有 timeout, 短轮询等 1s 让 JS register 一下
+                # (实测 esm.sh 冷启动 ~600ms, 缓存后 100ms 内).
+                import asyncio as _aio
+                await _aio.sleep(1.0)
+                output = await loom_client.invoke_window(
+                    app_name, window_name, inv.id, args,
+                    timeout_s=float(timeout_s),
+                )
+            except (loom_client.LoomError, Exception) as retry_err:
+                duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+                err = (
+                    f"window {app_name}/{window_name} 自动开窗 + retry 仍失败. "
+                    f"retry 错: {retry_err}; 原始错: {e}"
+                )
+                _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
+                raise InvokeError(f"{err} (run {run_id})") from retry_err
+        else:
+            duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+            msg = str(e)
+            if "未注册" in msg or "not registered" in msg.lower():
+                err = (
+                    f"window {app_name}/{window_name} 没注册 invocation {inv.id!r} handler. "
+                    f"window TSX 里加 window.pentaloom.registerInvocation({inv.id!r}, "
+                    f"async (args) => {{...}}). 原始错: {msg}"
+                )
+            else:
+                err = f"window invoke failed: {msg}"
+            _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
+            raise InvokeError(f"{err} (run {run_id})") from e
+    except loom_client.LoomUnavailable as e:
+        duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+        err = (
+            f"loom daemon 没起 — 跑 `make loom-install` 装系统级 daemon. "
+            f"原始错: {e}"
+        )
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
+        raise InvokeError(f"{err} (run {run_id})") from e
+    except loom_client.LoomError as e:
+        duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
+        err = f"loom 协议错: {e}"
+        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
+        raise InvokeError(f"{err} (run {run_id})") from e
 
     duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
 
-    if msg.get("type") == "invoke_error":
-        err = str(msg.get("error", "unknown window error"))
-        _append_run_log(settings, app_name, run_id, inv.id, "failed", duration_ms, err, trigger=trigger)
-        raise InvokeError(f"{err} (run {run_id})")
-
-    output = msg.get("output") if isinstance(msg.get("output"), dict) else {}
     try:
         _validate_output(output, inv.output_schema)
     except InvokeError as e:
@@ -284,9 +314,10 @@ async def _invoke_window(
         raise InvokeError(f"{e} (run {run_id})") from e
 
     _append_run_log(settings, app_name, run_id, inv.id, "success", duration_ms, trigger=trigger)
-    # window invocation 也算 use, 跟 script 同款递增
     app_biz.bump_use_count(settings, app_name)
-    logger.info(f"invoke_app(window) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms")
+    logger.info(
+        f"invoke_app(window) success: {app_name}/{inv.id} run={run_id} {duration_ms}ms"
+    )
     return {
         "run_id": run_id,
         "status": "success",
@@ -304,16 +335,15 @@ async def _invoke_service(
     started_at_ms: int,
     trigger: str = "user",
 ) -> dict[str, Any]:
-    """target.component='service' 路径 — lazy spawn service + HTTP fetch.
+    """target.component='service' 路径 — service 由 launchd KeepAlive 常驻, HTTP fetch.
 
-    跟 _invoke_script / _invoke_window 平级. service 没起 → ensure_service 起;
-    http 调失败 → InvokeError; 成功 → schema 校 → return.
+    service 不由 invoke 路径启动. declared service 由 launchd 启动, ephemeral service
+    由 weave_service_start 启动; 两者都会把端口写到 .runtime/<svc>.port.
+    这里只读端口文件并发起 HTTP 请求.
     """
     import httpx
 
-    from pentaloom.capabilities.weaver.service_registry import (
-        ServiceError, service_registry,
-    )
+    from pentaloom.weaver_runner import read_port_file
 
     _validate_input(args, inv.input_schema)
 
@@ -323,14 +353,19 @@ async def _invoke_service(
     if method not in ("GET", "POST"):
         raise InvokeError(f"target.method 只支持 GET/POST, 收到 {method!r}")
 
-    reg = service_registry()
-    try:
-        rs = await reg.ensure_service(settings, app_name, inv.target.name)
-    except ServiceError as e:
-        raise InvokeError(f"service 起不来 (run {run_id}): {e}") from e
+    port = read_port_file(settings, app_name, inv.target.name)
+    if port is None:
+        # service 没启过 / .runtime/<svc>.port 不在 → 大概率没 finalize 或 launchd
+        # 没装. 让用户检查.
+        raise InvokeError(
+            f"service {inv.target.name!r} 端口文件不在 .runtime/ — service 没起. "
+            f"检查: 1) make loom-install 装系统级 daemon; "
+            f"2) weave_app_finalize 重新写 plist; 3) launchctl list | grep "
+            f"com.pentaloom.app.{app_name} 看 plist 状态. (run {run_id})"
+        )
 
     timeout_s = max(1, inv.timeout_ms // 1000)
-    url = f"{rs.base_url}{path}"
+    url = f"http://127.0.0.1:{port}{path}"
     logger.info(
         f"invoke_app(service): {app_name}/{inv.id} run={run_id} {method} {url} timeout={timeout_s}s"
     )
@@ -416,12 +451,17 @@ async def _invoke_script(
         f"invoke_app(script): {app_name}/{inv.id} run={run_id} "
         f"script={' '.join(script.command)} cwd={cwd} timeout={timeout_s}s"
     )
+    from pentaloom.capabilities.weaver.app_env import weaver_app_env
+    extra_env = weaver_app_env(
+        settings, app_name, invocation_id=inv.id, trigger=trigger,
+    )
     result = await python_env.run_app_script(
         settings,
         cwd=cwd,
         command=script.command,
         stdin_data=stdin_payload,
         timeout=timeout_s,
+        extra_env=extra_env,
     )
 
     duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms

@@ -27,6 +27,27 @@ echo "🧵 启动 PentaLoom 开发环境"
 echo ""
 mkdir -p "$LOG_DIR"
 
+# ── loom daemon prelude ──────────────────────────────────────────────
+# weaver invocable app 的 window 走 loom daemon (常驻 launchd UserAgent), 没装 /
+# 没起的话 schedule/window 类 app 全废. 织造 / invoke_app(target=script) 不依赖
+# loom, 所以这里只 warning 不阻断 — 但用户开 window 时会看到 503 引导.
+LOOM_BIN="${PENTALOOM_LOOM_BIN:-$HOME/.pentaloom/bin/loom}"
+LOOM_SOCK="$HOME/.pentaloom/loom.sock"
+if [ ! -x "$LOOM_BIN" ]; then
+  echo "⚠  loom binary 不在 $LOOM_BIN — invocable app window/schedule 类应用会用不了"
+  echo "   跑 'make loom-install' 装 loom + loomer + loomctl 到 ~/.pentaloom/bin/, 并装 launchd plist"
+  echo "   开发态可用 'make loom-build && make loom-dev' 起前台 daemon (不入 launchd)"
+  echo ""
+elif [ ! -S "$LOOM_SOCK" ]; then
+  echo "⚠  loom socket $LOOM_SOCK 不存在 — daemon 没在跑"
+  echo "   生产: launchctl list | grep com.pentaloom.loom 应有一条; 没有跑 'make loom-install'"
+  echo "   开发: 另起一个终端跑 '$LOOM_BIN start' 前台跑"
+  echo ""
+else
+  echo "🪡 loom daemon 已就绪 (sock: $LOOM_SOCK)"
+  echo ""
+fi
+
 PIDS=()
 
 port_pids() {

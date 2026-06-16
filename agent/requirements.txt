@@ -55,6 +55,9 @@ croniter>=2.0.0
 # 跨平台 fs watcher: macOS FSEvents / Linux inotify / Windows RDCW.
 # Observer 跑独立线程, 事件用 asyncio.run_coroutine_threadsafe 投回 main loop.
 watchdog>=4.0.0
+# M22 P0: read_app_detail 给 service 算 uptime — psutil.Process(pid).create_time().
+# launchd 不直接暴露起服务时间, 用 PID 反查 ctime 是标准做法.
+psutil>=5.9.0
 
 # ---------- M17 dynamic workflow ----------
 # call_llm step 用. 显式声明: 当前是 claude-agent-sdk 的 transitive 依赖, 但 SDK

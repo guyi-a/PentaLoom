@@ -1,6 +1,6 @@
-"""weaver 数据模型. M14 只用 Skill 那一套; Subagent / Workflow / App 留 stub.
+"""weaver 数据模型.
 
-不进 SQLAlchemy — M14 文件 + index.json 是单一 source of truth (设计文档 §7.5).
+weaver 产物以文件和 index.json 为单一事实源, 不进 SQLAlchemy.
 """
 
 from __future__ import annotations
@@ -57,8 +57,7 @@ class WeaverIndex(BaseModel):
         return getattr(self, f"{kind}s")
 
 
-# ─── App Generation (Krow-inspired, PentaLoom-native) ────────────────────────
-# Krow 值得借鉴的是组件化 app 生成模型, 不是 .krow 命名. PentaLoom 用
+# ─── App Generation ─────────────────────────────────────────────────────────
 # app.json 描述“怎么运行”, manifest.json 描述“agent 怎么调用”.
 
 
@@ -75,7 +74,7 @@ class AppServiceSpec(BaseModel):
     workdir: str | None = None
     restart: RestartPolicy = "on_failure"
     python_deps: list[str] | None = None
-    # D-0 service runtime: spawn 后等多少 ms TCP probe 端口可连. 长启动 service 调大.
+    # spawn 后等多少 ms TCP probe 端口可连. 长启动 service 调大.
     startup_timeout_ms: int = 5000
 
     @field_validator("command")
@@ -97,7 +96,7 @@ class AppWindowSpec(BaseModel):
 
 
 class AppScheduleSpec(BaseModel):
-    """Scheduled trigger — cron 触发 invocation. (M16 Phase E)
+    """Scheduled trigger — cron 触发 invocation.
 
     设计:
       - invocation_id 引用 manifest.invocations[].id, 复用 _invoke_script/window/service
@@ -156,14 +155,13 @@ WatchEvent = Literal["modify", "create", "delete", "move"]
 
 
 class AppWatchSpec(BaseModel):
-    """Watched directory — modal browse + optional invocation trigger. (M16 Phase E)
+    """Watched directory — modal browse + optional invocation trigger.
 
-    path 必保留 (PR #17 modal Watches section lazy fetch 在用). 新增字段都可选,
-    向后兼容: 老 app.json 只有 {name, path} → invocation_id=None → 仅浏览不触发,
-    behavior 跟 PR #17 完全一样.
+    path 用于 UI 浏览. 新增字段都可选, 向后兼容: 老 app.json 只有 {name, path}
+    时 invocation_id=None → 仅浏览不触发.
 
     设计:
-      - invocation_id=None: 仅 UI 浏览模式 (PR #17 现状), 不起 fs watcher
+      - invocation_id=None: 仅 UI 浏览模式, 不起 fs watcher
       - invocation_id=str: 文件事件触发 invocation, watcher 注册, debounce 合并 burst
       - events 默认 modify+create — 一般场景 (产物文件刷新). 不监 access (噪音大)
       - debounce_ms 300ms 默认: vscode / nodemon 同款值, 一次保存的 burst 合并成 1 次触发
@@ -297,7 +295,7 @@ class InvocableAppMeta(BaseModel):
     """weaver/apps/<slug>/meta.json — 跟 manifest.json 互补的运行时元数据
     (跟 SkillMeta 同款 — 不在 manifest 里, 是 PentaLoom 维护的).
 
-    递进式 weave 状态机 (拆 atomic weave_app 后 GPT 建议的收口设计):
+    递进式 weave 状态机:
       draft   → weave_app 刚建骨架, 还在写 files; invoke_app 拒
       ready   → finalize 通过, 校验完整, 可以 invoke_app
       dirty   → ready 后又改了 file, 需重新 finalize (旧 schema + 新代码不一致风险)
@@ -318,7 +316,7 @@ class InvocableAppMeta(BaseModel):
     is_trusted: bool = False
 
 
-# ─── Workflow (M17 dynamic workflow) ────────────────────────────────────────
+# ─── Workflow ───────────────────────────────────────────────────────────────
 # workflow = 沉淀流程编排 (skill 沉淀方法论, app 沉淀工具, workflow 把工具+LLM
 # 串起来). 5 类设计文档原 5 种 step kind, MVP 先做 3 种线性: invoke_app /
 # call_llm / set_var. 不含 if/loop, 不支持 cron 触发 (远期).
@@ -355,7 +353,7 @@ class InvokeAppStep(_StepBase):
 
 
 class CallLlmStep(_StepBase):
-    """跑一次 Claude 子对话. 独立 anthropic client, 不接 PentaLoom 主对话池.
+    """跑一次独立 LLM 调用, 不接 PentaLoom 主对话池.
 
     output_format=json 时 runtime 强 json.loads; prompt 里建议含 'json' 当 hint
     但不靠它防幻觉.

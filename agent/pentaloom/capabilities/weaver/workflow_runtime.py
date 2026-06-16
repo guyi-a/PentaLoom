@@ -1,9 +1,9 @@
-"""Workflow runtime — M17 dynamic workflow.
+"""Workflow runtime.
 
 invoke_workflow → 跑 step DAG (线性) → 每步 dispatch 到 invoke_app/call_llm/set_var
 → 独立 logs/runs.jsonl 落 → 返 {run_id, status, output, steps}.
 
-设计要点 (跟 plan + GPT review 对齐):
+设计要点:
   - mustache 渲染规则: invoke_app.args / set_var.value / output_template /
     call_llm.prompt 同一套 (递归 dict/list, string 单 {{path}} 返原值类型, 多 {{...}}
     嵌文本拼字符串)

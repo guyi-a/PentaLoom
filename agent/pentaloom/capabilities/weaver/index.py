@@ -23,7 +23,7 @@ from pentaloom.config import Settings
 
 
 class WeaverError(Exception):
-    """weaver 业务错误 (写盘 / index 解析 / 名字冲突 / SDK rebuild).
+    """weaver 业务错误 (写盘 / index 解析 / 名字冲突 / agent rebuild).
 
     由 tools/weaver.py 捕获后转成 LLM-readable 的 is_error 帧.
     """
@@ -91,7 +91,7 @@ def name_exists_any_kind(settings: Settings, name: str) -> WeaverKind | None:
 def sync_skill_symlink(settings: Settings, name: str) -> None:
     """weaver/skills/<name>/ → data_dir/.claude/skills/<name>/. 幂等.
 
-    macOS / Linux 用 os.symlink; Windows 退化为 copytree (M15 Electron 实施时再考虑).
+    macOS / Linux 用 os.symlink; 其他平台后续可退化为 copytree.
     """
     src = paths.skill_dir(settings, name)
     dst = paths.skill_symlink(settings, name)

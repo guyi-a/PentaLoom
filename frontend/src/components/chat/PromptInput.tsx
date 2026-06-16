@@ -11,7 +11,7 @@
 //   - 无输入无附件 (idle) → 灰底 + ArrowUp, disabled
 //   - sending + onStop    → paper 反相底 + Square, 点击 onStop
 //
-// 附件 (M19 follow-up):
+// 附件:
 //   - Paperclip 触发 <input type="file" multiple> 选择本地文件
 //   - 已选文件以 chip 列展示在 textarea 上方 (文件名 + size + X 删除)
 //   - 文件本体 = browser File 对象, 不预上传; 点击 Send 时父组件把它跟 prompt

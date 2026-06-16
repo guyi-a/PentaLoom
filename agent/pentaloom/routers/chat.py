@@ -60,7 +60,6 @@ from pentaloom.infra.session_status import session_status
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import (
     ALLOW_SESSION_TOOLS,
-    HITL_TOOL_NAMES,
     PERMISSION_REGISTRY,
     REQUEST_WORKSPACE_DIR_TOOL_NAME,
     allowlist_key,
@@ -83,6 +82,11 @@ class ChatRequest(BaseModel):
     # 新 session: 在这里指定要挂载哪些目录 (用户授权过的, 走 SDK add_dirs)
     # 续 session: 不传 (用 db 里的); 如果传了, 必须跟 db 一致否则 400
     mounted_dirs: list[str] | None = None
+    # 首条消息时 build _Entry 直接用这个 mode. 之前是默认 default + 前端事后
+    # PATCH, 但 PATCH 在 turn 已经启动后才到, 第一个工具调用走 default 弹审批.
+    # None / 不传 → backend fallback "default"; 已 build 的 session 这字段 ignored
+    # (mode 由 PATCH /approval-mode 改).
+    approval_mode: str | None = None
 
 
 def _validate_mounted_dirs(dirs: list[str]) -> list[str]:
@@ -281,7 +285,7 @@ async def _run_query_and_fill_buffer(
     稳定的 (msg_uuid=message.id, index) — 前端 reducer 才能把同 message 的所有
     delta 合并成一个 thinking / text 块, 不会切碎. message_stop 后清空.
 
-    weaver hot reload (Spike 1+2+3 verified): 本 turn 跑过 weave_skill /
+    weaver hot reload: 本 turn 跑过 weave_skill /
     edit_weaver / delete_weaver, _Entry.pending_rebuild 被 mark True; 在
     stream_end 之后 (确保 SSE 已优雅关闭) 调 pool.evict(sid), 下条 user
     message 触发 LoomPool.get → resume rebuild, 新 weaver 内容立即生效.
@@ -312,13 +316,11 @@ async def _run_query_and_fill_buffer(
                 for frame in _serialize(msg, current_msg_id):
                     chunk = _sse(frame)
                     buf.append(chunk)
-                    # 跟踪 HITL pending: tool_use(HITL 工具) → mark; tool_result → clear.
-                    # 同步推 session_status: 进入审批切 waiting_approval, 出来切回 running
-                    # (前提是没有别的 pending — 多 Bash 并发场景).
-                    if frame.get("type") == "tool_use" and frame.get("name") in HITL_TOOL_NAMES:
-                        buf.mark_pending(str(frame.get("id", "")), chunk)
-                        session_status.set_status(sid, "waiting_approval")
-                    elif frame.get("type") == "tool_result":
+                    # tool_use → mark_pending 的静态判断已删 — 现在 mark_pending
+                    # 由 workspace.py make_can_use_tool 在 REGISTRY.register Future 之
+                    # 后调用, 跟 permission_request 帧同 trigger 点. 这里只保留
+                    # tool_result → clear_pending 兜底 (work tools 跑完时清状态).
+                    if frame.get("type") == "tool_result":
                         buf.clear_pending(str(frame.get("tool_use_id", "")))
                         session_status.set_status(
                             sid,
@@ -355,6 +357,7 @@ async def _run_chat_turn(
     attachment_count: int,
     inline_image_count: int = 0,
     inline_image_blocks: list[dict[str, Any]] | None = None,
+    approval_mode: str | None = None,
     pool,
 ) -> StreamingResponse:
     """LoomPool 拉 client → StreamBuffer 占名额 → 起后台 query task → 返 SSE.
@@ -392,7 +395,7 @@ async def _run_chat_turn(
     async def _kickoff() -> None:
         # 后台跑 pool.get (SDK 子进程 spawn) + query. 异常落 SSE 帧 + 状态切 idle.
         try:
-            pl, lock = await pool.get(sid, mounted)
+            pl, lock = await pool.get(sid, mounted, approval_mode=approval_mode)
         except ValueError as e:
             buf.append(_sse({"type": "error", "message": str(e)}))
             buf.append(_sse({"type": "stream_end"}))
@@ -434,6 +437,7 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
         display_text=req.prompt,
         internal_prompt=req.prompt,
         attachment_count=0,
+        approval_mode=req.approval_mode,
         pool=pool,
     )
 
@@ -458,6 +462,7 @@ async def chat_with_attachments(
     prompt: Annotated[str, Form()] = "",
     session_id: Annotated[str | None, Form()] = None,
     mounted_dirs: Annotated[str | None, Form()] = None,
+    approval_mode: Annotated[str | None, Form()] = None,  # 首条消息切 mode 用
     files: Annotated[list[UploadFile], File()] = [],  # noqa: B006 (FastAPI 默认惯例)
     inline_images: Annotated[list[UploadFile], File()] = [],  # noqa: B006
 ) -> StreamingResponse:
@@ -612,6 +617,7 @@ async def chat_with_attachments(
         attachment_count=len(files),
         inline_image_count=len(inline_images),
         inline_image_blocks=inline_image_blocks or None,
+        approval_mode=approval_mode,
         pool=pool,
     )
 
@@ -683,9 +689,11 @@ async def chat_permission(
 ) -> dict:
     pending = PERMISSION_REGISTRY.peek(body.session_id, tool_use_id)
     if pending is None:
-        raise HTTPException(
-            404, f"no pending permission for tool_use_id={tool_use_id!r}"
-        )
+        # race 修后理论不该触发 (前端只在 register 后才弹审批栏), 但留此分支
+        # 容错重复点击 / 网络重试 / 已 resolve 后的二次 POST. 静默 ack 不抛错,
+        # 防止前端 toast 报"审批不存在". 注意: 后续 add_mounted_dir 抛的 ValueError
+        # → HTTPException(404) 是真错 (用户传了非法 path), 那条不动.
+        return {"status": "already_resolved"}
 
     allow = body.decision != "deny"
     added_path: str | None = None

@@ -4,7 +4,7 @@
 理由 — 工具卡片集中, 共享参数, 跟 browser_bridge 对称, 跟 capabilities/computer 解耦.
 
 12 个 action:
-  M8 (AX 路径):
+  AX 路径:
     permissions  — 检查 Accessibility + Screen Recording 双权限, 可 prompt 触发弹窗
     apps         — 列正在跑的常规 app
     snapshot     — dump 指定 app 的 AX 树 (扁平化)
@@ -13,7 +13,7 @@
     set_value    — 给 index 元素设值 (textfield 等)
     focus        — 把指定 app 切前台
     key          — 发键盘组合 (cmd+s / escape 等)
-  M9 (视觉 + 鼠标 + 粘贴, Electron 主区兜底):
+  视觉 + 鼠标 + 粘贴 (Electron 主区兜底):
     screenshot   — 全屏 / 单 app 截图 (默认 jpeg q70 + 0.33x, ~1.1k vision token)
     mouse_move   — 把鼠标移到逻辑像素 (x, y)
     mouse_click  — 在 (x, y) 点击 (kind: single/double/right; 自动触发 overlay 涟漪)
@@ -56,10 +56,10 @@ COMPUTER_USE_FULL_NAME = (
 )
 
 VALID_ACTIONS = frozenset({
-    # M8
+    # AX
     "permissions", "apps", "snapshot", "menu",
     "press", "set_value", "focus", "key",
-    # M9
+    # 视觉
     "screenshot", "mouse_move", "mouse_click", "paste",
 })
 
@@ -257,7 +257,7 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
             r = service.send_key(combo)
             return _ok(_result_to_text(r))
 
-        # ── M9: 视觉 + 鼠标 + 粘贴 ────────────────────────────
+        # ── 视觉 + 鼠标 + 粘贴 ────────────────────────────
 
         if action == "screenshot":
             target = str(args.get("target", "screen")).strip() or "screen"
@@ -346,12 +346,12 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
     COMPUTER_USE_TOOL_NAME,
     (
         "macOS 桌面自动化 (Accessibility API + CGEvent + Quartz 截图). 用户首次调任意 "
-        "action 弹审批, allow session 后整个会话免审. 12 个 action — AX 路径 (M8): "
+        "action 弹审批, allow session 后整个会话免审. 12 个 action — AX 路径: "
         "permissions (检 Accessibility + Screen Recording 双权限) → apps → "
         "snapshot(target=app名) → menu(target, path=['文件','新建']) / "
         "press(snapshot_id, index) / set_value(snapshot_id, index, value) / "
         "focus(target) / key(combo='cmd+s'). "
-        "视觉路径 (M9, Electron 主区兜底): "
+        "视觉路径 (Electron 主区兜底): "
         "screenshot(target='screen' 或 app名, scale=0.33, quality=70, format='jpeg') 默认 ~1.1k vision token; "
         "mouse_move(x, y) / mouse_click(x, y, kind='single'|'double'|'right'); "
         "paste(text=...) (自动备份/恢复用户剪贴板, CJK + emoji 完美). "
@@ -361,7 +361,7 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
     ),
     {
         "action": str,
-        # 通用 / M8
+        # 通用 / AX
         "target": str,
         "path": list[str],
         "snapshot_id": str,
@@ -371,15 +371,15 @@ async def _dispatch(args: dict[str, Any]) -> dict[str, Any]:
         "depth": int,
         "max_children": int,
         "prompt": bool,
-        # M9 鼠标 / overlay 坐标 (逻辑像素)
+        # 鼠标 / overlay 坐标 (逻辑像素)
         "x": int,
         "y": int,
         "kind": str,             # mouse_click: single/double/right
-        # M9 截图
+        # 截图
         "scale": float,          # 0.05-1.0, 默认 0.33
         "quality": int,          # JPEG 1-100, 默认 70
         "format": str,           # "jpeg" / "png", 默认 "jpeg"
-        # M9 paste
+        # 粘贴
         "text": str,
     },
 )

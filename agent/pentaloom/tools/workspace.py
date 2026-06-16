@@ -31,6 +31,7 @@ from loguru import logger
 from pentaloom.capabilities.browser import extract_action_verb
 from pentaloom.infra.approval.destructive import is_destructive
 from pentaloom.infra.approval.policy import ApprovalModeRef, get_policy
+from pentaloom.infra.session_status import session_status
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools.browser import (
     BROWSER_USE_FULL_NAME,
@@ -63,13 +64,17 @@ from pentaloom.tools.system_resources import (
     SYSTEM_RESOURCES_TOOLS,
 )
 from pentaloom.tools.weaver import (
+    CLOSE_APP_WINDOW_FULL_NAME,
     DELETE_WEAVER_FULL_NAME,
     EDIT_WEAVER_FULL_NAME,
     INVOKE_APP_FULL_NAME,
     INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
     INVOKE_WORKFLOW_FULL_NAME,
+    OPEN_APP_WINDOW_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_SERVICE_RESTART_FULL_NAME,
+    WEAVE_SERVICE_START_FULL_NAME,
     WEAVE_SKILL_FULL_NAME,
     WEAVE_WORKFLOW_FULL_NAME,
 )
@@ -113,7 +118,7 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     # 设计文档 §8.1-8.3: 每次单审, 不进 ALLOW_SESSION_TOOLS — 长期资产改动应该每次过目.
     WEAVE_SKILL_FULL_NAME,
     WEAVE_APP_FULL_NAME,
-    WEAVE_WORKFLOW_FULL_NAME,  # M17 — 跟 weave_skill / weave_app 一档, 单审一次
+    WEAVE_WORKFLOW_FULL_NAME,  # 跟 weave_skill / weave_app 一档, 单审一次
     EDIT_WEAVER_FULL_NAME,
     DELETE_WEAVER_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
@@ -121,10 +126,18 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     # (跟 web_search / browser_bridge / computer_use 同款): 首次任何 app 任何 invocation
     # 审批通过后整会话所有 invoke_app 调用免审. 用户自己 weave 的产物默认信任.
     INVOKE_APP_FULL_NAME,
-    # invoke_workflow (M17) — 跟 invoke_app 同款 enabled-once 模式
+    # invoke_workflow — 跟 invoke_app 同款 enabled-once 模式
     INVOKE_WORKFLOW_FULL_NAME,
-    # invoke_workflow_dynamic (M17 dynamic) — 同款 enabled-once
+    # invoke_workflow_dynamic — 同款 enabled-once
     INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,
+    # ephemeral service 起/重启: 跟 invoke_app 同款 enabled-once
+    # (用户织 app 中反复测 service, 每次审打断节奏). stop / logs 不动状态, 免审.
+    WEAVE_SERVICE_START_FULL_NAME,
+    WEAVE_SERVICE_RESTART_FULL_NAME,
+    # window 开关: 跟 invoke_app 同款 enabled-once
+    # (用户主动让 agent 开 / 关窗时弹屏不叫突兀, 是预期交互).
+    OPEN_APP_WINDOW_FULL_NAME,
+    CLOSE_APP_WINDOW_FULL_NAME,
 })
 
 # 支持 allow_session 的工具白名单. workspace 一次性 (mount 一次写 db 就结了),
@@ -144,8 +157,12 @@ ALLOW_SESSION_TOOLS: frozenset[str] = frozenset({
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
     INVOKE_APP_FULL_NAME,
-    INVOKE_WORKFLOW_FULL_NAME,  # M17 — 跟 invoke_app 同款 enabled-once
-    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,  # M17 dynamic — 同款 enabled-once
+    INVOKE_WORKFLOW_FULL_NAME,  # 跟 invoke_app 同款 enabled-once
+    INVOKE_WORKFLOW_DYNAMIC_FULL_NAME,  # 同款 enabled-once
+    WEAVE_SERVICE_START_FULL_NAME,  # ephemeral 起 service
+    WEAVE_SERVICE_RESTART_FULL_NAME,  # ephemeral 重启 (stop+start)
+    OPEN_APP_WINDOW_FULL_NAME,  # agent 主动开 app window
+    CLOSE_APP_WINDOW_FULL_NAME,  # agent 主动关 app window
 })
 
 
@@ -322,13 +339,25 @@ def _normalize_invoke_app(_tool_input: dict[str, Any]) -> str:
 
 
 def _normalize_invoke_workflow(_tool_input: dict[str, Any]) -> str:
-    """invoke_workflow (M17) 同款单 key — 整会话首次审完所有 invoke_workflow 免审."""
+    """invoke_workflow 同款单 key — 整会话首次审完所有 invoke_workflow 免审."""
     return "enabled"
 
 
 def _normalize_invoke_workflow_dynamic(_tool_input: dict[str, Any]) -> str:
     """invoke_workflow_dynamic 同 invoke_workflow 同款 — 跟静态版分开统计 (避免混淆),
     但行为一致: 整会话首次审完所有 invoke_workflow_dynamic 免审."""
+    return "enabled"
+
+
+def _normalize_weave_service(_tool_input: dict[str, Any]) -> str:
+    """weave_service_start / restart 同 invoke_app 单 key — 用户织 app 中
+    反复测 service, 整会话首次审完所有 ephemeral start/restart 免审."""
+    return "enabled"
+
+
+def _normalize_window_op(_tool_input: dict[str, Any]) -> str:
+    """open_app_window / close_app_window 同款单 key — 用户主动让 agent 开关窗
+    时弹审太烦, 首次审完整会话所有 window 开关免审."""
     return "enabled"
 
 
@@ -367,6 +396,10 @@ def allowlist_key(tool_name: str, tool_input: dict[str, Any]) -> str | None:
         return _normalize_invoke_workflow(tool_input)
     if tool_name == INVOKE_WORKFLOW_DYNAMIC_FULL_NAME:
         return _normalize_invoke_workflow_dynamic(tool_input)
+    if tool_name in (WEAVE_SERVICE_START_FULL_NAME, WEAVE_SERVICE_RESTART_FULL_NAME):
+        return _normalize_weave_service(tool_input)
+    if tool_name in (OPEN_APP_WINDOW_FULL_NAME, CLOSE_APP_WINDOW_FULL_NAME):
+        return _normalize_window_op(tool_input)
     if tool_name == WEB_FETCH_TOOL_NAME:
         return _normalize_web_fetch(tool_input)
     return None
@@ -597,10 +630,39 @@ def make_can_use_tool(
             wf_name = str(tool_input.get("name", "")).strip()
             if not wf_name:
                 return PermissionResultDeny(message="invoke_workflow_dynamic 需要 name")
+        if tool_name in (WEAVE_SERVICE_START_FULL_NAME, WEAVE_SERVICE_RESTART_FULL_NAME):
+            app_name = str(tool_input.get("app_name", "")).strip()
+            service_name = str(tool_input.get("service_name", "")).strip()
+            if not app_name or not service_name:
+                return PermissionResultDeny(
+                    message=f"{tool_name.rsplit('__', 1)[-1]} 需要 app_name + service_name"
+                )
+        if tool_name in (OPEN_APP_WINDOW_FULL_NAME, CLOSE_APP_WINDOW_FULL_NAME):
+            app_name = str(tool_input.get("app_name", "")).strip()
+            if not app_name:
+                return PermissionResultDeny(
+                    message=f"{tool_name.rsplit('__', 1)[-1]} 需要 app_name"
+                )
 
         fut = REGISTRY.register(
             sid, tool_use_id, tool_name=tool_name, tool_input=tool_input
         )
+        # 推 permission_request 帧 — 前端只信这帧才弹审批栏. 之前是看
+        # tool_use 工具名静态判断, auto 模式 LLM classifier 1-3s 慢路径期间
+        # 用户能点幽灵审批栏 → POST 进来 REGISTRY 还没 register → 404. 现在
+        # register 完才发帧, 没 race. mark_pending + session_status 同 trigger.
+        buf = stream_buffers.get(sid)
+        if buf is not None:
+            payload = {
+                "type": "permission_request",
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }
+            chunk = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            buf.append(chunk)
+            buf.mark_pending(tool_use_id, chunk)
+            session_status.set_status(sid, "waiting_approval")
         logger.info(
             f"permission pending sid={sid} tool_use_id={tool_use_id} tool={tool_name}"
         )

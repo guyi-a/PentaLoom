@@ -1,29 +1,22 @@
 """Weaver HTTP API — sidebar / 设置页面读产物用. 工具调用走 SDK in-process MCP, 不走这.
 
-M14 阶段实装:
+端点:
   GET /weaver/products  → {skills, subagents, workflows, apps} 一次拉全, sidebar 用.
   GET /weaver/skills    → 仅 skills 列表 (含内置 + 用户织的), 兼容性单独开.
-
-M16 加: apps 真返数据 (含 invocation_count + 是否有 app.json + components 摘要).
-
-Phase C-0 加: GET /weaver/apps/{name}/window  → 返 window HTML 给 Electron BrowserWindow
-loadURL. 不做 sandbox (sandbox 由 BrowserWindow contextIsolation + preload 白名单管),
-只校 name + entry path traversal.
+  apps 返数据 (含 invocation_count + 是否有 app.json + components 摘要).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from pentaloom.capabilities.weaver import app as app_biz
 from pentaloom.capabilities.weaver import app_runtime, index, paths, skill
 from pentaloom.capabilities.weaver import workflow as workflow_biz
 from pentaloom.capabilities.weaver import workflow_runtime
-from pentaloom.capabilities.weaver.window_registry import window_registry
 from pentaloom.config import get_settings
 
 router = APIRouter(prefix="/weaver", tags=["weaver"])
@@ -48,7 +41,7 @@ class AppSummary(BaseModel):
 
 
 class WorkflowSummary(BaseModel):
-    """M17 dynamic workflow 摘要 — sidebar 用. 关键 metric 是步数 + status + use_count."""
+    """dynamic workflow 摘要 — sidebar 用. 关键 metric 是步数 + status + use_count."""
 
     name: str
     description: str
@@ -60,7 +53,7 @@ class WorkflowSummary(BaseModel):
 
 class WeaverProductsResponse(BaseModel):
     skills: list[SkillSummary]
-    subagents: list[Any] = []   # M17 实装
+    subagents: list[Any] = []   # 占位, 待实装
     workflows: list[WorkflowSummary] = []
     apps: list[AppSummary]
 
@@ -149,7 +142,7 @@ def list_skills() -> list[SkillSummary]:
 
 @router.get("/products", response_model=WeaverProductsResponse)
 def list_products() -> WeaverProductsResponse:
-    """sidebar 一次拉全部产物. subagents 仍空 (M17 subagent UI 才实装)."""
+    """sidebar 一次拉全部产物."""
     return WeaverProductsResponse(
         skills=_collect_skills(),
         workflows=_collect_workflows(),
@@ -230,14 +223,39 @@ def read_app_detail(name: str) -> dict:
 
     recent_runs = app_runtime.tail_run_logs(settings, name, limit=20)
 
-    # D-4: service runtime snapshot (静态读, 不 WS 推送 — modal 刷新按钮拉新)
-    from pentaloom.capabilities.weaver.service_registry import service_registry
-    running_services = service_registry().list_for_app(name)
+    # service / schedule / watch 三类全走 launchd. 一次性读 launchctl status.
+    from pentaloom.capabilities.weaver import launchd_plist
+    plist_states = launchd_plist.list_for_app(name)
 
-    # Phase E: schedule + watch trigger snapshot. 静态读 + Refresh 按钮重拉.
-    # 用户在 modal 里看到 next_fire_at / last_fired_at / in_flight.
-    from pentaloom.capabilities.weaver.triggers import trigger_registry
-    triggers_state = trigger_registry().list_for_app(name)
+    # 织造期声明 (cron / invocation_id / path) 必须从 app.json join, launchctl 不知道.
+    app_def = app_biz.read_app_definition(settings, name)
+    sched_specs = {s.name: s for s in (app_def.components.schedules if app_def else [])}
+    watch_specs = {w.name: w for w in (app_def.components.watches if app_def else [])}
+
+    # 倒读 runs.jsonl 推 last_fired_at — 一次读完按 (invocation_id, trigger) 索引.
+    last_fired = _last_fired_index(settings, name)
+
+    # 拆分三类给前端 modal 用 (字段命名跟原来兼容: running_services / triggers).
+    running_services = [
+        _service_row(settings, name, s) for s in plist_states if s["kind"] == "svc"
+    ]
+    triggers_state = {
+        "schedules": [
+            _schedule_row(s, sched_specs.get(s["comp_name"]), last_fired)
+            for s in plist_states if s["kind"] == "sched"
+        ],
+        "watches": [
+            _watch_row(s, watch_specs.get(s["comp_name"]), last_fired)
+            for s in plist_states if s["kind"] == "wch"
+        ],
+    }
+
+    # ephemeral service (memory-only, agent 织造期 weave_service_start 起的).
+    # 跟 declared running_services 并列, 前端区分两类 section.
+    from pentaloom.capabilities.weaver import ephemeral_service
+    ephemeral_services = [
+        s.to_dict() for s in ephemeral_service.get_registry().list_for_app(name)
+    ]
 
     return {
         "summary": summary,
@@ -245,13 +263,120 @@ def read_app_detail(name: str) -> dict:
         "meta": meta_dict,
         "recent_runs": recent_runs,
         "running_services": running_services,
+        "ephemeral_services": ephemeral_services,
         "triggers": triggers_state,  # {schedules: [...], watches: [...]}
     }
 
 
+def _service_row(settings, app_name: str, s: dict) -> dict:
+    """svc plist + .runtime/<svc>.port + psutil ctime → 前端 ServiceRow 字段."""
+    pid = s["pid"]
+    started_at = None
+    uptime_seconds = None
+    if pid:
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            started_at = int(proc.create_time())
+            import time
+            uptime_seconds = max(0, int(time.time() - started_at))
+        except Exception:
+            pass  # 进程 race 没了 / psutil 拒访问 — 字段留 None
+    return {
+        "name": s["comp_name"],
+        "status": "running" if s["loaded"] and pid else "dead",
+        "pid": pid,
+        "last_exit_status": s["last_exit_status"],
+        "port": _read_service_port(settings, app_name, s["comp_name"]),
+        "log_path": s.get("stdout_path"),
+        "started_at": started_at,
+        "uptime_seconds": uptime_seconds,
+    }
+
+
+def _schedule_row(s: dict, spec, last_fired: dict) -> dict:
+    """sched plist + app.json spec + runs.jsonl → 前端 ScheduleRow 字段.
+
+    next_fire_at 用 croniter 算; in_flight 推断: loaded + pid != None
+    (schedule 通常秒级跑完, in_flight 持续时间短, 这粗判够用).
+    """
+    name = s["comp_name"]
+    cron_expr = spec.schedule if spec else ""
+    invocation_id = spec.invocation_id if spec else ""
+    next_fire_at = None
+    if cron_expr:
+        try:
+            from croniter import croniter
+            from datetime import datetime
+            next_fire_at = int(croniter(cron_expr, datetime.now()).get_next())
+        except Exception:
+            pass
+    return {
+        "name": name,
+        "schedule": cron_expr,
+        "invocation_id": invocation_id,
+        "loaded": s["loaded"],
+        "pid": s["pid"],
+        "last_exit_status": s["last_exit_status"],
+        "last_fired_at": last_fired.get((invocation_id, "schedule")),
+        "next_fire_at": next_fire_at,
+        "in_flight": bool(s["loaded"] and s["pid"]),
+        "log_path": s.get("stdout_path"),
+    }
+
+
+def _watch_row(s: dict, spec, last_fired: dict) -> dict:
+    """wch plist + app.json spec + runs.jsonl → 前端 watch row 字段."""
+    name = s["comp_name"]
+    invocation_id = spec.invocation_id if spec else None
+    return {
+        "name": name,
+        "path": spec.path if spec else "",
+        "invocation_id": invocation_id or "",
+        "loaded": s["loaded"],
+        "pid": s["pid"],
+        "last_exit_status": s["last_exit_status"],
+        "last_fired_at": last_fired.get((invocation_id, "watch")) if invocation_id else None,
+        "in_flight": bool(s["loaded"] and s["pid"]),
+        "log_path": s.get("stdout_path"),
+    }
+
+
+def _last_fired_index(settings, app_name: str) -> dict:
+    """读 runs.jsonl 反推 (invocation_id, trigger) → last fired unix ts.
+
+    只看 schedule / watch trigger, 倒读至多最近 200 条够用 — 老条目按 invocation 名
+    覆盖即可, 内存 dict last-write-wins.
+    """
+    from datetime import datetime
+    runs = app_runtime.tail_run_logs(settings, app_name, limit=200)
+    out: dict[tuple[str, str], int] = {}
+    for r in runs:
+        trig = r.get("trigger", "user")
+        if trig not in ("schedule", "watch"):
+            continue
+        inv = r.get("invocation_id", "")
+        ts_iso = r.get("started_at", "")
+        if not inv or not ts_iso:
+            continue
+        try:
+            # started_at 格式: ISO-like + Z 后缀
+            dt = datetime.fromisoformat(ts_iso.rstrip("Z"))
+            out[(inv, trig)] = int(dt.timestamp())
+        except ValueError:
+            continue
+    return out
+
+
+def _read_service_port(settings, app_name: str, svc_name: str) -> int | None:
+    """读 .runtime/<svc>.port 文件 — service wrapper 启动时写的端口."""
+    from pentaloom.weaver_runner import read_port_file
+    return read_port_file(settings, app_name, svc_name)
+
+
 @router.get("/workflows/{name}/detail", response_model=dict)
 def read_workflow_detail(name: str) -> dict:
-    """M17: WorkflowDetailModal 用 — 一次拉全 detail.
+    """WorkflowDetailModal 用 — 一次拉全 detail.
 
     返:
       - summary: {name, description, version, step_count, steps_summary, definition, meta}
@@ -281,7 +406,7 @@ class InvokeAppRequest(BaseModel):
 
 @router.post("/apps/{name}/invoke", response_model=dict)
 async def invoke_app_http(name: str, body: InvokeAppRequest) -> dict:
-    """HTTP 调 invocation — 给 weaver app window 内 fetch 用 (Phase C-1).
+    """HTTP 调 invocation — 给 weaver app window 内 fetch 用.
 
     跟 SDK MCP 工具 invoke_app 走同一份 runtime (app_runtime.invoke_app), 但不走 HITL —
     用户已经主动打开了这个 window, 默认信任 (跟 web_search / browser_bridge 同款"会话级 enabled").
@@ -306,52 +431,30 @@ async def invoke_app_http(name: str, body: InvokeAppRequest) -> dict:
     return result
 
 
-@router.websocket("/apps/{name}/window-ws")
-async def app_window_ws(websocket: WebSocket, name: str) -> None:
-    """window 启动时 preload 用 WebSocket 连过来注册 self (Phase C-2).
+@router.post("/apps/{name}/window/open", response_model=dict)
+async def open_app_window(name: str) -> dict:
+    """打开 invocable app 的 window — 走 loom daemon spawn loomer 子进程.
 
-    协议 (单 ws 复用所有 request_id):
-      Client → Server:
-        {type: "ready", window_id: "<uuid>"}        # 可选 hello
-        {type: "invoke_result", request_id, output} # window handler 返成功
-        {type: "invoke_error",  request_id, error}  # window handler 抛错
-
-      Server → Client:
-        {type: "invoke", request_id, invocation_id, args}
-                                                    # agent invoke_app target=window 触发
-
-    安全: 不校 app 是否 ready / 是否 trusted — window 能开就说明 status=ready 过, 且
-    preload 闭包死 app name. ws 路径里的 name 必须跟 preload 连过来时一致 (preload 用
-    BrowserWindow loadURL 的 name 拼 ws url, 跨 app 不可能).
+    返 {"window_id": str, "pid": int}; loom daemon 没起返 503 + 提示装命令.
     """
     settings = get_settings()
-    entry_app = index.find_entry(settings, "app", name)
-    if entry_app is None:
-        await websocket.close(code=4404, reason=f"app not found: {name}")
-        return
-
-    await websocket.accept()
-    reg = window_registry()
-    reg.add(name, websocket)
+    from pentaloom.infra import loom_client
     try:
-        while True:
-            msg = await websocket.receive_json()
-            mtype = msg.get("type")
-            if mtype in ("invoke_result", "invoke_error"):
-                rid = msg.get("request_id")
-                if rid:
-                    reg.resolve(rid, msg)
-            # ready / 其他 type 忽略
-    except WebSocketDisconnect:
-        pass
-    finally:
-        reg.remove(name, websocket)
-        reg.drop_pending_for_ws(websocket)
+        return await app_biz.open_window_for_app(settings, name)
+    except index.WeaverError as e:
+        msg = str(e)
+        if "loom daemon 没起" in msg:
+            raise HTTPException(503, msg) from e
+        if "不存在" in msg:
+            raise HTTPException(404, msg) from e
+        raise HTTPException(400, msg) from e
+    except loom_client.LoomError as e:
+        raise HTTPException(500, f"loom call failed: {e}") from e
 
 
 @router.get("/apps/{name}/watches/{watch_name}/files", response_model=dict)
 def list_app_watch_files(name: str, watch_name: str) -> dict:
-    """Phase E (watch): 列出 watch component 暴露的目录里的文件清单. 给 sidebar
+    """列出 watch component 暴露的目录里的文件清单. 给 sidebar
     AppDetailModal 的 Watches section lazy fetch 用.
 
     安全:
@@ -443,15 +546,13 @@ def list_app_watch_files(name: str, watch_name: str) -> dict:
 
 
 @router.post("/apps/{name}/services/{service_name}/stop", status_code=200)
-async def stop_app_service(name: str, service_name: str) -> dict:
-    """D-4 follow-up: 用户在 modal 里手动停一个 running service. 释放进程 +
-    端口; 下次 invoke_app 自动 lazy spawn 重起 (port/pid 都会变).
+def stop_app_service(name: str, service_name: str) -> dict:
+    """停一个 service plist (launchctl unload). 不删 plist 文件, 用户改完
+    重新 finalize 时会再 load.
 
-    校 app 存在 + service 在 manifest 里, 实际进程不在 registry (没起过 / 已死)
-    返 stopped=False — 前端把这条 row 从 UI 抹掉就行, 不当错误.
-
-    不动 ready/draft 状态: stop 跟 finalize 状态正交, 即使 app dirty 也能停
-    (因为停的是已经在跑的旧版本进程, 跟"能不能 invoke 新版"无关).
+    service 由 launchd KeepAlive 监督, stop = launchctl unload. 想"重启"
+    就再 finalize 一次 (reload_for_app 会 unload + 重写 + load). 没单独的 restart
+    endpoint — finalize 是单一入口.
     """
     settings = get_settings()
     entry = index.find_entry(settings, "app", name)
@@ -471,66 +572,9 @@ async def stop_app_service(name: str, service_name: str) -> dict:
             f"{[s.name for s in app_def.components.services]})"
         )
 
-    from pentaloom.capabilities.weaver.service_registry import service_registry
-    stopped = await service_registry().stop_service(name, service_name)
+    from pentaloom.capabilities.weaver import launchd_plist
+    stopped = launchd_plist.stop_component(name, "svc", service_name)
     return {"name": name, "service": service_name, "stopped": stopped}
-
-
-@router.get("/apps/{name}/window", response_class=HTMLResponse)
-def serve_app_window(name: str, entry: str | None = None) -> Response:
-    """Serve weaver app 的 window HTML 给 Electron BrowserWindow loadURL.
-
-    Phase C-0 spike: 只支持 .html entry (vanilla HTML, 不做 TSX 编译).
-    entry 不传 → 自动找 app.json 第一个 window component 的 entry.
-
-    安全:
-      - app 必须 status=ready (跟 invoke_app 一致, 防 draft/failed 露出来)
-      - entry 走 _resolve_within_files (绝对禁止跨出 files/)
-      - 强制 .html 后缀
-      - HTML 原样返 (不做模板渲染), CORS 允许 same-origin (Electron 不需要 CORS 但
-        Vite dev 调试时需要)
-    """
-    settings = get_settings()
-    entry_app = index.find_entry(settings, "app", name)
-    if entry_app is None:
-        raise HTTPException(404, f"app not found: {name}")
-
-    meta = app_biz.read_meta(settings, name)
-    if meta is None or meta.status != "ready":
-        raise HTTPException(
-            409, f"app {name!r} status={meta.status if meta else 'missing'}, "
-            "must be 'ready' (finalize first)"
-        )
-
-    # 选 entry: 显式传 / app.json 第一个 window / 默认 index.html
-    if entry is None:
-        app_def = app_biz.read_app_definition(settings, name)
-        if app_def and app_def.components.windows:
-            entry = app_def.components.windows[0].entry
-        else:
-            entry = "index.html"
-
-    if not entry.endswith(".html"):
-        raise HTTPException(400, f"entry must be .html for Phase C-0; got {entry}")
-
-    from pentaloom.capabilities.weaver.app import _resolve_within_files
-
-    files_root = paths.app_files_dir(settings, name)
-    try:
-        target = _resolve_within_files(files_root, entry, label="window.entry")
-    except index.WeaverError as e:
-        raise HTTPException(400, str(e)) from e
-
-    if not target.exists():
-        raise HTTPException(404, f"entry file not found: {entry}")
-
-    html = target.read_text()
-    # Electron loadURL 同 origin 不需要 CORS, 但 dev 跨 Vite 调试方便也加上
-    headers = {
-        "Cache-Control": "no-store",  # weave 期间频繁改, 别缓存
-        "X-Frame-Options": "SAMEORIGIN",
-    }
-    return HTMLResponse(html, headers=headers)
 
 
 @router.get("/apps/{name}/manifest", response_model=dict)

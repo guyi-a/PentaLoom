@@ -92,16 +92,16 @@ export const api = {
   // 改 session 的 mounted_dirs. 后端 evict LoomPool entry, 下条消息触发 client 重建.
   patchMounts: (sid: string, body: PatchMountsBody) =>
     http<SessionMeta>(`/sessions/${sid}/mounts`, { method: "PATCH", json: body }),
-  // weaver 产物列表 (内置 + 用户织的). M14 只 skills 有数据.
+  // weaver 产物列表 (内置 + 用户织的).
   listWeaverProducts: () => http<WeaverProductsResponse>("/weaver/products"),
   // 单个 app 详情 — sidebar AppDetailPanel 用. 一次拉全: manifest summary +
   // files (含 absolute_path 给 openFile 用) + meta + recent runs + running services.
   getAppDetail: (name: string) =>
     http<AppDetailResponse>(`/weaver/apps/${encodeURIComponent(name)}/detail`),
-  // M17 dynamic workflow detail — WorkflowDetailModal 用. 含 definition + meta + 最近 20 条 run.
+  // dynamic workflow detail — WorkflowDetailModal 用. 含 definition + meta + 最近 20 条 run.
   getWorkflowDetail: (name: string) =>
     http<WorkflowDetailResponse>(`/weaver/workflows/${encodeURIComponent(name)}/detail`),
-  // 单个 watch component 暴露目录的文件清单 — Phase E lazy fetch (用户在 modal 展开
+  // 单个 watch component 暴露目录的文件清单 — lazy fetch (用户在 modal 展开
   // 某个 watch 才拉, 不在 getAppDetail 里 inline 拉避免大目录拖慢)
   listWatchFiles: (appName: string, watchName: string) =>
     http<AppWatchFilesResponse>(
@@ -119,6 +119,15 @@ export const api = {
   stopChat: (sid: string) =>
     http<void>(`/chat/${sid}/stop`, { method: "POST" }),
 
+  // 打开 invocable app window — 后端通过 Unix socket 发 window.open 给 loom daemon,
+  // loom spawn loomer 子进程渲窗. 跟 PentaLoom 主壳进程脱钩, 主壳关掉窗仍活.
+  // loom 没起返 503 (Open window failed: HTTP 503).
+  openAppWindow: (appName: string) =>
+    http<{ window_id: string; pid: number }>(
+      `/weaver/apps/${encodeURIComponent(appName)}/window/open`,
+      { method: "POST" },
+    ),
+
   // 审批模式 — per-session 仅内存. session 还没 build (新对话还没发第一条) 时
   // GET 返默认 default; PATCH 返 404, 调用方应吞掉 (用户的偏好留前端 store,
   // 第一次 send 之后再同步一次).
@@ -130,7 +139,7 @@ export const api = {
       json: { mode },
     }),
 
-  // M19 file preview — sandbox/mount 鉴权同 fs/open.
+  // file preview — sandbox/mount 鉴权同 fs/open.
   getPreviewMeta: (sessionId: string, path: string) =>
     http<FilePreviewMeta>(
       `/fs/preview/stat?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
@@ -192,6 +201,7 @@ export async function chatStream(args: {
   prompt: string;
   sessionId?: string;
   mountedDirs?: string[];
+  approvalMode?: ApprovalMode;
   signal?: AbortSignal;
 }): Promise<ChatStreamHandle> {
   const controller = new AbortController();
@@ -206,6 +216,11 @@ export async function chatStream(args: {
       prompt: args.prompt,
       session_id: args.sessionId ?? null,
       mounted_dirs: args.mountedDirs ?? null,
+      // 首条消息 build _Entry 时直接用这个 mode. default 不传(后端 fallback).
+      approval_mode:
+        args.approvalMode && args.approvalMode !== "default"
+          ? args.approvalMode
+          : null,
     }),
     signal,
   });
@@ -225,6 +240,7 @@ export async function chatStreamWithAttachments(args: {
   prompt: string;
   sessionId?: string;
   mountedDirs?: string[];
+  approvalMode?: ApprovalMode;
   files: File[];
   inlineImages?: File[];
   signal?: AbortSignal;
@@ -239,6 +255,9 @@ export async function chatStreamWithAttachments(args: {
   if (args.sessionId) form.append("session_id", args.sessionId);
   if (args.mountedDirs && args.mountedDirs.length > 0) {
     form.append("mounted_dirs", JSON.stringify(args.mountedDirs));
+  }
+  if (args.approvalMode && args.approvalMode !== "default") {
+    form.append("approval_mode", args.approvalMode);
   }
   for (const f of args.files) {
     // 用原文件名 — 后端 sanitize_filename 会处理不安全字符 + 限长

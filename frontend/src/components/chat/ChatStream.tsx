@@ -18,7 +18,6 @@ import { ToolRow, type ToolPair } from "./ToolRow";
 import { UserBubble } from "./UserBubble";
 import { PromptInput } from "./PromptInput";
 import type { Frame, HistoryMessage, ToolResultFrame } from "@/lib/types";
-import { TOOLS_NEEDING_APPROVAL } from "@/lib/types";
 
 interface Props {
   sessionId: string;
@@ -177,17 +176,18 @@ export function ChatStream({
   }, [historyMessages, streamedFrames]);
 
   // ── 收集所有 pending 的 HITL tool_use id ─────────────────────
-  // 规则: tool_use(name ∈ TOOLS_NEEDING_APPROVAL) 之后没对应 tool_result
-  // **或** permission_resolved 就算 pending. permission_resolved 是 POST
-  // /chat/permission 后端立刻发的, 让审批栏 (按钮) 在工具实际执行前就消失;
-  // tool_result 是工具跑完才到, 中间几秒~几分钟靠 permission_resolved 提前
-  // dismiss. 把所有 pending id 收集成 set, 透给 ToolRow 决定是否展开审批条.
+  // 只信 backend 推的 permission_request 帧 — 后端 make_can_use_tool 在
+  // REGISTRY.register Future 之后才发这帧, 跟"是否真的需要用户审批"100% 同步.
+  // 之前是看 tool_use 帧名字 ∈ TOOLS_NEEDING_APPROVAL 静态判断, auto 模式 LLM
+  // classifier 慢路径下用户能点幽灵审批栏 → 后端 REGISTRY 还没 register → 404.
+  // permission_resolved 是 POST /chat/permission 后端立刻发的, 让审批栏在工具
+  // 实际执行前就消失; tool_result 是工具跑完才到 (兜底).
   const pendingApprovalIds = useMemo<Set<string>>(() => {
     const open = new Set<string>();
     const resolved = new Set<string>();
     for (const f of visibleStreamed) {
-      if (f.type === "tool_use" && TOOLS_NEEDING_APPROVAL.includes(f.name)) {
-        open.add(f.id);
+      if (f.type === "permission_request") {
+        open.add(f.tool_use_id);
       } else if (f.type === "tool_result") {
         resolved.add(f.tool_use_id);
       } else if (f.type === "permission_resolved") {

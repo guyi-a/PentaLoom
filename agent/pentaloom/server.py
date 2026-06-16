@@ -66,14 +66,18 @@ async def lifespan(app: FastAPI):
         logger.info("cursor_overlay skipped (not macOS)")
     app.state.cursor_overlay = overlay_client
 
-    # M16 Phase E: bootstrap weaver app triggers (schedule + watch).
-    # 必须在 yield 前装 — 否则 schedule 错过 cron 时间窗口 (server 9:00:01 启动,
-    # 9:00 那次 cron 已过期没人触发). 失败仅 warning, 不阻断 server 启动.
-    try:
-        from pentaloom.capabilities.weaver.triggers import trigger_registry
-        await trigger_registry().bootstrap(settings)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"weaver trigger bootstrap failed (server continues): {e}")
+    # schedule / watch / service 三类组件全部走独立 launchd plist, OS 接管,
+    # 不再 in-process bootstrap. 启动期检测 loom socket 联通性, 不通仅 warning
+    # 不阻断 — 用户调 invoke window 时再让 loom_client 给 503 引导 make loom-install.
+    from pentaloom.infra import loom_client
+    if loom_client.is_available():
+        logger.info(f"loom daemon socket available: {loom_client.default_socket_path()}")
+    else:
+        logger.warning(
+            f"loom daemon socket {loom_client.default_socket_path()} 不在 — "
+            f"weaver invocable app window 调用会失败. 跑 `make loom-install` 装系统级 "
+            f"daemon, 或 `make loom-dev` 起开发态."
+        )
 
     logger.info(
         f"PentaLoom v{__version__} 启动 — host={settings.host} port={settings.port} "
@@ -96,22 +100,9 @@ async def lifespan(app: FastAPI):
         from pentaloom.infra.session_status import session_status
         session_status.shutdown()
         await pool.shutdown()
-        # M16 Phase E: 先停所有 trigger (schedule + watch) — 防 fire 中的 invocation
-        # 撞上即将关的 service. 顺序: trigger → service.
-        try:
-            from pentaloom.capabilities.weaver.triggers import trigger_registry
-            tn = await trigger_registry().stop_all()
-            if tn > 0:
-                logger.info(f"weaver: stopped {tn} trigger(s) on shutdown")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"weaver trigger stop_all failed: {e}")
-        # D-2: 停所有 weaver app service (防孤儿 process). 必须在 pool.shutdown 后 —
-        # 万一某个 service 是 invoke_app 时 lazy 起的, 先 pool.shutdown 让 LLM session
-        # 干净退, 再清 service.
-        from pentaloom.capabilities.weaver.service_registry import service_registry
-        n = await service_registry().stop_all()
-        if n > 0:
-            logger.info(f"weaver: stopped {n} app service(s) on shutdown")
+        # schedule / watch / service / window 都跟 PentaLoom 进程脱钩 —
+        # service / schedule / watch 由 launchd 管, window 由 loom 管.
+        # 关 PentaLoom 这些都不动, 不需要 shutdown 钩.
         logger.info("PentaLoom 关闭")
 
 

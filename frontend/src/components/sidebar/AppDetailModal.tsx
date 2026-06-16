@@ -4,11 +4,11 @@
 //   - 数据一次拉 (api.getAppDetail), 在 modal 里 useSWR 缓存
 //   - 不自己做源码 viewer — 文件名是按钮, 点击调 api.openFile 用系统默认 app 打开
 //     (跟 Workspace Open in Finder 一脉相承; macOS `open file.py` 走用户配的默认)
-//   - 不含手动 invoke 表单 (Phase B.6 不做; 留给 Phase C 跟 window runtime 一起设计)
+//   - 不含手动 invoke 表单 (留给 window runtime 一起设计)
 //   - 4 个 section: Header (name + status + description) / Invocations / Files / Recent runs
 //
 // caveat: 用户在 VSCode 改 weaver/apps/<name>/files/handler.py 不会触发状态机
-// 打回 dirty (状态机只跟踪 meta-tool 调用). 这是 Phase B.5 固有限制, 改完用户得
+// 打回 dirty (状态机只跟踪 meta-tool 调用). 这是固有限制, 改完用户得
 // 自己跟 agent 说 "重 finalize" 才能让 invoke 跑新代码.
 
 import { useEffect, useState } from "react";
@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type {
   AppDetailResponse,
+  AppEphemeralService,
   AppFileEntry,
   AppInvocationSummary,
   AppRunLog,
@@ -39,13 +40,6 @@ declare global {
   interface Window {
     __PENTALOOM__?: {
       apiBase: string;
-      openAppWindow?: (payload: {
-        name: string;
-        entry?: string;
-        title?: string;
-        width?: number;
-        height?: number;
-      }) => Promise<{ name: string; reused: boolean }>;
     };
   }
 }
@@ -110,21 +104,18 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
     }
   }
 
-  // 是否能打开 app window: 必须 electron shell + status=ready + app.json 有 window component.
-  // window 名字直接用 app name (electron main 一名一窗复用).
-  const electronApi = typeof window !== "undefined" ? window.__PENTALOOM__ : undefined;
+  // 能打开 window 的条件: status=ready + app.json 有 window component.
+  // 不再依赖 electron 主壳 IPC — 走 fetch POST /weaver/apps/{name}/window/open,
+  // 后端通过 loom Unix socket spawn loomer 子进程渲窗.
   const canOpenWindow =
-    !!electronApi?.openAppWindow &&
     data?.meta?.status === "ready" &&
     (data.summary.components?.windows ?? []).length > 0;
 
   async function openAppWindow() {
-    if (!canOpenWindow || !electronApi?.openAppWindow) return;
+    if (!canOpenWindow) return;
     try {
-      const r = await electronApi.openAppWindow({ name: appName });
-      if (r.reused) {
-        toast.info(`Window already open — focused`);
-      }
+      const r = await api.openAppWindow(appName);
+      toast.success(`Window opened (pid=${r.pid})`);
     } catch (e) {
       toast.error(`Open window failed: ${String(e)}`);
     }
@@ -173,11 +164,9 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
             title={
               canOpenWindow
                 ? "Open app window"
-                : !electronApi?.openAppWindow
-                  ? "Open requires Electron shell"
-                  : data?.meta?.status !== "ready"
-                    ? `Status is ${data?.meta?.status ?? "unknown"} — finalize first`
-                    : "App has no window component"
+                : data?.meta?.status !== "ready"
+                  ? `Status is ${data?.meta?.status ?? "unknown"} — finalize first`
+                  : "App has no window component"
             }
             className={cn(
               "flex shrink-0 items-center gap-1 rounded-[5px] border px-2 py-1 text-[11px] transition-colors",
@@ -267,7 +256,7 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 )}
               </Section>
 
-              {/* D-4: Services (running snapshot) */}
+              {/* D-4: Services (declared = launchd 监督, 跨重启常驻) */}
               {(data.running_services?.length ?? 0) > 0 && (
                 <Section title="Services" count={data.running_services?.length}>
                   <ul className="space-y-0.5">
@@ -286,7 +275,28 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 </Section>
               )}
 
-              {/* Phase E: Schedules section — cron 触发 + 状态 snapshot */}
+              {/* Ephemeral services — agent 织造期临时跑的, memory-only,
+                  PentaLoom 重启全清. 跟 declared services 并列展示. */}
+              {(data.ephemeral_services?.length ?? 0) > 0 && (
+                <Section
+                  title="Ephemeral services"
+                  count={data.ephemeral_services?.length}
+                >
+                  <ul className="space-y-0.5">
+                    {(data.ephemeral_services ?? []).map((s) => (
+                      <EphemeralServiceRow
+                        key={s.service_name}
+                        svc={s}
+                      />
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 px-1 text-[10.5px] italic text-[color:var(--color-ink)]">
+                    织造期 ephemeral (agent weave_service_start 起的). PentaLoom 重启全清. finalize 后 declared launchd 接管.
+                  </p>
+                </Section>
+              )}
+
+              {/* Schedules section — cron 触发 + 状态 snapshot */}
               {(data.triggers?.schedules?.length ?? 0) > 0 && (
                 <Section title="Schedules" count={data.triggers?.schedules?.length}>
                   <ul className="space-y-0.5">
@@ -305,7 +315,7 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 <Section title="Watches" count={data.summary.components?.watches?.length}>
                   <ul className="space-y-1">
                     {(data.summary.components?.watches ?? []).map((wname) => {
-                      // Phase E: 找这个 watch 对应的 trigger 状态 (有 invocation_id 才有)
+                      // 找这个 watch 对应的 trigger 状态 (有 invocation_id 才有)
                       const trig = (data.triggers?.watches ?? []).find(
                         (t) => t.name === wname,
                       );
@@ -462,7 +472,7 @@ function FileRow({
 
 function RunRow({ run }: { run: AppRunLog }) {
   const trigger = run.trigger ?? "user";
-  // Phase E: 三色 status. skipped 灰 — overlap / status race 不是真失败.
+  // 三色 status. skipped 灰 — overlap / status race 不是真失败.
   const statusCls =
     run.status === "success"
       ? "text-[#2d5a3d]"
@@ -655,25 +665,27 @@ function ServiceRow({
       >
         {svc.status}
       </span>
-      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
-        :{svc.port}
-      </span>
+      {svc.port !== null && (
+        <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+          :{svc.port}
+        </span>
+      )}
       {svc.pid !== null && (
         <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
           pid {svc.pid}
         </span>
       )}
-      {isUp && (
+      {isUp && svc.started_at !== null && (
         <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
           {fmtUptime(svc.started_at)}
         </span>
       )}
-      {svc.restart_count > 0 && (
+      {svc.last_exit_status !== null && svc.last_exit_status !== 0 && (
         <span
-          title="restart count (on_failure)"
-          className="tabular shrink-0 font-mono text-[10px] text-[#6b5400]"
+          title={`last exit ${svc.last_exit_status} (launchd)`}
+          className="tabular shrink-0 font-mono text-[10px] text-[#b06060]"
         >
-          ↻{svc.restart_count}
+          ✗{svc.last_exit_status}
         </span>
       )}
       <button
@@ -693,9 +705,62 @@ function ServiceRow({
   );
 }
 
+// Ephemeral service 行 — 跟 ServiceRow 视觉一致但有差异化色:
+//   - icon 用 Server (跟 declared 同), 但 dim 色调暗示"非持久"
+//   - status 字段固定 alive/dead (按 svc.alive)
+//   - 没 Stop 按钮 (前端没 API stop ephemeral, 让 agent 通过 weave_service_stop 管理)
+//   - 鼠标悬停 title 显示 log_path
+function EphemeralServiceRow({ svc }: { svc: AppEphemeralService }) {
+  const isUp = svc.alive;
+  return (
+    <li
+      title={`ephemeral ${svc.service_name} — log: ${svc.log_path}`}
+      className="flex items-center gap-2 rounded-[4px] px-1.5 py-1 hover:bg-[color:var(--color-bg-raised)]"
+    >
+      <Server
+        size={11}
+        className={cn(
+          "shrink-0",
+          isUp ? "text-[#7a6a3d]" : "text-[color:var(--color-ink-dim)]",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
+        {svc.service_name}
+      </span>
+      <span
+        className={cn(
+          "tabular shrink-0 font-mono text-[9.5px] uppercase tracking-wider",
+          isUp ? "text-[#7a6a3d]" : "text-[#7a2d2d]",
+        )}
+      >
+        {isUp ? "ephemeral" : "dead"}
+      </span>
+      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+        :{svc.port}
+      </span>
+      <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+        pid {svc.pid}
+      </span>
+      {isUp && (
+        <span className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]">
+          {fmtUptime(svc.started_at)}
+        </span>
+      )}
+      {!isUp && svc.exit_code !== null && svc.exit_code !== 0 && (
+        <span
+          title={`exit ${svc.exit_code}`}
+          className="tabular shrink-0 font-mono text-[10px] text-[#b06060]"
+        >
+          ✗{svc.exit_code}
+        </span>
+      )}
+    </li>
+  );
+}
+
 // E3: WatchRow — 默认收起, 展开时 lazy fetch /watches/{name}/files. SWR key 含
 // watchName, 同 modal 多个 watch 互不踩. 列表内点击文件用系统默认 app 打开.
-// Phase E: 头部按钮加 trigger 行 (events + invocation_id) 或 "browse only" 灰字.
+// 头部按钮加 trigger 行 (events + invocation_id) 或 "browse only" 灰字.
 function WatchRow({
   appName,
   watchName,
@@ -743,13 +808,14 @@ function WatchRow({
         <span className="min-w-0 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)]">
           {watchName}
         </span>
-        {/* Phase E: trigger 状态 — 有 invocation_id 显示 events → invocation, 否则 "browse" */}
+        {/* trigger 状态 — 有 invocation_id 显示 → invocation, 否则 "browse only".
+            launchd 不暴露 events / debounce_ms (这俩是织造期声明), 不显示这俩字段. */}
         {trigger ? (
           <span
-            title={`fires ${trigger.invocation_id} on ${trigger.events.join("/")}, debounce ${trigger.debounce_ms}ms`}
+            title={`fires ${trigger.invocation_id} on file change`}
             className="tabular shrink-0 font-mono text-[10px] text-[color:var(--color-ink-dim)]"
           >
-            {trigger.events.join("/")} → {trigger.invocation_id}
+            → {trigger.invocation_id}
             {trigger.in_flight && <span className="ml-1 text-[#6b5400]">●</span>}
           </span>
         ) : (

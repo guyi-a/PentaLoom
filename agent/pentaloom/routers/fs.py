@@ -9,7 +9,7 @@ POST /fs/open  — 用系统默认 app 打开文件/目录 (前端用户主动�
   - open: 校验 path 落在 session 的 sandbox ∪ mounted_dirs 之内才放行;
     用 subprocess.Popen + 系统命令 (macOS open / Linux xdg-open / Windows explorer);
     不阻塞 — 失败/进程崩了前端不可知, 但本机桌面 app 不该把这种"启动后由 OS 接管"
-    的事情包成完整状态机. M5+ 可加 exit code 抓取.
+    的事情包成完整状态机.
   - open 不暴露为 MCP 工具, 只服务 HTTP, 避免 LLM 用它做副作用.
 """
 

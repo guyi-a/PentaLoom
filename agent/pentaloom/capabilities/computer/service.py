@@ -33,7 +33,7 @@ INTERACTIVE_ROLES = frozenset({
     "AXComboBox", "AXIncrementor",
 })
 
-# 默认 snapshot 深度 / 每层最多 children — Phase 0 实测 100-300 节点足够 cover 常见 app.
+# 默认 snapshot 深度 / 每层最多 children — 实测 100-300 节点足够 cover 常见 app.
 DEFAULT_SNAPSHOT_DEPTH = 5
 DEFAULT_MAX_CHILDREN = 30
 
@@ -482,7 +482,7 @@ def focus_app(target: str) -> ActionResult:
     )
 
 
-# ── menu (跨 app 普适, Phase 0 实测最稳的入口) ─────────────────
+# ── menu (跨 app 普适, 实测最稳的入口) ─────────────────
 
 
 def menu_action(app: str, path: list[str]) -> ActionResult:

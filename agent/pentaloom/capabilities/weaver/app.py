@@ -1,16 +1,12 @@
-"""Invocable App 业务 logic — weave / read / validate / 软删. 跟 skill.py 同款风格.
-
-详见 docs/app-invocable-exploration.md v3 + docs/pentaloom-app-generation-plan.md.
+"""Invocable App 业务逻辑: 创建、读写、校验、finalize 与软删.
 
 两层 schema 严格分开:
   app.json (AppDefinition)        — runtime declaration: 5 类组件怎么跑
   manifest.json (InvocableAppManifest) — invocable contract: agent 怎么调
 
-命名 PentaLoom-native (不抄 Krow 品牌词): schedules / AppDefinition / files/.
-
 文件布局:
   weaver/apps/<name>/
-  ├── app.json         AppDefinition (可选, M16 Phase A 不写也行; Phase B+ runtime 需要)
+  ├── app.json         AppDefinition, 描述组件如何运行
   ├── manifest.json    InvocableAppManifest (必填)
   ├── meta.json        runtime 元数据 (created_at / use_count / is_trusted)
   ├── files/           app 源码根目录 (windows/services/scripts/assets/...)
@@ -63,7 +59,7 @@ def _validate_relative_path(rel_path: str, *, label: str) -> str:
     """禁 path traversal. POSIX 风格, 相对路径.
 
     字符串层面拒明显穿越. resolve 后再二次校验 (`_resolve_within_files`) 才是
-    最终防御 — 单靠字符串挡不住符号链接 / 大小写差异 / NUL 字节等. GPT 建议.
+    最终防御 — 单靠字符串挡不住符号链接 / 大小写差异 / NUL 字节等.
     """
     rel_path = rel_path.strip()
     if not rel_path:
@@ -80,7 +76,7 @@ def _resolve_within_files(
 ) -> Path:
     """最终目标必须 resolve().is_relative_to(files_root.resolve()), 不要只靠字符串.
 
-    防 symlink / .. 残留 / 大小写规范化绕过 (GPT 强调).
+    防 symlink / .. 残留 / 大小写规范化绕过.
     """
     target = (files_root / rel_path).resolve()
     files_resolved = files_root.resolve()
@@ -94,27 +90,21 @@ def _resolve_within_files(
 
 
 def _schedule_trigger_action(action: str, settings: Settings, name: str) -> None:
-    """fire-and-forget 调度 TriggerRegistry 操作. (M16 Phase E)
+    """同步调 launchd_plist — 写 plist + launchctl load/unload.
 
-    跟现有 service_registry stop_for_app 同款 fire-and-forget 模式:
-    finalize_app / delete_app_soft 都是 sync API, 不能 await async trigger 方法.
-    没 event loop (pytest sync 调用) 静默跳过.
+    schedule / watch / service 三类都走独立 launchd plist, 由系统接管生命周期.
 
-    action: 'reload' (finalize 成功) / 'stop' (finalize 失败 + delete)
+    action:
+      - 'reload' (finalize 成功): 重新生成 + load app 的所有 plist
+      - 'stop' (finalize 失败 + delete): unload + 删 app 的所有 plist
+
+    不吞异常: finalize 需要感知 plist reload 失败并转为 failed; delete 阶段再自行容错.
     """
-    try:
-        import asyncio as _asyncio
-        from pentaloom.capabilities.weaver.triggers import trigger_registry
-        loop = _asyncio.get_event_loop()
-        if not loop.is_running():
-            return
-        reg = trigger_registry()
-        if action == "reload":
-            loop.create_task(reg.reload_app(settings, name))
-        elif action == "stop":
-            loop.create_task(reg.stop_for_app(name))
-    except RuntimeError:
-        pass
+    from pentaloom.capabilities.weaver import launchd_plist
+    if action == "reload":
+        launchd_plist.reload_for_app(name, settings)
+    elif action == "stop":
+        launchd_plist.unload_for_app(name)
 
 
 # ─── manifest.json (InvocableAppManifest) ───────────────────────────────────
@@ -152,7 +142,7 @@ def _validate_manifest_invocations(manifest: InvocableAppManifest) -> None:
             )
 
 
-# ─── app.json (AppDefinition) — 可选, M16 Phase A 不强制 ───────────────────
+# ─── app.json (AppDefinition) ───────────────────────────────────────────────
 
 def parse_app_definition(text: str) -> AppDefinition:
     try:
@@ -162,6 +152,30 @@ def parse_app_definition(text: str) -> AppDefinition:
     try:
         return AppDefinition.model_validate(data)
     except Exception as e:
+        # pydantic ValidationError 翻成人话: 命中已知常见错优先, 否则透传.
+        from pydantic import ValidationError
+        if isinstance(e, ValidationError):
+            hints: list[str] = []
+            for err in e.errors():
+                loc = ".".join(str(p) for p in err.get("loc", ()))
+                msg = err.get("msg", "")
+                etype = err.get("type", "")
+                # 最常见: schedules/watches 漏 invocation_id
+                if (
+                    etype == "missing"
+                    and "invocation_id" in loc
+                    and ("schedules" in loc or "watches" in loc)
+                ):
+                    hints.append(
+                        f"  · {loc}: 缺 invocation_id 字段. schedule/watch 每项必须含 "
+                        "invocation_id (引用 manifest.invocations[].id 决定触发哪个 "
+                        "invocation). watch 不触发时设 None 但字段不能漏."
+                    )
+                else:
+                    hints.append(f"  · {loc}: {msg} (type={etype})")
+            raise index.WeaverError(
+                f"app.json schema 校验失败:\n" + "\n".join(hints)
+            ) from e
         raise index.WeaverError(f"app.json schema 校验失败: {e}") from e
 
 
@@ -190,12 +204,11 @@ def _validate_invocation_targets(
 ) -> None:
     """invocation.target 必须指向 app.json 里存在的 component.
 
-    app_def is None (Phase A 只写 manifest, 没 app.json) 时, target 缺省也 OK —
-    放过去, Phase B+ runtime 起来再卡校验. 但 target 在 manifest 里**写了**就要校.
+    app_def is None 时缺少组件定义, 无法校验 target 是否存在;
+    但 target 只要写了 component/name, 就必须能在 app.json 中找到.
     """
     if app_def is None:
-        # Phase A: target 必填字段是否填了, 不验是否指向 component (没 app.json 比啥).
-        # 但 invocation.target 现在是 Optional, 完全省略也 OK (M16 第一版宽松).
+        # 兼容旧 app: 没有 app.json 时不做跨文件 target 校验.
         return
 
     by_kind: dict[str, set[str]] = {
@@ -259,7 +272,7 @@ def weave_app(
     app_json: str | None = None,
     source: WeaverSource = "agent_woven",
 ) -> InvocableAppMeta:
-    """织一个 invocable app 骨架 (递进式 weave 入口, GPT 重设计后版本).
+    """织一个 invocable app 骨架.
 
     必填: name / description / manifest_json
     可选: app_json (没 app.json 后续 invoke_app 会拒); files (空 dict / None = 只建骨架)
@@ -347,7 +360,7 @@ def weave_app(
     return meta
 
 
-# ─── 递进式 weave 子工具 (Fix 1, GPT 设计) ─────────────────────────────────
+# ─── 递进式 weave 子工具 ────────────────────────────────────────────────────
 
 _RESERVED_FILES_TOP_LEVEL = frozenset({
     "manifest.json", "app.json", "meta.json",  # 系统维护文件
@@ -395,7 +408,7 @@ def bump_use_count(settings: Settings, app_name: str) -> None:
 
 
 def _demote_to_dirty_if_ready(meta: InvocableAppMeta) -> None:
-    """ready app 被改了 → 打回 dirty, 强制重 finalize (旧 schema + 新代码不一致风险, GPT)."""
+    """ready app 被改后打回 dirty, 强制重 finalize 以避免 schema 与代码不一致."""
     if meta.status == "ready":
         meta.status = "dirty"
         meta.last_finalize_error = None  # 旧错误已不相关
@@ -447,7 +460,7 @@ def edit_app_file(
     settings: Settings, app_name: str, rel_path: str,
     old_string: str, new_string: str,
 ) -> dict[str, Any]:
-    """改 files/<rel_path> 单段. 跟 SDK Edit 同款语义 (old 必须唯一存在).
+    """改 files/<rel_path> 单段. old_string 必须唯一存在.
 
     替换 0 次抛 (找不到), >1 次也抛 (歧义, agent 给更长 context 重试).
     """
@@ -487,11 +500,11 @@ def edit_app_file(
 
 
 def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
-    """递进式 weave 的收口点 (GPT 建议). 4 项校验通过 → status=ready.
+    """递进式 weave 的收口点. 校验通过 → status=ready.
 
     校验:
       1. manifest.json 重新 parse + schema 通过
-      2. app.json 重新 parse + schema 通过 (没 app.json 拒 — Phase B+ 必须有)
+      2. app.json 重新 parse + schema 通过
       3. target → component 全部存在 (跟 weave 时同款)
       4. 每个 script invocation 的 command 入口文件存在
          (e.g., ["python", "scripts/foo.py"] 检查 files/scripts/foo.py)
@@ -509,10 +522,10 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
         errors.append(f"manifest: {e}")
         manifest = None
 
-    # 2. app.json (Phase B+ 必填)
+    # 2. app.json 必填
     app_def = read_app_definition(settings, meta.name)
     if app_def is None:
-        errors.append("缺 app.json (Phase B+ invoke_app 必须有 runtime declaration)")
+        errors.append("缺 app.json (invoke_app 必须有 runtime declaration)")
 
     # 3. target → component
     if manifest is not None and app_def is not None:
@@ -549,19 +562,33 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
         meta.status = "failed"
         meta.last_finalize_error = msg[:500]
         _save_meta(settings, meta)
-        # M16 Phase E: finalize 失败 → 清旧 trigger 防打着新坏版本
-        _schedule_trigger_action("stop", settings, meta.name)
+        # finalize 失败 → 清旧 trigger, 避免继续运行不一致版本.
+        # stop 失败吞 (旧 plist 可能压根没装过), warning 但不抛.
+        try:
+            _schedule_trigger_action("stop", settings, meta.name)
+        except Exception as cleanup_err:  # noqa: BLE001
+            logger.warning(f"finalize cleanup stop failed for {meta.name}: {cleanup_err}")
         logger.warning(f"finalize FAILED: {meta.name} → {msg}")
         raise index.WeaverError(f"finalize 校验失败: {msg}")
 
-    # 通过
+    # 校验通过, **先重载 plist** 再 commit ready — plist 写不了就不算真 finalize.
+    # reload 失败直接 fail finalize, 避免 status=ready 但 launchd 未安装.
+    try:
+        _schedule_trigger_action("reload", settings, meta.name)
+    except Exception as e:  # noqa: BLE001
+        msg = f"plist reload failed: {e}"
+        meta.status = "failed"
+        meta.last_finalize_error = msg[:500]
+        _save_meta(settings, meta)
+        logger.warning(f"finalize FAILED (plist): {meta.name} → {msg}")
+        raise index.WeaverError(msg) from e
+
+    # plist 都装好了再 commit
     now = datetime.utcnow()
     meta.status = "ready"
     meta.last_finalized_at = now
     meta.last_finalize_error = None
     _save_meta(settings, meta)
-    # M16 Phase E: finalize 成功 → 重载 trigger (含装新 schedule/watch)
-    _schedule_trigger_action("reload", settings, meta.name)
     logger.info(f"finalized app: {meta.name} → status=ready")
     return {
         "name": meta.name,
@@ -642,32 +669,21 @@ def delete_app_soft(settings: Settings, name: str) -> Path | None:
     """软删: 整个 apps/<name>/ 搬到 weaver/.trash/.
 
     若物理目录已不存在 (孤儿条目: index 有但目录被外部清掉了), 只清 index entry,
-    返 None — 不抛错. 否则 agent 会尝试 workaround (绕过 meta-tool 直接改 index),
-    这是 Fix 6 + Fix 8 一起防的攻击面.
+    返 None — 不抛错. 避免调用方绕过 meta-tool 直接改 index.
 
-    Phase D: 删 app 前先 stop 它的所有 running services (防孤儿 process). stop 是
-    async, 这里 fire-and-forget 调度到当前 loop — 调用方 (meta_tools.delete_weaver)
-    走 sync API, 不该改成 async. service 没 stop 干净也只是孤儿 process, 不影响 fs
-    删除. 真要 stop 完再删的 caller 自己用 service_registry.stop_for_app().
+    service / schedule / watch 统一走 launchd unload 清理; 失败只记录 warning.
     """
     name = _validate_name(name)
     entry = index.find_entry(settings, "app", name)
     if entry is None:
         raise index.WeaverError(f"app 不存在: {name}")
 
-    # 先调度 stop service (fire-and-forget, 防 fs 删除阻塞)
+    # 一次性 unload + 删 app 所有 plist (service + schedule + watch 三类前缀全扫).
+    # delete 阶段 plist 可能已经被外部清掉 / 从来没装过, stop 失败仅 warning 不阻断删除.
     try:
-        import asyncio as _asyncio
-        from pentaloom.capabilities.weaver.service_registry import service_registry
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(service_registry().stop_for_app(name))
-    except RuntimeError:
-        # 没 event loop (e.g., pytest sync 调用), 跳过 — 没 service 在跑的可能
-        pass
-
-    # M16 Phase E: 同款 fire-and-forget 调度 stop trigger (schedule + watch)
-    _schedule_trigger_action("stop", settings, name)
+        _schedule_trigger_action("stop", settings, name)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"delete_app_soft cleanup stop failed for {name}: {e}")
 
     src = paths.app_dir(settings, name)
     if not src.exists():
@@ -718,3 +734,117 @@ def _invocation_summary(inv: InvocationSpec) -> dict[str, Any]:
         "timeout_ms": inv.timeout_ms,
         "example_count": len(inv.examples),
     }
+
+
+# ────────────────────────────────────────────────────────────────────
+# window 开关 (agent meta-tool + router 都调)
+# ────────────────────────────────────────────────────────────────────
+
+
+async def open_window_for_app(
+    settings: Settings, app_name: str, window_name: str | None = None,
+) -> dict[str, Any]:
+    """开 app 的某个 window — 走 loom socket spawn loomer 子进程.
+
+    window_name=None → 取 app.json components.windows[0]. 多窗 app 显式传名字.
+    返 loom 的 {"window_id": str, "pid": int}.
+
+    Raises:
+      index.WeaverError: app 不存在 / 缺 app.json / 没有 window 组件 / window
+        名字不在 components.windows / entry 越界 / entry 文件不在 / loom 不在.
+    """
+    from pentaloom.infra import loom_client
+
+    entry_app = index.find_entry(settings, "app", app_name)
+    if entry_app is None:
+        raise index.WeaverError(f"app {app_name!r} 不存在")
+
+    app_def = read_app_definition(settings, app_name)
+    if app_def is None:
+        raise index.WeaverError(f"app {app_name!r} 缺 app.json — 先 weave_app_finalize")
+    if not app_def.components.windows:
+        raise index.WeaverError(f"app {app_name!r} 没有 window 组件 (components.windows 空)")
+
+    if window_name is None:
+        spec = app_def.components.windows[0]
+    else:
+        spec = next(
+            (w for w in app_def.components.windows if w.name == window_name), None,
+        )
+        if spec is None:
+            available = [w.name for w in app_def.components.windows]
+            raise index.WeaverError(
+                f"window {window_name!r} 不在 {app_name}/app.json (有: {available})"
+            )
+
+    files_root = paths.app_files_dir(settings, app_name)
+    entry_path = (files_root / spec.entry).resolve()
+    try:
+        entry_path.relative_to(files_root.resolve())
+    except ValueError as e:
+        raise index.WeaverError(
+            f"window entry {spec.entry!r} 越出 files/ 根"
+        ) from e
+    if not entry_path.exists():
+        raise index.WeaverError(f"window entry 文件不存在: {entry_path}")
+
+    try:
+        result = await loom_client.open_window(
+            entry_path=str(entry_path),
+            title=spec.title or app_name,
+            width=spec.width or 0,
+            height=spec.height or 0,
+            app=app_name,
+            window_name=spec.name,
+        )
+    except loom_client.LoomUnavailable as e:
+        raise index.WeaverError(
+            f"loom daemon 没起 — 跑 `make loom-install` 装系统级 daemon. 原始错: {e}"
+        ) from e
+    except loom_client.LoomError as e:
+        raise index.WeaverError(f"loom call failed: {e}") from e
+
+    bump_use_count(settings, app_name)
+    return result
+
+
+async def close_window_for_app(
+    settings: Settings, app_name: str, window_name: str | None = None,
+) -> dict[str, Any]:
+    """关 app 的某个 window. window_name=None → 取 components.windows[0].
+
+    返 {"closed": bool, "window_name": str}; 窗本来就没开返 closed=False.
+    """
+    from pentaloom.infra import loom_client
+
+    app_def = read_app_definition(settings, app_name)
+    if app_def is None:
+        raise index.WeaverError(f"app {app_name!r} 缺 app.json")
+    if not app_def.components.windows:
+        raise index.WeaverError(f"app {app_name!r} 没有 window 组件")
+
+    if window_name is None:
+        wn = app_def.components.windows[0].name
+    else:
+        if not any(w.name == window_name for w in app_def.components.windows):
+            available = [w.name for w in app_def.components.windows]
+            raise index.WeaverError(
+                f"window {window_name!r} 不在 {app_name}/app.json (有: {available})"
+            )
+        wn = window_name
+
+    try:
+        await loom_client.call("window.close", {"app": app_name, "window_name": wn})
+    except loom_client.LoomCommandFailed as e:
+        # loom 端 "no window with..." 不算错 — 用户语义是"窗没了"已经达成
+        if "no window" in str(e).lower():
+            return {"closed": False, "window_name": wn, "note": "窗本来就没开"}
+        raise index.WeaverError(f"loom close failed: {e}") from e
+    except loom_client.LoomUnavailable as e:
+        raise index.WeaverError(
+            f"loom daemon 没起 — 跑 `make loom-install`. 原始错: {e}"
+        ) from e
+    except loom_client.LoomError as e:
+        raise index.WeaverError(f"loom call failed: {e}") from e
+
+    return {"closed": True, "window_name": wn}

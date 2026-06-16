@@ -12,9 +12,8 @@ def render(
 
     tool_instructions: 各工具模块导出的 PROMPT_INSTRUCTIONS — 已是完整一段
         (含开头小标题), 直接拼.
-    skill_names: 走 SDK skill 加载机制的 skill 名 (M4+ 接上时用; M3 暂为空).
-    skill_instructions: 内联在 system prompt 里的 skill 段 (M3 临时方案,
-        SDK skill 加载机制接上后挪走). 每条已含"### Skill: xxx"小标题.
+    skill_names: 走 SDK skill 加载机制的 skill 名.
+    skill_instructions: 内联在 system prompt 里的 skill 段. 每条已含"### Skill: xxx"小标题.
     """
     parts: list[str] = ["## 工具守则"]
     parts.extend(s.strip() for s in tool_instructions if s and s.strip())

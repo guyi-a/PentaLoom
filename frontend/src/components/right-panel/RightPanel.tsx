@@ -1,6 +1,6 @@
 // 三栏布局的右栏容器. 内部两个 section: Todo / Workspace (含文件树).
 //
-// 旧 ContextSection (chip list 累积 tool_use 路径) 在 M19.0 重构时删了 —
+// 旧 ContextSection (chip list 累积 tool_use 路径) 已重构删除 —
 // 跟实际文件系统脱节, rename/delete 后变 404; 价值被"WorkspaceTree 真实树形" +
 // "ToolRow 文件名直接 click → preview"取代.
 

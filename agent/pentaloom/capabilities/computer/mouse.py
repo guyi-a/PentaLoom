@@ -5,9 +5,7 @@ mouse_move 是无害操作 (移光标不点击); mouse_click 三种 kind:
   - "double"  双击 (两轮 down/up, kCGMouseEventClickState 1 / 2)
   - "right"   右键单击
 
-drag 不做 (M9 范围外, v2 再加).
-
-权限: 复用 m8 Accessibility (已授权 Python). 截图独立要 Screen Recording, 跟 mouse 无关.
+权限: 复用 Accessibility (已授权 Python). 截图独立要 Screen Recording, 跟 mouse 无关.
 """
 
 from __future__ import annotations

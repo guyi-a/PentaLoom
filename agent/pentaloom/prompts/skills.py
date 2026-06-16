@@ -26,7 +26,7 @@ ENABLED_SKILLS: list[str] = [
     "browser-use",
     "browser-bridge",
     "computer-use",
-    # M16 Invocable App skills:
+    # Invocable App skills:
     "app-generator",
     "app-window",
     "app-service",
