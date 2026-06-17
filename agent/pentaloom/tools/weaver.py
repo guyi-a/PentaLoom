@@ -419,7 +419,7 @@ def build_weaver_mcp_server(
             # ephemeral 清理失败不阻塞 finalize — finalize 关键是 plist 装好
             pass
         try:
-            result = app_biz.finalize_app(
+            result = await app_biz.finalize_app(
                 settings, app_name=app_name,
             )
         except WeaverError as e:

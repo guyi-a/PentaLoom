@@ -11,10 +11,10 @@
 // 打回 dirty (状态机只跟踪 meta-tool 调用). 这是固有限制, 改完用户得
 // 自己跟 agent 说 "重 finalize" 才能让 invoke 跑新代码.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import useSWR from "swr";
-import { AppWindow, CalendarClock, ChevronDown, ChevronRight, ExternalLink, Eye, GitBranch, Loader2, RefreshCw, Server, Square, User, X } from "lucide-react";
+import { AppWindow, CalendarClock, ChevronDown, ChevronRight, ExternalLink, Eye, Folder, GitBranch, Loader2, RefreshCw, Server, Square, User, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
@@ -215,7 +215,7 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
             <div className="space-y-5">
               {/* finalize 错误提示 — failed 状态下高亮显示 */}
               {data.meta?.status === "failed" && data.meta.last_finalize_error && (
-                <Section title="Finalize error">
+                <Section title="Finalize error" defaultOpen>
                   <pre className="whitespace-pre-wrap break-words rounded-[4px] bg-[#f8e8e8] px-2 py-1.5 font-mono text-[11px] text-[#7a2d2d]">
                     {data.meta.last_finalize_error}
                   </pre>
@@ -243,15 +243,11 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 {data.files.length === 0 ? (
                   <Placeholder>No source files (skeleton only).</Placeholder>
                 ) : (
-                  <ul className="space-y-0.5">
-                    {data.files.map((f) => (
-                      <FileRow key={f.rel_path} file={f} onOpen={openSource} />
-                    ))}
-                  </ul>
+                  <FileTree files={data.files} onOpen={openSource} />
                 )}
                 {data.files.length > 0 && (
                   <p className="mt-1.5 px-1 text-[10.5px] italic text-[color:var(--color-ink)]">
-                    点击文件用系统默认编辑器打开. 用户改完需让 agent 重 finalize 才能 invoke 跑新代码.
+                    目录默认收起, 点击展开; 点击文件用系统默认编辑器打开. 用户改完需让 agent 重 finalize 才能 invoke 跑新代码.
                   </p>
                 )}
               </Section>
@@ -381,14 +377,26 @@ function Section({
   title,
   count,
   children,
+  defaultOpen = false,
 }: {
   title: string;
   count?: number;
   children: React.ReactNode;
+  defaultOpen?: boolean;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <section>
-      <div className="mb-1.5 flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mb-1.5 flex w-full items-center gap-1.5 text-left hover:opacity-80"
+      >
+        {open ? (
+          <ChevronDown size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        ) : (
+          <ChevronRight size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        )}
         <span className="font-display text-[12px] italic text-[color:var(--color-ink)]">
           {title}
         </span>
@@ -397,8 +405,8 @@ function Section({
             · {count}
           </span>
         )}
-      </div>
-      {children}
+      </button>
+      {open && children}
     </section>
   );
 }
@@ -437,11 +445,117 @@ function InvocationRow({ inv }: { inv: AppInvocationSummary }) {
   );
 }
 
+type FileTreeNode = {
+  name: string;
+  path: string;
+  children: Map<string, FileTreeNode>;
+  file?: AppFileEntry;
+};
+
+function buildFileTree(files: AppFileEntry[]): FileTreeNode {
+  const root: FileTreeNode = { name: "", path: "", children: new Map() };
+  for (const file of files) {
+    const parts = file.rel_path.split("/").filter(Boolean);
+    let current = root;
+    parts.forEach((part, index) => {
+      const path = parts.slice(0, index + 1).join("/");
+      let node = current.children.get(part);
+      if (!node) {
+        node = { name: part, path, children: new Map() };
+        current.children.set(part, node);
+      }
+      if (index === parts.length - 1) node.file = file;
+      current = node;
+    });
+  }
+  return root;
+}
+
+function sortFileNodes(nodes: Iterable<FileTreeNode>): FileTreeNode[] {
+  return Array.from(nodes).sort((a, b) => {
+    const aIsDir = !a.file || a.children.size > 0;
+    const bIsDir = !b.file || b.children.size > 0;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function FileTree({
+  files,
+  onOpen,
+}: {
+  files: AppFileEntry[];
+  onOpen: (file: AppFileEntry) => void;
+}) {
+  const root = useMemo(() => buildFileTree(files), [files]);
+  return (
+    <ul className="space-y-0.5">
+      {sortFileNodes(root.children.values()).map((node) => (
+        <FileTreeRow key={node.path} node={node} depth={0} onOpen={onOpen} />
+      ))}
+    </ul>
+  );
+}
+
+function FileTreeRow({
+  node,
+  depth,
+  onOpen,
+}: {
+  node: FileTreeNode;
+  depth: number;
+  onOpen: (file: AppFileEntry) => void;
+}) {
+  const isDir = node.children.size > 0;
+  const [open, setOpen] = useState(depth === 0 && !node.name.startsWith("."));
+
+  if (!isDir && node.file) {
+    return <FileRow file={node.file} label={node.name} depth={depth} onOpen={onOpen} />;
+  }
+
+  const children = sortFileNodes(node.children.values());
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={node.path}
+        className="group flex w-full items-center gap-1.5 rounded-[4px] py-1 pr-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+        style={{ paddingLeft: `${depth * 14 + 6}px` }}
+      >
+        {open ? (
+          <ChevronDown size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        ) : (
+          <ChevronRight size={11} className="shrink-0 text-[color:var(--color-ink)]" />
+        )}
+        <Folder size={12} className="shrink-0 text-[color:var(--color-thread-file)]" />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)] group-hover:text-[color:var(--color-paper)]">
+          {node.name}
+        </span>
+        <span className="tabular shrink-0 font-mono text-[9.5px] text-[color:var(--color-ink-dim)]">
+          {children.length}
+        </span>
+      </button>
+      {open && (
+        <ul className="space-y-0.5">
+          {children.map((child) => (
+            <FileTreeRow key={child.path} node={child} depth={depth + 1} onOpen={onOpen} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 function FileRow({
   file,
+  label = file.rel_path,
+  depth = 0,
   onOpen,
 }: {
   file: AppFileEntry;
+  label?: string;
+  depth?: number;
   onOpen: (file: AppFileEntry) => void;
 }) {
   const Icon = iconForExt(file.ext);
@@ -451,11 +565,12 @@ function FileRow({
         type="button"
         onClick={() => onOpen(file)}
         title={`Open ${file.absolute_path}`}
-        className="group flex w-full items-center gap-2 rounded-[4px] px-1.5 py-1 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+        className="group flex w-full items-center gap-2 rounded-[4px] py-1 pr-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+        style={{ paddingLeft: `${depth * 14 + 6}px` }}
       >
         <Icon size={12} className="shrink-0 text-[color:var(--color-thread-file)]" />
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[color:var(--color-paper-dim)] group-hover:text-[color:var(--color-paper)]">
-          {file.rel_path}
+          {label}
         </span>
         {file.ext && (
           <span className="tabular shrink-0 font-mono text-[9.5px] uppercase text-[color:var(--color-ink-dim)]">

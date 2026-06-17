@@ -321,6 +321,7 @@ function ExpansionFor({ pair }: { pair: ToolPair }) {
   if (
     name.endsWith("__weave_skill") ||
     name.endsWith("__weave_app") ||
+    name.endsWith("__weave_app_revise") ||
     name.endsWith("__weave_app_write_file") ||
     name.endsWith("__weave_app_edit_file") ||
     name.endsWith("__weave_app_finalize") ||

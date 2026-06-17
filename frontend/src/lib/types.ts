@@ -314,6 +314,9 @@ export const WEAVE_SKILL_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_skill";
 export const WEAVE_APP_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_app";
+// revise — draft / dirty 状态下覆盖 manifest / app.json / description, 单审一次.
+export const WEAVE_APP_REVISE_TOOL_NAME =
+  "mcp__pentaloom_weaver__weave_app_revise";
 // 递进式 weave 子工具 (auto-pass — app 主 weave HITL 通过后, 子操作免审).
 export const WEAVE_APP_WRITE_FILE_TOOL_NAME =
   "mcp__pentaloom_weaver__weave_app_write_file";
@@ -375,6 +378,7 @@ export const TOOLS_NEEDING_APPROVAL: readonly string[] = [
   WEB_SEARCH_TOOL_NAME,
   WEAVE_SKILL_TOOL_NAME,
   WEAVE_APP_TOOL_NAME,
+  WEAVE_APP_REVISE_TOOL_NAME,
   WEAVE_WORKFLOW_TOOL_NAME,
   EDIT_WEAVER_TOOL_NAME,
   DELETE_WEAVER_TOOL_NAME,

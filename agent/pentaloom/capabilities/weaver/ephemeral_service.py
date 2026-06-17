@@ -110,16 +110,16 @@ class EphemeralServiceRegistry:
 
             spec, files_root, cwd = self._resolve_spec(settings, app_name, service_name)
 
-            if spec.python_deps:
-                logger.info(
-                    f"ephemeral.start({app_name}/{service_name}): uv add {spec.python_deps}"
+            # ephemeral dev 阶段也用 app workspace (跟 finalize 后 declared 一致),
+            # 不走平台共享 venv. service 自己声明的 python_deps 现场装进 app .venv.
+            from pentaloom.capabilities.weaver import app_python_env
+            try:
+                await app_python_env.install_app_python_deps(
+                    settings, files_root, app_name,
+                    list(spec.python_deps or []),
                 )
-                result = await python_env.install_libs(settings, list(spec.python_deps))
-                if result.exit_code != 0:
-                    raise EphemeralError(
-                        f"python_deps install 失败 (uv add exit={result.exit_code}): "
-                        f"{result.stderr[:300] or result.stdout[:300]}"
-                    )
+            except RuntimeError as e:
+                raise EphemeralError(str(e)) from e
 
             if spec.port:
                 # 固定端口: 预探测 — 被占了立刻给清晰错, 别等 spawn 后看 log.
@@ -139,12 +139,11 @@ class EphemeralServiceRegistry:
                 service_name=spec.name, service_port=port,
             ))
 
-            command = list(spec.command)
-            if command and command[0] == "python":
-                uv = python_env.uv_bin(env)
-                command = [
-                    uv, "run", "--project", str(settings.python_env_dir), *command
-                ]
+            # 把 python / python3 命令包成 `uv run --project <files_root> python ...`,
+            # 让 service 用 app .venv 里的依赖, 不蹭平台共享 venv.
+            command = app_python_env.python_command_for_app(
+                settings, list(spec.command), files_root,
+            )
 
             log_dir = paths.app_dir(settings, app_name) / ".ephemeral-logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -471,9 +470,9 @@ def _diagnose_python_service_exit(spec, cwd: Path, log_tail: str) -> str:
       1. 文件只有 app=FastAPI() — 跑 python file.py 立刻 exit=0 (没 uvicorn.run)
       2. ModuleNotFoundError — python_deps 漏了
     """
-    from pentaloom.capabilities.weaver.app import python_entry_arg
+    from pentaloom.capabilities.weaver.app import find_python_entry_arg
 
-    entry_rel = python_entry_arg(list(spec.command))
+    entry_rel = find_python_entry_arg(list(spec.command))
     if entry_rel is None:
         return ""
 

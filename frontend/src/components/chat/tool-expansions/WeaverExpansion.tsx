@@ -20,6 +20,7 @@ interface Props {
 type WeaverKind =
   | "weave_skill"
   | "weave_app"
+  | "weave_app_revise"
   | "weave_app_write_file"
   | "weave_app_edit_file"
   | "weave_app_finalize"
@@ -32,12 +33,15 @@ type WeaverKind =
 
 function detectKind(toolName: string): WeaverKind {
   if (toolName.endsWith("__weave_skill")) return "weave_skill";
-  if (toolName.endsWith("__weave_app")) return "weave_app";
+  // 注意顺序: 更具体的后缀先匹配 (revise / write_file / edit_file / finalize 都
+  // 以 __weave_app 开头, 不先判会被 __weave_app 吞了).
+  if (toolName.endsWith("__weave_app_revise")) return "weave_app_revise";
   if (toolName.endsWith("__weave_app_write_file")) return "weave_app_write_file";
   if (toolName.endsWith("__weave_app_edit_file")) return "weave_app_edit_file";
   if (toolName.endsWith("__weave_app_finalize")) return "weave_app_finalize";
-  if (toolName.endsWith("__weave_workflow")) return "weave_workflow";
+  if (toolName.endsWith("__weave_app")) return "weave_app";
   if (toolName.endsWith("__weave_workflow_finalize")) return "weave_workflow_finalize";
+  if (toolName.endsWith("__weave_workflow")) return "weave_workflow";
   if (toolName.endsWith("__edit_weaver")) return "edit_weaver";
   if (toolName.endsWith("__delete_weaver")) return "delete_weaver";
   if (toolName.endsWith("__run_weaver")) return "run_weaver";

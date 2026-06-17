@@ -65,6 +65,38 @@ AppType = Literal["pentaloom_app", "html"]
 RestartPolicy = Literal["always", "on_failure", "never"]
 
 
+def _validate_python_deps(v: list[str] | None) -> list[str] | None:
+    """python_deps 字段共享校验 (service / script / schedule 都用).
+
+    规则:
+      - None / [] 合法 (不声明依赖)
+      - 元素必须 strip 后非空字符串
+      - 不含换行 / NUL 字节 (防 uv add 命令注入)
+      - 长度 ≤ 200 char (fastapi[standard]>=0.100.0,<1.0 都够; 太长的 spec 形态可疑)
+      - 不限制版本表达式 (uv 自己 parse PEP 508; 错的它会报)
+      - 不去自动过滤 stdlib (sqlite3 等); 用户写错 uv add 会失败, 错文案够清晰
+    """
+    if v is None:
+        return None
+    out: list[str] = []
+    for raw in v:
+        if not isinstance(raw, str):
+            raise ValueError(f"python_deps 元素必须是 str, 收到 {type(raw).__name__}")
+        s = raw.strip()
+        if not s:
+            raise ValueError("python_deps 元素不能是空串 / 全空白")
+        if "\n" in s or "\r" in s or "\x00" in s:
+            raise ValueError(
+                f"python_deps 元素含换行 / NUL 字节 (防命令注入): {raw!r}"
+            )
+        if len(s) > 200:
+            raise ValueError(
+                f"python_deps 元素过长 (>200 char), 检查格式: {s[:50]!r}..."
+            )
+        out.append(s)
+    return out
+
+
 class AppServiceSpec(BaseModel):
     """Long-running service component in app.json."""
 
@@ -83,6 +115,11 @@ class AppServiceSpec(BaseModel):
         if not v or not any(str(x).strip() for x in v):
             raise ValueError("command 不能为空 (至少一个非空 argv)")
         return v
+
+    @field_validator("python_deps")
+    @classmethod
+    def _check_python_deps(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_python_deps(v)
 
 
 class AppWindowSpec(BaseModel):
@@ -113,6 +150,12 @@ class AppScheduleSpec(BaseModel):
     schedule: str
     invocation_id: str
     args: dict[str, Any] = Field(default_factory=dict)
+    # 声明触发的 invocation 需要的 Python 第三方依赖. Schedule 自身不 spawn 脚本
+    # (走 invocation_id 间接触发对应 script/service), 这里声明的 deps 会跟 service /
+    # script 的 python_deps 一起收集 + 去重 + 装到 app workspace `.venv`. 也可以
+    # 不声明, 让 deps 跟着实际的 script/service component 写. 标准库 (sqlite3 / json)
+    # 不要列.
+    python_deps: list[str] | None = None
 
     @field_validator("schedule")
     @classmethod
@@ -122,6 +165,11 @@ class AppScheduleSpec(BaseModel):
         if not croniter.is_valid(v):
             raise ValueError(f"cron 表达式不合法 (5-field): {v!r}")
         return v
+
+    @field_validator("python_deps")
+    @classmethod
+    def _check_python_deps(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_python_deps(v)
 
 
 class AppScriptParam(BaseModel):
@@ -149,6 +197,11 @@ class AppScriptSpec(BaseModel):
         if not v or not any(str(x).strip() for x in v):
             raise ValueError("command 不能为空 (至少一个非空 argv)")
         return v
+
+    @field_validator("python_deps")
+    @classmethod
+    def _check_python_deps(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_python_deps(v)
 
 
 WatchEvent = Literal["modify", "create", "delete", "move"]

@@ -51,6 +51,7 @@ def run_service(app_name: str, comp_name: str) -> None:
     execvp 之后这个 Python wrapper 已经被替换掉, launchd 监督的是真 service 进程.
     """
     from pentaloom.capabilities.weaver import app as app_biz
+    from pentaloom.capabilities.weaver import app_python_env
     from pentaloom.capabilities.weaver import paths
     from pentaloom.config import get_settings
     from pentaloom.infra import python_env
@@ -66,21 +67,24 @@ def run_service(app_name: str, comp_name: str) -> None:
     if spec is None:
         _die(f"service {comp_name!r} not in {app_name}/app.json")
 
-    # 1. python_deps (uv add 装到共享 venv, idempotent — 已装的秒回)
-    if spec.python_deps:
-        result = asyncio.run(python_env.install_libs(settings, list(spec.python_deps)))
-        if result.exit_code != 0:
-            _die(
-                f"python_deps install failed (uv add exit={result.exit_code}): "
-                f"{result.stderr[:300] or result.stdout[:300]}"
-            )
+    files_root = paths.app_files_dir(settings, app_name)
 
-    # 2. 端口 — spec.port 给了用它, 没给找系统空闲. 写文件给 _invoke_service 读.
+    # python_deps 装进 app workspace (不进平台共享 venv). finalize 时已装过一次,
+    # 这里 idempotent — 已装的 uv add 秒回. 防 declared 复用 launchd 起来时 venv
+    # 被外部清掉 / 跨机器搬动. 注意: declared 走全局 launchd 调起来, 不能 raise,
+    # 用 _die 退出让 launchd 看 exit!=0.
+    try:
+        asyncio.run(app_python_env.install_app_python_deps(
+            settings, files_root, app_name, list(spec.python_deps or []),
+        ))
+    except RuntimeError as e:
+        _die(str(e))
+
+    # 端口 — spec.port 给了用它, 没给找系统空闲. 写文件给 _invoke_service 读.
     port = spec.port if spec.port else _pick_free_port()
     _write_port_file(settings, app_name, comp_name, port)
 
-    # 3. cwd — workdir 必须在 files/ 内 (跟 service_registry 同款防穿越)
-    files_root = paths.app_files_dir(settings, app_name)
+    # cwd — workdir 必须在 files/ 内 (跟 service_registry 同款防穿越)
     if spec.workdir:
         cwd = (files_root / spec.workdir).resolve()
         try:
@@ -92,7 +96,7 @@ def run_service(app_name: str, comp_name: str) -> None:
     else:
         cwd = files_root
 
-    # 4. env — 跟 _invoke_script 同款 weaver 上下文 + service 专属字段 (port/name)
+    # env — 跟 _invoke_script 同款 weaver 上下文 + service 专属字段 (port/name)
     from pentaloom.capabilities.weaver.app_env import weaver_app_env
     env = python_env.build_env(settings)
     env.update(weaver_app_env(
@@ -100,11 +104,11 @@ def run_service(app_name: str, comp_name: str) -> None:
         service_name=spec.name, service_port=port,
     ))
 
-    # 5. command — `python` 走 uv run 让 service 用共享 venv
-    command = list(spec.command)
-    if command[0] == "python":
-        uv = python_env.uv_bin(env)
-        command = [uv, "run", "--project", str(settings.python_env_dir), *command]
+    # command — Python 命令 (含 ["uv","run","python",...] 前缀) 一律重写成
+    # `uv run --project <files_root> python ...`, service 用 app .venv 跑.
+    command = app_python_env.python_command_for_app(
+        settings, list(spec.command), files_root,
+    )
 
     # 6. execvp — 替换进程, launchd 监督真 service. 不返.
     sys.stderr.write(
