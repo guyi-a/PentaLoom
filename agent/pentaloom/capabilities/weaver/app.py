@@ -595,8 +595,8 @@ def edit_app_file(
     }
 
 
-def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
-    """递进式 weave 的收口点. 校验通过 → status=ready.
+async def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
+    """递进式 weave 的收口点. 校验通过 → 装 app 依赖 → 装 plist → status=ready.
 
     校验:
       1. manifest.json 重新 parse + schema 通过
@@ -604,8 +604,14 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
       3. target → component 全部存在 (跟 weave 时同款)
       4. 每个 script invocation 的 command 入口文件存在
          (e.g., ["python", "scripts/foo.py"] 检查 files/scripts/foo.py)
+      + dogfood 兜底: window 不依赖 8090 / fetch-mode 固定 port / Python service
+        启动段 (见 _validate_*_helpers)
 
-    失败: status=failed + last_finalize_error 存原因, 抛 WeaverError 让 agent 看错.
+    校验过 + 装 app workspace python_deps (走 app_python_env, uv add 到 app .venv) +
+    装 launchd plist. 任一步失败 → status=failed + last_finalize_error 存原因, 抛
+    WeaverError 让 agent 看错.
+
+    async 是因为 install_app_python_deps 要 spawn uv add subprocess.
     """
     meta = _check_app_exists(settings, app_name)
     errors: list[str] = []
@@ -676,7 +682,25 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
         logger.warning(f"finalize FAILED: {meta.name} → {msg}")
         raise index.WeaverError(f"finalize 校验失败: {msg}")
 
-    # 校验通过, **先重载 plist** 再 commit ready — plist 写不了就不算真 finalize.
+    # 校验过 → 装 app workspace 依赖 → 重载 plist. 顺序: 先 deps 再 plist —
+    # plist load 起来 launchd 立刻拉 service, deps 没装好会 ModuleNotFoundError 死循环.
+    if app_def is not None:
+        from pentaloom.capabilities.weaver import app_python_env
+        files_root = paths.app_files_dir(settings, meta.name)
+        deps = app_python_env.collect_python_deps(app_def)
+        try:
+            await app_python_env.install_app_python_deps(
+                settings, files_root, meta.name, deps,
+            )
+        except RuntimeError as e:
+            msg = str(e)[:500]
+            meta.status = "failed"
+            meta.last_finalize_error = msg
+            _save_meta(settings, meta)
+            logger.warning(f"finalize FAILED (deps): {meta.name} → {msg}")
+            raise index.WeaverError(msg) from e
+
+    # 装完依赖才 reload plist — plist 写不了就不算真 finalize.
     # reload 失败直接 fail finalize, 避免 status=ready 但 launchd 未安装.
     try:
         _schedule_trigger_action("reload", settings, meta.name)
@@ -740,23 +764,60 @@ _FETCH_MARKERS = ("fetch(", "axios.", "XMLHttpRequest")
 _PYTHON_SERVE_CALLS = ("uvicorn.run(", "app.run(", "web.run_app(")
 
 
-def python_entry_arg(command: list[str]) -> str | None:
-    """python / python3 命令里抽脚本入口 (跳 -u / -O 等无值 flag).
+# 命令前缀 token — 不是 Python interpreter 也不是脚本入口, 走过. 例如:
+#   ["uv", "run", "python", "-u", "x.py"]  → 跳过 uv run python
+#   ["python", "-u", "x.py"]               → 跳过 python
+_RUNNER_TOKENS = frozenset({"python", "python3", "uv", "run"})
 
-    支持: ["python", "x.py"] / ["python", "-u", "x.py"] / ["python", "-O", "-u", "x.py"]
-    返 None: -m / -c 模式 (module / inline-code, 没文件入口); 找不到 .py 结尾的非 option 参数.
 
-    `-X foo` 这种带值 flag 不识别 (会错把 foo 当候选; 用户 app 不写这种, 接受漏识别).
+def find_python_entry_arg(command: list[str]) -> str | None:
+    """命令里抽 Python 脚本入口路径 (相对 workdir).
+
+    支持的输入:
+      ["python", "x.py"]                          → "x.py"
+      ["python", "-u", "x.py"]                    → "x.py"
+      ["python3", "-O", "-u", "services/api.py"]  → "services/api.py"
+      ["uv", "run", "python", "-u", "scripts/foo.py"] → "scripts/foo.py"
+
+    返 None 的情况:
+      - command[0] 不是 runner token (e.g., ["node", "x.js"])
+      - -m / -c 模式 (module / inline-code, 没文件入口)
+      - 找不到 .py 结尾的非 option 参数
+      - 入口是绝对路径 (要求相对 files_root)
+      - 入口含 .. 逃逸
+
+    `-X foo` 这种带值 flag 不专门识别 (foo 会被误当候选; 用户 app 不写这种, 接受漏识别).
     """
-    if len(command) < 2 or command[0] not in {"python", "python3"}:
+    if not command or command[0] not in _RUNNER_TOKENS:
         return None
-    for arg in command[1:]:
+    saw_interpreter = False
+    for arg in command:
+        # 跳前缀 runner token (uv / run / python / python3) — 直到见到第一个非 token
+        if arg in _RUNNER_TOKENS:
+            if arg in {"python", "python3"}:
+                saw_interpreter = True
+            continue
         if arg in {"-m", "-c"}:
             return None  # module / inline-code, 没 .py 文件可校
         if arg.startswith("-"):
             continue  # -u / -O / -OO / -S / -B / -q 等无值 flag
-        return arg if arg.endswith(".py") else None
+        # 第一个非 option / 非 runner 的实参 = 候选脚本路径
+        if not saw_interpreter:
+            return None  # 没看到 python / python3, 不是 Python 命令 (e.g., uv run pytest)
+        if not arg.endswith(".py"):
+            return None
+        # 安全: 拒绝绝对路径 + .. 逃逸 (resolve 后 relative_to files_root 是最终防御,
+        # 这里先做字符串层面拒明显 traversal, helper 调用方拿到后还得自己 _resolve_within_files).
+        if arg.startswith("/") or "\x00" in arg:
+            return None
+        if ".." in arg.split("/"):
+            return None
+        return arg
     return None
+
+
+# 向后兼容别名 (升级前别处可能引用 python_entry_arg). 新代码用 find_python_entry_arg.
+python_entry_arg = find_python_entry_arg
 
 
 def _iter_window_sources(files_root: Path) -> list[Path]:
@@ -842,13 +903,14 @@ def _validate_python_service_entry(
 ) -> list[str]:
     """Python service 入口必须含 uvicorn.run( / app.run( / web.run_app( 之一.
 
-    裸 if __name__ == "__main__": 不算 — 空块同样 exit=0. 走 python_entry_arg 抽
-    脚本入口 (支持 -u / -O 等无值 flag); -m / -c / 非 Python 跳.
+    裸 if __name__ == "__main__": 不算 — 空块同样 exit=0. 走 find_python_entry_arg
+    抽脚本入口 (支持 -u / -O 无值 flag, 支持 ["uv","run","python",...] 前缀,
+    拒绝绝对路径 / .. 逃逸); -m / -c / 非 Python 跳.
     """
     out: list[str] = []
     for svc in app_def.components.services:
         cmd = list(svc.command)
-        entry_rel = python_entry_arg(cmd)
+        entry_rel = find_python_entry_arg(cmd)
         if entry_rel is None:
             continue
         # 解析入口 (复用 workdir + relative_to 防穿越)

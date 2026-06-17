@@ -407,6 +407,7 @@ async def run_app_script(
     stdin_data: bytes,
     timeout: int,
     extra_env: dict[str, str] | None = None,
+    app_files_root: Path | None = None,
 ) -> ScriptResult:
     """Invocable App 的 script invocation runtime.
 
@@ -415,7 +416,12 @@ async def run_app_script(
     stdout 出 JSON result. 不做 preflight_compile (script 可能不是 .py 文件; 真
     syntax 错的话 spawn 自然 fail).
 
-    走 uv run --project 共享 python_env_dir, 复用 install_python_libs 装好的依赖.
+    Python 命令走 app 自己的 workspace (`uv run --project <app_files_root>`), 不蹭
+    平台共享 venv — 让 script / schedule / watch 用 app .venv 里的 python_deps. 非
+    Python 命令直接 exec.
+
+    app_files_root 默认 = cwd (script 通常没 workdir, cwd 就是 files/ 根); 有 workdir
+    时调用方传 files_root 让 uv 找到正确的 pyproject.
 
     extra_env: 注入 PENTALOOM_LOOM / FILES_DIR / RUNTIME_DIR 等 weaver
     上下文 (见 capabilities/weaver/app_env.py); script 拿这些反向调能力.
@@ -423,14 +429,13 @@ async def run_app_script(
     env = build_env(settings)
     if extra_env:
         env.update(extra_env)
-    # 第一个 token 是 "python" / "node" / "bash" 等. python 类的走 uv 隔离, 其他
-    # 直接 exec (PATH 走 env). 当前只验 python; 其他类型后续扩展.
-    if command and command[0] == "python":
-        uv_cmd = [
-            uv_bin(env), "run", "--project", str(settings.python_env_dir),
-        ] + command
-    else:
-        uv_cmd = list(command)
+    # 包成 uv run --project <app_files_root> python ... (app workspace 隔离).
+    # 延迟 import 防 capabilities/weaver/app_python_env.py → infra/python_env.py 循环.
+    from pentaloom.capabilities.weaver import app_python_env
+    workspace = app_files_root if app_files_root is not None else cwd
+    uv_cmd = app_python_env.python_command_for_app(
+        settings, list(command), workspace,
+    )
     return await _run(
         uv_cmd,
         cwd=cwd,

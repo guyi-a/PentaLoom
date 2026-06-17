@@ -465,6 +465,8 @@ async def _invoke_script(
         stdin_data=stdin_payload,
         timeout=timeout_s,
         extra_env=extra_env,
+        # workdir 进了子目录时, uv --project 仍要找 files_root 的 pyproject.
+        app_files_root=files_root,
     )
 
     duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
