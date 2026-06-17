@@ -4,7 +4,7 @@
 // 跟实际文件系统脱节, rename/delete 后变 404; 价值被"WorkspaceTree 真实树形" +
 // "ToolRow 文件名直接 click → preview"取代.
 
-import type { Frame, HistoryMessage, SessionMeta } from "@/lib/types";
+import type { Frame, SessionMeta } from "@/lib/types";
 
 import { TodoSection } from "./TodoSection";
 import { WorkspaceTree } from "./file-tree/WorkspaceTree";
@@ -12,7 +12,6 @@ import { WorkspaceTree } from "./file-tree/WorkspaceTree";
 interface Props {
   sessionId: string;
   meta: SessionMeta;
-  history: HistoryMessage[];
   liveFrames: Frame[];
   onMountsChanged: () => void;
 }
@@ -20,14 +19,13 @@ interface Props {
 export function RightPanel({
   sessionId,
   meta,
-  history,
   liveFrames,
   onMountsChanged,
 }: Props) {
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-[color:var(--color-line)] bg-[color:var(--color-bg-soft)]">
       <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto">
-        <TodoSection history={history} liveFrames={liveFrames} />
+        <TodoSection sessionId={sessionId} liveFrames={liveFrames} />
         <WorkspaceTree
           sessionId={sessionId}
           sandboxDir={meta.sandbox_dir}

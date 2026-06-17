@@ -360,6 +360,102 @@ def weave_app(
     return meta
 
 
+def revise_app(
+    settings: Settings,
+    name: str,
+    *,
+    description: str | None = None,
+    manifest_json: str | None = None,
+    app_json: str | None = None,
+) -> InvocableAppMeta:
+    """改 app 的 manifest.json / app.json / description (整体覆盖).
+
+    用途: 织造期发现 schema 错 / port 冲突 / target 写错时, 改 app.json 不用
+    delete + 重 weave. files/ 下源码用 weave_app_write_file / edit_file, 别用本工具.
+
+    限制:
+      - app 必须存在
+      - status 必须是 draft 或 dirty (ready 的 app 拒, 防止误改已上线 plist 的)
+      - 三个字段任一不传 → 保持原值; 至少传一个
+      - 跟 weave_app 同款校验 (manifest invocations, app.json schema, target 一致性)
+
+    返更新后的 meta. files/ 不动.
+    """
+    meta = _check_app_exists(settings, name)
+    if meta.status not in ("draft", "dirty"):
+        raise index.WeaverError(
+            f"revise_app 拒: app {name!r} status={meta.status!r}. "
+            f"只允许 draft / dirty 时改 manifest/app.json. "
+            f"ready 的 app 想改: 用 weave_app_write_file / weave_app_edit_file 改 "
+            f"files/ 下源码 (status 自动打回 dirty), 然后再 revise_app + finalize; "
+            f"或 delete 重写."
+        )
+    if description is None and manifest_json is None and app_json is None:
+        raise index.WeaverError(
+            "revise_app 需要至少传一个字段 (description / manifest_json / app_json)"
+        )
+
+    new_description = description.strip() if description is not None else meta.description
+    if not new_description:
+        raise index.WeaverError("description 不能为空")
+
+    if manifest_json is not None and manifest_json.strip():
+        manifest = parse_manifest(manifest_json)
+        if manifest.name != name:
+            raise index.WeaverError(
+                f"name 跟 manifest.name 不一致: arg={name!r} manifest={manifest.name!r}"
+            )
+        if manifest.description.strip() != new_description:
+            raise index.WeaverError(
+                "description 跟 manifest.description 不一致 — 两处应写同一句"
+            )
+        _validate_manifest_invocations(manifest)
+    else:
+        manifest = parse_manifest(paths.app_manifest(settings, name).read_text())
+        if description is not None and manifest.description.strip() != new_description:
+            raise index.WeaverError(
+                "改 description 时必须同时传 manifest_json — manifest.description "
+                "字段也要更新, 两处保持一致"
+            )
+
+    app_def: AppDefinition | None
+    if app_json is not None and app_json.strip():
+        app_def = parse_app_definition(app_json)
+        if app_def.name != name:
+            raise index.WeaverError(
+                f"name 跟 app.json.name 不一致: arg={name!r} app={app_def.name!r}"
+            )
+        _validate_app_definition(app_def)
+    else:
+        app_def = read_app_definition(settings, name)
+
+    _validate_invocation_targets(manifest, app_def)
+
+    if manifest_json is not None:
+        paths.app_manifest(settings, name).write_text(
+            manifest.model_dump_json(indent=2) + "\n"
+        )
+    if app_json is not None and app_def is not None:
+        paths.app_definition(settings, name).write_text(
+            app_def.model_dump_json(indent=2, exclude_none=True) + "\n"
+        )
+    meta.description = new_description
+    _save_meta(settings, meta)
+
+    index.upsert_entry(
+        settings,
+        IndexEntry(
+            name=name, kind="app", description=new_description,
+            path=f"apps/{name}/", source=meta.source,
+        ),
+    )
+    logger.info(
+        f"revised app: {name} (manifest={'yes' if manifest_json else 'no'}, "
+        f"app.json={'yes' if app_json else 'no'}, description={'yes' if description else 'no'})"
+    )
+    return meta
+
+
 # ─── 递进式 weave 子工具 ────────────────────────────────────────────────────
 
 _RESERVED_FILES_TOP_LEVEL = frozenset({
@@ -557,6 +653,15 @@ def finalize_app(settings: Settings, app_name: str) -> dict[str, Any]:
                     f"{entry_file} (期望路径: {target.relative_to(files_root.resolve()) if target.is_relative_to(files_root.resolve()) else target})"
                 )
 
+    # 5. dogfood 兜底: window 不依赖 PentaLoom 后端 (8090) / fetch-mode 下 sibling
+    # service 必须固定 port / Python service 入口必须含 server 启动调用. 三项防止
+    # agent 织出"看起来对但 invoke 起来 exit=0 / 关 PentaLoom 就废"的 app.
+    if app_def is not None:
+        files_root = paths.app_files_dir(settings, meta.name)
+        errors.extend(_validate_window_no_pentaloom_backend(files_root, app_def))
+        errors.extend(_validate_service_port_for_fetch_window(files_root, app_def))
+        errors.extend(_validate_python_service_entry(files_root, app_def))
+
     if errors:
         msg = "; ".join(errors)
         meta.status = "failed"
@@ -621,6 +726,173 @@ def _script_entry_file(command: list[str], workdir: str | None) -> str | None:
     if "/" in arg0 or arg0.endswith((".py", ".js", ".sh", ".rb")):
         return arg0.lstrip("./")
     return None
+
+
+# ─── finalize 兜底校验 helpers ──────────────────────────────────────────────
+# 字面量扫 — 单机本地, 不上 AST. 生产代码不会用 obfuscation, 漏识别落到 false
+# negative (放过), 不会 false positive 误伤合法代码.
+
+_WINDOW_SOURCE_GLOBS = ("*.ts", "*.tsx", "*.js", "*.jsx")
+_PENTALOOM_BACKEND_MARKERS = ("127.0.0.1:8090", "localhost:8090", "/weaver/apps/")
+_FETCH_MARKERS = ("fetch(", "axios.", "XMLHttpRequest")
+# Python web server 长期运行入口 — Python service 不命中这三个之一, 跑起来立刻
+# exit=0 (FastAPI 只定义 app 不启 server 的经典坑).
+_PYTHON_SERVE_CALLS = ("uvicorn.run(", "app.run(", "web.run_app(")
+
+
+def python_entry_arg(command: list[str]) -> str | None:
+    """python / python3 命令里抽脚本入口 (跳 -u / -O 等无值 flag).
+
+    支持: ["python", "x.py"] / ["python", "-u", "x.py"] / ["python", "-O", "-u", "x.py"]
+    返 None: -m / -c 模式 (module / inline-code, 没文件入口); 找不到 .py 结尾的非 option 参数.
+
+    `-X foo` 这种带值 flag 不识别 (会错把 foo 当候选; 用户 app 不写这种, 接受漏识别).
+    """
+    if len(command) < 2 or command[0] not in {"python", "python3"}:
+        return None
+    for arg in command[1:]:
+        if arg in {"-m", "-c"}:
+            return None  # module / inline-code, 没 .py 文件可校
+        if arg.startswith("-"):
+            continue  # -u / -O / -OO / -S / -B / -q 等无值 flag
+        return arg if arg.endswith(".py") else None
+    return None
+
+
+def _iter_window_sources(files_root: Path) -> list[Path]:
+    """files/windows/ 下所有 .ts/.tsx/.js/.jsx. files_root 不存在返空."""
+    win_root = files_root / "windows"
+    if not win_root.is_dir():
+        return []
+    out: list[Path] = []
+    for pat in _WINDOW_SOURCE_GLOBS:
+        out.extend(p for p in win_root.rglob(pat) if p.is_file())
+    return sorted(out)
+
+
+def _scan_lines_for_markers(
+    path: Path, markers: tuple[str, ...]
+) -> list[tuple[int, str]]:
+    """返 (line_no, matched_marker) 列表. 读不了或空文件返空."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    hits: list[tuple[int, str]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for m in markers:
+            if m in line:
+                hits.append((lineno, m))
+    return hits
+
+
+def _validate_window_no_pentaloom_backend(
+    files_root: Path, app_def: AppDefinition
+) -> list[str]:
+    """禁止 window 源码出现 127.0.0.1:8090 / localhost:8090 / /weaver/apps/ 字面量.
+
+    出了说明 agent 走了"window fetch PentaLoom 后端转发"这条死路 — 关 PentaLoom
+    主壳 window 立刻 Load failed, 违反 invocable app "脱钩主壳"承诺.
+    """
+    if not app_def.components.windows:
+        return []
+    out: list[str] = []
+    for src in _iter_window_sources(files_root):
+        rel = src.relative_to(files_root)
+        for lineno, marker in _scan_lines_for_markers(src, _PENTALOOM_BACKEND_MARKERS):
+            out.append(
+                f"window 源码 {rel}:{lineno} 出现 {marker!r} — 禁止依赖 PentaLoom "
+                f"backend (port 8090). 走 fetch service 自己的固定端口, 或用 push "
+                f"pattern (agent invoke_app target=window 推数据)."
+            )
+    return out
+
+
+def _validate_service_port_for_fetch_window(
+    files_root: Path, app_def: AppDefinition
+) -> list[str]:
+    """window 源码含 fetch(...) → 所有 sibling service 必须固定 port.
+
+    短期取 heuristic: 任一 window 文件命中 _FETCH_MARKERS 即视为 fetch-mode.
+    push pattern (window 不主动 fetch, agent 推数据进来) 不命中, port=null 仍 OK.
+    """
+    if not app_def.components.windows or not app_def.components.services:
+        return []
+    has_fetch = False
+    for src in _iter_window_sources(files_root):
+        if _scan_lines_for_markers(src, _FETCH_MARKERS):
+            has_fetch = True
+            break
+    if not has_fetch:
+        return []
+    null_ports = [s.name for s in app_def.components.services if s.port is None]
+    if not null_ports:
+        return []
+    return [
+        f"window 源码含 fetch 调用 (fetch-mode), 当前要求所有 sibling services "
+        f"固定 port (≥9000 推荐). 违规 service: {', '.join(null_ports)} (port=null). "
+        f"改 app.json components.services[].port 写成固定字面量, 或如果该 service "
+        f"只给 agent invoke 用 (window 不会 fetch 它), 把 window 源码里的 fetch "
+        f"调用拆走 / 该 service 拆成另一个 app."
+    ]
+
+
+def _validate_python_service_entry(
+    files_root: Path, app_def: AppDefinition
+) -> list[str]:
+    """Python service 入口必须含 uvicorn.run( / app.run( / web.run_app( 之一.
+
+    裸 if __name__ == "__main__": 不算 — 空块同样 exit=0. 走 python_entry_arg 抽
+    脚本入口 (支持 -u / -O 等无值 flag); -m / -c / 非 Python 跳.
+    """
+    out: list[str] = []
+    for svc in app_def.components.services:
+        cmd = list(svc.command)
+        entry_rel = python_entry_arg(cmd)
+        if entry_rel is None:
+            continue
+        # 解析入口 (复用 workdir + relative_to 防穿越)
+        wd = files_root
+        if svc.workdir:
+            try:
+                wd = _resolve_within_files(
+                    files_root, svc.workdir, label=f"service.{svc.name}.workdir"
+                )
+            except index.WeaverError as e:
+                out.append(f"service.{svc.name}.workdir: {e}")
+                continue
+        entry = (wd / entry_rel).resolve()
+        try:
+            entry.relative_to(files_root.resolve())
+        except ValueError:
+            out.append(
+                f"service.{svc.name}.command 入口 {entry_rel!r} 越出 files/ 根"
+            )
+            continue
+        if not entry.is_file():
+            # 入口缺失走另一条路径报错; 这里也加一条防漏
+            out.append(
+                f"service.{svc.name}.command 入口文件不存在: {entry_rel}"
+            )
+            continue
+        try:
+            text = entry.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            out.append(f"service.{svc.name} 入口读不了 {entry_rel}: {e}")
+            continue
+        if any(call in text for call in _PYTHON_SERVE_CALLS):
+            continue
+        rel = entry.relative_to(files_root.resolve())
+        out.append(
+            f"service.{svc.name} 入口 {rel} 没找到 server 启动调用 "
+            f"(uvicorn.run( / app.run( / web.run_app(). 只有 app=FastAPI() 会让 "
+            f"`python {entry_rel}` 立刻 exit=0. FastAPI 加:\n"
+            f'  if __name__ == "__main__":\n'
+            f"      import os, uvicorn\n"
+            f'      uvicorn.run(app, host="127.0.0.1", '
+            f'port=int(os.environ["PENTALOOM_APP_PORT"]))'
+        )
+    return out
 
 
 def read_manifest(settings: Settings, name: str) -> InvocableAppManifest:

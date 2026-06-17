@@ -23,6 +23,7 @@ import type {
   PermissionDecisionResp,
   SessionMeta,
   SettingsResponse,
+  TodoItem,
   TextPreviewResult,
   WeaverProductsResponse,
   WorkflowDetailResponse,
@@ -57,6 +58,10 @@ export const api = {
   getSession: (sid: string) => http<SessionMeta>(`/sessions/${sid}`),
   getMessages: (sid: string) =>
     http<HistoryMessage[]>(`/sessions/${sid}/messages`),
+  getTodos: (sid: string) =>
+    http<{ todos: TodoItem[]; updated_at: string | null }>(
+      `/sessions/${sid}/todos`,
+    ),
   patchSession: (sid: string, body: { title?: string | null }) =>
     http<SessionMeta>(`/sessions/${sid}`, { method: "PATCH", json: body }),
   deleteSession: (sid: string) =>

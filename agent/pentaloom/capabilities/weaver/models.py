@@ -219,7 +219,7 @@ class InvocationTarget(BaseModel):
     component: Literal["window", "service", "script"]
     name: str
     handler: str | None = None
-    method: Literal["GET", "POST"] | None = None
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] | None = None
     path: str | None = None
 
     @field_validator("path")

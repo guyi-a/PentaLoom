@@ -17,6 +17,8 @@
   PENTALOOM_RUNTIME_DIR  .../.runtime (script 读 sibling service .port 文件用)
   PENTALOOM_LOGS_DIR     .../logs (script 写自定义日志用, runs.jsonl 也在这)
   PENTALOOM_RUNS_DIR     兼容老 service env (老字段名), 同 LOGS_DIR
+  PENTALOOM_APP_DATA_DIR .../data (service/script/schedule 写持久化文件用 — SQLite/
+                         JSON/JSONL 都落这里. 目录由本 helper mkdir, 必存在)
   PENTALOOM_INVOCATION_ID  本次 invoke 的 invocation id (script 路径填, service 不填)
   PENTALOOM_TRIGGER        user / schedule / watch / workflow (script 路径填, service 不填)
   PENTALOOM_APP_PORT       service 路径填; script 不填 (script 自己不 listen port)
@@ -49,6 +51,10 @@ def weaver_app_env(
     runs_root = paths.app_runs_dir(settings, app_name)
     runtime_dir = app_root / ".runtime"
     logs_dir = paths.app_logs_dir(settings, app_name)
+    # 标准持久化目录 — agent 别再 invent (db / sqlite / state 各种命名).
+    # mkdir 在这里做, subprocess 起来时目录必存在.
+    data_dir = app_root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     env: dict[str, str] = {
         "PENTALOOM_LOOM": str(settings.loom_bin),
@@ -60,6 +66,7 @@ def weaver_app_env(
         "PENTALOOM_RUNTIME_DIR": str(runtime_dir),
         "PENTALOOM_LOGS_DIR": str(logs_dir),
         "PENTALOOM_RUNS_DIR": str(runs_root),
+        "PENTALOOM_APP_DATA_DIR": str(data_dir),
     }
     if invocation_id:
         env["PENTALOOM_INVOCATION_ID"] = invocation_id

@@ -350,8 +350,10 @@ async def _invoke_service(
     # target 必须含 method + path (path validator 已校 / 开头 + 拒 ://)
     method = (inv.target.method or "POST").upper()
     path = inv.target.path or "/"
-    if method not in ("GET", "POST"):
-        raise InvokeError(f"target.method 只支持 GET/POST, 收到 {method!r}")
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        raise InvokeError(
+            f"target.method 只支持 GET/POST/PUT/PATCH/DELETE, 收到 {method!r}"
+        )
 
     port = read_port_file(settings, app_name, inv.target.name)
     if port is None:
@@ -372,12 +374,13 @@ async def _invoke_service(
 
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            if method == "GET":
-                # GET 把 args 当 query (扁平 string 化)
+            if method in ("GET", "DELETE"):
+                # GET / DELETE: args 当 query (扁平 string 化). RESTful 习惯不带 body.
                 params = {k: str(v) for k, v in args.items()}
-                http_resp = await client.get(url, params=params)
+                http_resp = await client.request(method, url, params=params)
             else:
-                http_resp = await client.post(url, json=args)
+                # POST / PUT / PATCH: args 当 JSON body.
+                http_resp = await client.request(method, url, json=args)
     except httpx.TimeoutException as e:
         duration_ms = int(datetime.utcnow().timestamp() * 1000) - started_at_ms
         err = f"service 超时 ({timeout_s}s): {e}"

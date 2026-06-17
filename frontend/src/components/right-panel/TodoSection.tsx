@@ -1,61 +1,62 @@
-// Todo 区: 取 (history + liveFrames) 里最近一次 TodoWrite tool_use 的 input.todos,
-// 渲染 checklist. TodoWrite 是 overwrite 语义 (SDK client-side state), 取最新一次即可,
-// 不需要 merge 历史多次.
-//
-// 状态 icon: pending=○ in_progress=▶ completed=✓ (跟 lucide 对齐).
+// Todo 区: 拉 GET /sessions/{sid}/todos. 4 个 todo 工具
+// (mcp__pentaloom_todos__todo_{write,update,read,delete}) 调用后会改后端 state,
+// 监听 liveFrames 里这些 tool_use 出现 → refetch.
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Circle, CircleDot, ListChecks } from "lucide-react";
 
-import type { Frame, HistoryMessage, ToolUseFrame } from "@/lib/types";
+import { api } from "@/lib/api";
+import type { Frame, TodoItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm?: string;
-}
-
 interface Props {
-  history: HistoryMessage[];
+  sessionId: string;
   liveFrames: Frame[];
 }
 
-function isTodoWriteUse(f: Frame): f is ToolUseFrame {
-  return f.type === "tool_use" && f.name === "TodoWrite";
-}
+const TODO_TOOL_PREFIX = "mcp__pentaloom_todos__";
+const MUTATING_TOOLS = new Set([
+  "mcp__pentaloom_todos__todo_write",
+  "mcp__pentaloom_todos__todo_update",
+  "mcp__pentaloom_todos__todo_delete",
+]);
 
-function extractTodos(history: HistoryMessage[], live: Frame[]): TodoItem[] | null {
-  // 把 history.flat + live 拼成一个有序的 frame 流, 从末尾找最近一次 TodoWrite
-  const all: Frame[] = [];
-  for (const m of history) all.push(...m.frames);
-  all.push(...live);
-  for (let i = all.length - 1; i >= 0; i--) {
-    const f = all[i];
-    if (isTodoWriteUse(f)) {
-      const raw = (f.input as Record<string, unknown>)?.todos;
-      if (Array.isArray(raw)) {
-        return raw
-          .filter((x): x is Record<string, unknown> => x !== null && typeof x === "object")
-          .map((x) => ({
-            content: String(x.content ?? ""),
-            status:
-              x.status === "in_progress" || x.status === "completed"
-                ? x.status
-                : "pending",
-            activeForm: typeof x.activeForm === "string" ? x.activeForm : undefined,
-          }));
-      }
+function lastTodoToolUseId(live: Frame[]): string | null {
+  // 找最近一次会变更 state 的 todo 工具调用. todo_read 不改 state, 不触发 refetch.
+  for (let i = live.length - 1; i >= 0; i--) {
+    const f = live[i];
+    if (
+      f.type === "tool_use" &&
+      typeof f.name === "string" &&
+      f.name.startsWith(TODO_TOOL_PREFIX) &&
+      MUTATING_TOOLS.has(f.name)
+    ) {
+      return f.id;
     }
   }
   return null;
 }
 
-export function TodoSection({ history, liveFrames }: Props) {
-  const todos = useMemo(
-    () => extractTodos(history, liveFrames),
-    [history, liveFrames],
-  );
+export function TodoSection({ sessionId, liveFrames }: Props) {
+  const [todos, setTodos] = useState<TodoItem[] | null>(null);
+
+  // 监听 live 流里的 todo 工具调用 — 见到新的就 refetch
+  const triggerId = useMemo(() => lastTodoToolUseId(liveFrames), [liveFrames]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getTodos(sessionId)
+      .then((r) => {
+        if (!cancelled) setTodos(r.todos);
+      })
+      .catch(() => {
+        if (!cancelled) setTodos([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, triggerId]);
 
   const counts = useMemo(() => {
     if (!todos) return null;
@@ -86,13 +87,13 @@ export function TodoSection({ history, liveFrames }: Props) {
       {!todos || todos.length === 0 ? (
         <div className="px-1 py-2 font-display text-[12px] italic text-[color:var(--color-ink)]">
           {todos === null
-            ? "No todo list yet."
-            : "Todo list is empty."}
+            ? "Loading…"
+            : "No todo list yet."}
         </div>
       ) : (
         <ul className="space-y-1">
-          {todos.map((t, i) => (
-            <li key={i} className="flex items-start gap-2 px-1 py-0.5">
+          {todos.map((t) => (
+            <li key={t.seq} className="flex items-start gap-2 px-1 py-0.5">
               <span className="mt-0.5 shrink-0">
                 {t.status === "completed" ? (
                   <CheckCircle2

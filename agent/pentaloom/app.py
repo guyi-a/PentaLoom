@@ -64,6 +64,12 @@ from pentaloom.tools.computer_use import (
     COMPUTER_MCP_SERVER_NAME,
     COMPUTER_USE_FULL_NAME,
 )
+from pentaloom.tools.todo import (
+    TODO_DELETE_FULL_NAME,
+    TODO_READ_FULL_NAME,
+    TODO_UPDATE_FULL_NAME,
+    TODO_WRITE_FULL_NAME,
+)
 
 # 主 agent 的工具全集. subagent 的 tools 只能从这里挑.
 # Task 必带 — 派 subagent 全靠它.
@@ -98,6 +104,10 @@ DEFAULT_TOOLS: list[str] = [
     BROWSER_BRIDGE_FULL_NAME,
     COMPUTER_USE_FULL_NAME,
     WEB_SEARCH_FULL_NAME,
+    TODO_WRITE_FULL_NAME,
+    TODO_UPDATE_FULL_NAME,
+    TODO_READ_FULL_NAME,
+    TODO_DELETE_FULL_NAME,
     # weaver 7 个工具 (1 weave_skill + 6 meta-tool). 工具 server 在 LoomPool._build
     # 时 per-session 构造 (因为要捕获 sid 回调 mark_pending_rebuild), 不在 app.py
     # 模块顶层 singleton — 跟 BROWSER_MCP_SERVER 同款 per-session 模式.

@@ -121,7 +121,18 @@ class EphemeralServiceRegistry:
                         f"{result.stderr[:300] or result.stdout[:300]}"
                     )
 
-            port = spec.port if spec.port else _pick_free_port()
+            if spec.port:
+                # 固定端口: 预探测 — 被占了立刻给清晰错, 别等 spawn 后看 log.
+                port = spec.port
+                if not _port_available(port):
+                    raise EphemeralError(
+                        f"端口 {port} 被占用 (app.json components.services[].port "
+                        f"写死的固定端口). 改 app.json 把 service {service_name!r} 的 "
+                        f"port 字段换成另一个 (≥9000 推荐), 用 weave_app_revise 改后重试. "
+                        f"被谁占: lsof -nP -iTCP:{port} -sTCP:LISTEN"
+                    )
+            else:
+                port = _pick_free_port()
             env = python_env.build_env(settings)
             env.update(weaver_app_env(
                 settings, app_name,
@@ -187,24 +198,46 @@ class EphemeralServiceRegistry:
             )
             self._services[(app_name, service_name)] = svc
 
-            # ready probe: 5s 内 TCP 能连上 127.0.0.1:port 算起来了
-            ok = await _wait_listen("127.0.0.1", port, timeout_s=5.0)
+            # ready probe: spec.startup_timeout_ms 内 TCP 能连上 127.0.0.1:port 算起来了
+            timeout_s = max(0.1, spec.startup_timeout_ms / 1000.0)
+            ok = await _wait_listen("127.0.0.1", port, timeout_s=timeout_s)
             if not ok:
-                # 没起 listen 不算致命 — service 可能慢启动或不监听 port (但 spec 给了 port 没用就奇怪)
-                # log warning 让 agent 自己 tail_logs 看错
-                logger.warning(
-                    f"ephemeral.start({app_name}/{service_name}): port {port} "
-                    f"5s 内未 listen — service 可能还在起 / 启动失败. agent 应 tail_logs 查."
-                )
+                tail = await _read_log_tail(log_path, 40)
                 if proc.returncode is not None:
-                    # 已经死了, 收尸
-                    err = await _read_log_tail(log_path, 40)
+                    # 已经死了, 收尸 + 给针对性诊断
                     self._services.pop((app_name, service_name), None)
                     _clear_port_file(settings, app_name, service_name)
+                    diag = _diagnose_python_service_exit(spec, cwd, tail)
                     raise EphemeralError(
                         f"service spawn 后立刻退出 (exit={proc.returncode}). "
-                        f"日志末尾:\n{err}"
+                        f"{diag}\n日志末尾:\n{tail}"
                     )
+                # weave_service_start 是 verify 工具 — timeout 仍在跑也算 verify 失败,
+                # stop + clear + raise, 别静默放过. 慢启动 service 调大 startup_timeout_ms.
+                logger.warning(
+                    f"ephemeral.start({app_name}/{service_name}): "
+                    f"{timeout_s:.1f}s 内未 listen 127.0.0.1:{port}, stop + raise"
+                )
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                for t in (stdout_task, stderr_task):
+                    if t and not t.done():
+                        t.cancel()
+                self._services.pop((app_name, service_name), None)
+                _clear_port_file(settings, app_name, service_name)
+                diag = _diagnose_python_service_exit(spec, cwd, tail)
+                raise EphemeralError(
+                    f"service {timeout_s:.1f}s 内未 listen 127.0.0.1:{port} "
+                    f"(startup_timeout_ms={spec.startup_timeout_ms}). "
+                    f"{diag}\n日志末尾:\n{tail}\n"
+                    f"调大 spec.startup_timeout_ms 或检查 service 是否真 listen 127.0.0.1:{port}."
+                )
 
             return svc
 
@@ -351,6 +384,19 @@ def _pick_free_port() -> int:
     return port
 
 
+def _port_available(port: int) -> bool:
+    """探测 127.0.0.1:port 能不能 bind. 能 = 没人占, 立刻 close 还给 OS."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        s.close()
+    return True
+
+
 def _write_port_file(
     settings: Settings, app_name: str, comp_name: str, port: int,
 ) -> None:
@@ -411,6 +457,55 @@ async def _pipe_to_log(
         return
     except Exception as e:
         logger.warning(f"_pipe_to_log({tag}): {e}")
+
+
+# Python web server 长期运行入口 — service 跑起来必须命中这三个之一才算
+# 真正 listen, 否则就是 "只定义 app 没启动" 的 exit=0 经典坑.
+_PYTHON_SERVE_CALLS = ("uvicorn.run(", "app.run(", "web.run_app(")
+
+
+def _diagnose_python_service_exit(spec, cwd: Path, log_tail: str) -> str:
+    """spec.command 是 Python 入口时, 给针对性 hint. 否则空串.
+
+    当前两类常见错:
+      1. 文件只有 app=FastAPI() — 跑 python file.py 立刻 exit=0 (没 uvicorn.run)
+      2. ModuleNotFoundError — python_deps 漏了
+    """
+    from pentaloom.capabilities.weaver.app import python_entry_arg
+
+    entry_rel = python_entry_arg(list(spec.command))
+    if entry_rel is None:
+        return ""
+
+    # log tail 优先 — ModuleNotFoundError 比静态扫更可信
+    if "ModuleNotFoundError" in log_tail or "ImportError" in log_tail:
+        return (
+            "诊断: 日志含 ModuleNotFoundError/ImportError — service 缺依赖. "
+            "用 weave_app_revise 把缺的模块加进 app.json components.services[].python_deps."
+        )
+
+    entry_path = (cwd / entry_rel).resolve()
+    try:
+        entry_path.relative_to(cwd.resolve())
+    except ValueError:
+        return ""
+    if not entry_path.is_file():
+        return ""
+    try:
+        text = entry_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if any(call in text for call in _PYTHON_SERVE_CALLS):
+        return ""  # 入口看起来对, 别瞎猜 — 让 log tail 自己说话
+
+    return (
+        f"诊断: {entry_rel} 没找到 uvicorn.run( / app.run( / web.run_app( — "
+        f"FastAPI service 通常少了启动段. 加:\n"
+        f'  if __name__ == "__main__":\n'
+        f"      import os, uvicorn\n"
+        f'      uvicorn.run(app, host="127.0.0.1", '
+        f'port=int(os.environ["PENTALOOM_APP_PORT"]))'
+    )
 
 
 async def _read_log_tail(log_path: Path, n: int) -> str:

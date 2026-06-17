@@ -73,6 +73,7 @@ from pentaloom.tools.weaver import (
     OPEN_APP_WINDOW_FULL_NAME,
     RUN_WEAVER_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_APP_REVISE_FULL_NAME,
     WEAVE_SERVICE_RESTART_FULL_NAME,
     WEAVE_SERVICE_START_FULL_NAME,
     WEAVE_SKILL_FULL_NAME,
@@ -118,6 +119,7 @@ HITL_TOOL_NAMES: frozenset[str] = frozenset({
     # 设计文档 §8.1-8.3: 每次单审, 不进 ALLOW_SESSION_TOOLS — 长期资产改动应该每次过目.
     WEAVE_SKILL_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_APP_REVISE_FULL_NAME,
     WEAVE_WORKFLOW_FULL_NAME,  # 跟 weave_skill / weave_app 一档, 单审一次
     EDIT_WEAVER_FULL_NAME,
     DELETE_WEAVER_FULL_NAME,

@@ -13,6 +13,13 @@ export interface SessionMeta {
   last_active_at: string;
 }
 
+export interface TodoItem {
+  seq: number;
+  content: string;
+  activeForm: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export interface HistoryMessage {
   role: "user" | "assistant";
   uuid: string;                       // SDK envelope uuid - 用作 React key

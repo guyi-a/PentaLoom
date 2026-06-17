@@ -267,7 +267,6 @@ export function EmptyPage() {
           <RightPanel
             sessionId={liveSid ?? ""}
             meta={pendingMeta}
-            history={[]}
             liveFrames={liveFrames}
             onMountsChanged={() => mutate("sessions")}
           />

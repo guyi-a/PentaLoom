@@ -41,6 +41,7 @@ from pentaloom.infra.approval.policy import APPROVAL_MODES, ApprovalModeRef
 from pentaloom.infra.session_store import SQLiteSessionStore
 from pentaloom.infra.stream_buffer import stream_buffers
 from pentaloom.tools import PERMISSION_REGISTRY, make_can_use_tool
+from pentaloom.tools.todo import TODOS_MCP_SERVER_NAME, build_todos_mcp_server
 from pentaloom.tools.weaver import WEAVER_MCP_SERVER_NAME, build_weaver_mcp_server
 
 
@@ -191,10 +192,14 @@ class LoomPool:
             self._settings,
             mark_rebuild=lambda sid=session_id: self.mark_pending_rebuild(sid),
         )
+        todos_server = build_todos_mcp_server(session_id=session_id)
 
         pl = PentaLoom(
             agents=self._agents,
-            extra_mcp_servers={WEAVER_MCP_SERVER_NAME: weaver_server},
+            extra_mcp_servers={
+                WEAVER_MCP_SERVER_NAME: weaver_server,
+                TODOS_MCP_SERVER_NAME: todos_server,
+            },
             extra_agents=weaver_subagents,
             extra_skills=weaver_skill_names,
             session_id=None if resume else session_id,

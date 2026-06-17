@@ -486,7 +486,6 @@ export function ChatPage() {
                 <RightPanel
                   sessionId={meta.session_id}
                   meta={meta}
-                  history={history ?? []}
                   liveFrames={liveFrames}
                   onMountsChanged={onMountsChanged}
                 />
@@ -525,7 +524,6 @@ export function ChatPage() {
             <RightPanel
               sessionId={meta.session_id}
               meta={meta}
-              history={history ?? []}
               liveFrames={liveFrames}
               onMountsChanged={onMountsChanged}
             />
