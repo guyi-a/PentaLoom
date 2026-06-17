@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from pentaloom.config import get_settings
 from pentaloom.crud import chat_session as crud_chat
+from pentaloom.crud import todos as todos_crud
 from pentaloom.infra import SQLiteSessionStore
 from pentaloom.infra.db import AsyncSessionLocal
 from pentaloom.infra.prompt_blocks import strip_internal_prompt_blocks
@@ -34,6 +35,7 @@ from pentaloom.models.session import (
     SessionEntry,
     SessionMtime,
     SessionSummary,
+    SessionTodos,
 )
 from pentaloom.routers.chat import _validate_mounted_dirs
 from sqlalchemy import delete
@@ -252,6 +254,15 @@ async def get_session(sid: str) -> SessionMeta:
     return SessionMeta.from_row(row)
 
 
+@router.get("/{sid}/todos", summary="session 当前 todo 列表")
+async def get_session_todos(sid: str) -> dict[str, Any]:
+    """前端右栏 Todo section 拉这个 endpoint. 不校 session 存在性 (空表也合法)."""
+    async with AsyncSessionLocal() as db:
+        items = await todos_crud.read_todos(db, session_id=sid)
+        updated_at = await todos_crud.get_updated_at(db, session_id=sid)
+    return {"todos": items, "updated_at": updated_at}
+
+
 def _entry_to_session_message(entry: dict) -> SessionMessage | None:
     """SDK store 里的一行 entry → SessionMessage. 不走 parentUuid 链还原.
 
@@ -437,6 +448,7 @@ async def delete_session(sid: str, request: Request) -> dict:
         await db.execute(delete(SessionEntry).where(SessionEntry.session_id == sid))
         await db.execute(delete(SessionMtime).where(SessionMtime.session_id == sid))
         await db.execute(delete(SessionSummary).where(SessionSummary.session_id == sid))
+        await db.execute(delete(SessionTodos).where(SessionTodos.session_id == sid))
         await db.delete(row)
         await db.commit()
         deleted["db"] = True

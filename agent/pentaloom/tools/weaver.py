@@ -32,6 +32,7 @@ WEAVER_MCP_SERVER_NAME = "pentaloom_weaver"
 
 WEAVE_SKILL_TOOL_NAME = "weave_skill"
 WEAVE_APP_TOOL_NAME = "weave_app"
+WEAVE_APP_REVISE_TOOL_NAME = "weave_app_revise"
 WEAVE_APP_WRITE_FILE_TOOL_NAME = "weave_app_write_file"
 WEAVE_APP_EDIT_FILE_TOOL_NAME = "weave_app_edit_file"
 WEAVE_APP_FINALIZE_TOOL_NAME = "weave_app_finalize"
@@ -59,6 +60,7 @@ CLOSE_APP_WINDOW_TOOL_NAME = "close_app_window"
 
 WEAVE_SKILL_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SKILL_TOOL_NAME}"
 WEAVE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_TOOL_NAME}"
+WEAVE_APP_REVISE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_REVISE_TOOL_NAME}"
 WEAVE_APP_WRITE_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_WRITE_FILE_TOOL_NAME}"
 WEAVE_APP_EDIT_FILE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_EDIT_FILE_TOOL_NAME}"
 WEAVE_APP_FINALIZE_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_FINALIZE_TOOL_NAME}"
@@ -83,6 +85,7 @@ CLOSE_APP_WINDOW_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{CLOSE_APP_WINDOW_
 ALL_WEAVER_FULL_NAMES = (
     WEAVE_SKILL_FULL_NAME,
     WEAVE_APP_FULL_NAME,
+    WEAVE_APP_REVISE_FULL_NAME,
     WEAVE_APP_WRITE_FILE_FULL_NAME,
     WEAVE_APP_EDIT_FILE_FULL_NAME,
     WEAVE_APP_FINALIZE_FULL_NAME,
@@ -165,12 +168,17 @@ def build_weaver_mcp_server(
             "(1) 调本工具前必须先 Skill('app-patterns'); 涉及 window/service 时再按需 "
             "Skill('app-window') / Skill('app-service'). "
             "(2) 当 app 含 window/service/schedule/watch 任 2 个以上组件时, "
-            "**调本工具前必须先 TodoWrite 拆步骤** (是真调 TodoWrite 工具, 不是 Bash "
-            "echo 一行 / 回复里 markdown 列表 — 那些不算, 右栏 Todo 面板看不到), "
-            "至少含: load skills → 设计 → "
-            "write 每个组件 → 每个组件 verify (service 用 weave_service_start, "
-            "window 用 open_app_window) → finalize. 一口气 write 完一把 finalize 错只能"
-            "事后回头改, 中间 verify 才能早发现错. "
+            "**调本工具前必须先调 todo_write 拆步骤** (是真调 mcp__pentaloom_todos__todo_write "
+            "工具, 不是 Bash echo 一行 / 回复里 markdown 列表 — 那些不算, 右栏 Todo 面板看不到). "
+            "todo 步骤**顺序不能乱**, 至少这 5 步: "
+            "①Load skills → 设计架构 / "
+            "②weave_app 建骨架 / "
+            "③weave_app_write_file 写每个组件源码 / "
+            "④**verify 每个组件**(service 用 weave_service_start, window 用 open_app_window, "
+            "script 用 invoke_app) / "
+            "⑤weave_app_finalize 收口. "
+            "❌ verify 放 finalize 后 / write 跟 finalize 混一步 — 都是错的, "
+            "verify 出错时 plist 已经装上了. ✓ write → verify → finalize 三步分明. "
             "(3) description 参数必须跟 manifest_json 里的 \"description\" 字段**字面量一致** "
             "(两处写同一句, 复制粘贴防错). "
             "(4) app_json 的 components.schedules[] 每项**必须含 invocation_id** "
@@ -221,7 +229,7 @@ def build_weaver_mcp_server(
         mark_rebuild()
         # 给 LLM 看的下一步引导 — 多组件 app 强引导 build-verify-show 循环,
         # 不要一把 write + finalize. tool_result 出现在当前 turn, 比 system prompt
-        # 早期段更显眼. 注意 TodoWrite 应该在调本工具**之前**就拆好 (description
+        # 早期段更显眼. 注意 todo 应该在调本工具**之前**就拆好 (description
         # 硬规则), 这里 result 假设 todo 已经存在, 强调"继续推进"而不是"现在拆".
         comp = app_biz.read_app_definition(settings, meta.name)
         n_components = 0
@@ -236,7 +244,7 @@ def build_weaver_mcp_server(
         if n_components >= 2:
             hint = (
                 f"已建 app {meta.name!r} 骨架 (status=draft, 含 {n_components} 个组件).\n\n"
-                "**继续按你的 TodoWrite 推进** (如果没拆 todo, 现在补一份):\n"
+                "**继续按你的 todo 列表推进** (如果没拆, 现在 mcp__pentaloom_todos__todo_write 补一份):\n"
                 "  1. ✓ weave_app 骨架 (刚做完)\n"
                 "  2. weave_app_write_file 写每个组件源码\n"
                 "  3. **每个组件分别 verify** — service 用 weave_service_start "
@@ -255,13 +263,72 @@ def build_weaver_mcp_server(
         return _ok_text(hint)
 
     @tool(
+        WEAVE_APP_REVISE_TOOL_NAME,
+        (
+            "改 app 的 manifest.json / app.json / description (整体覆盖). "
+            "用途: 织造期发现 schema 错 / port 冲突 / target 写错时, **改 app 配置不用 "
+            "delete + 重 weave**. files/ 下源码用 weave_app_write_file / edit_file, "
+            "本工具不动 files/. "
+            "限制: app 必须存在; status 必须是 draft 或 dirty (ready 的 app 拒). "
+            "三个字段任一不传 = 保持原值, 至少传一个. "
+            "改 description 时必须连带改 manifest_json (manifest.description 字段也要更新). "
+            "参数: name (**必填**, str, app 名字), "
+            "description (可选, str), "
+            "manifest_json (可选, str, 完整新 manifest.json), "
+            "app_json (可选, str, 完整新 app.json). "
+            "调用例子 (改端口): "
+            "{\"name\":\"diary\",\"app_json\":\"{...完整 app.json, services[].port=9002...}\"}. "
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "manifest_json": {"type": "string"},
+                "app_json": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    )
+    async def _weave_app_revise(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            meta = app_biz.revise_app(
+                settings,
+                name=str(args.get("name", "")),
+                description=(
+                    str(args["description"]) if args.get("description") is not None else None
+                ),
+                manifest_json=(
+                    str(args["manifest_json"]) if args.get("manifest_json") is not None else None
+                ),
+                app_json=(
+                    str(args["app_json"]) if args.get("app_json") is not None else None
+                ),
+            )
+        except WeaverError as e:
+            return _err(f"weave_app_revise 失败: {e}")
+        except Exception as e:
+            return _err(f"weave_app_revise 未预期错误 {type(e).__name__}: {e}")
+        mark_rebuild()
+        return _ok_text(
+            f"已改 app {meta.name!r} (status={meta.status}). "
+            "改完用 weave_service_start / open_app_window 重 verify, 再 weave_app_finalize."
+        )
+
+    @tool(
         WEAVE_APP_WRITE_FILE_TOOL_NAME,
         (
             "往已 weave 的 app 的 files/<rel_path> 写一个文件 (创建或覆盖). "
-            "自动放行 (app 已 HITL 通过). 路径必须相对 files/ 根, 不能 ../, "
+            "自动放行 (app 已 HITL 通过). "
+            "参数 (3 个**全必填**, 缺一个就报 validation error): "
+            "app_name (str, app 的名字), "
+            "rel_path (str, 相对 files/ 的路径, 如 'services/api/main.py'), "
+            "content (str, 文件全文). "
+            "调用例子: "
+            "{\"app_name\":\"diary\",\"rel_path\":\"services/api/main.py\",\"content\":\"...\"}. "
+            "路径必须相对 files/ 根, 不能 ../, "
             "不能覆盖 manifest.json/app.json/meta.json/runs/logs. "
-            "若 app 是 ready 状态, 写完会打回 dirty (强制重 finalize). "
-            "参数: app_name (必填), rel_path (必填, 相对 files/), content (必填, 文件全文)."
+            "若 app 是 ready 状态, 写完会打回 dirty (强制重 finalize)."
         ),
         {
             "type": "object",
@@ -291,9 +358,13 @@ def build_weaver_mcp_server(
         WEAVE_APP_EDIT_FILE_TOOL_NAME,
         (
             "改 app 已有文件单段 (跟 SDK Edit 同款语义). 自动放行. "
+            "参数 (4 个**全必填**): app_name (str), rel_path (str, 相对 files/), "
+            "old_string (str, 原文段), new_string (str, 新文段). "
+            "调用例子: "
+            "{\"app_name\":\"diary\",\"rel_path\":\"services/api/main.py\","
+            "\"old_string\":\"port = 9001\",\"new_string\":\"port = 9002\"}. "
             "old_string 必须在文件里唯一出现 1 次 (找不到 / 多次出现都报错, "
-            "agent 给更长 context 重试). 改完 ready app 会打回 dirty. "
-            "参数: app_name, rel_path, old_string, new_string (全必填)."
+            "agent 给更长 context 重试). 改完 ready app 会打回 dirty."
         ),
         {
             "type": "object",
@@ -494,7 +565,7 @@ def build_weaver_mcp_server(
         INVOKE_WORKFLOW_DYNAMIC_TOOL_NAME,
         (
             "动态模式调 workflow — 不跑 step DAG, 而是把 workflow definition 渲染成一段 plan "
-            "markdown 让你 (主 agent) 自己接管. 你看到 ToolResult 后, 用 TodoWrite 把 steps 拆成 "
+            "markdown 让你 (主 agent) 自己接管. 你看到 ToolResult 后, 用 todo_write 把 steps 拆成 "
             "todo, 一步步调 invoke_app / 自己 reasoning / 自己 reply, 跟普通对话一样. "
             "适用: workflow 是给主 agent 看的 plan / SOP, 想用 agent 全套能力执行 (临时改 args, "
             "中途读文件, 把 LLM 处理那步直接想清楚就行). "
@@ -758,6 +829,8 @@ def build_weaver_mcp_server(
             "立刻能调. 适用: 织 service 类 app 时验真起得来 / 看错没. "
             "**finalize 后会被自动 stop, declared launchd 接管** — 这套是 dev-time "
             "工具, 长寿命用 weave_app_finalize. "
+            "参数: app_name (必填, str, app 名字), "
+            "service_name (必填, str, app.json components.services[].name 里的名字). "
             "返: pid / port / log_path / uptime. ready probe (5s 内 TCP 能连 port) "
             "失败但进程没死 → warning 不抛错, agent 用 weave_service_logs 自查."
         ),
@@ -790,6 +863,7 @@ def build_weaver_mcp_server(
         (
             "停一个织造期 ephemeral service (SIGTERM 3s + 不退 SIGKILL 2s). "
             "顺手删 .runtime/<svc>.port (declared 接管时不留 stale 端口). "
+            "参数: app_name (必填, str), service_name (必填, str). "
             "返 stopped=true/false (服务不在 / 已死返 false, 真停了返 true)."
         ),
         {
@@ -818,7 +892,9 @@ def build_weaver_mcp_server(
         (
             "stop + start 一个 ephemeral service. 等价 weave_service_stop + "
             "weave_service_start, 但是原子化 + 一条工具调用. 改完 service 源码 "
-            "想重跑用这个. 返同 weave_service_start."
+            "想重跑用这个. "
+            "参数: app_name (必填, str), service_name (必填, str). "
+            "返同 weave_service_start."
         ),
         {
             "type": "object",
@@ -855,6 +931,8 @@ def build_weaver_mcp_server(
             "[stdout]/[stderr] 前缀). 进程已死也能读 (落盘在 "
             ".ephemeral-logs/<service>.log). declared service log 走 "
             "tail_weaver_logs(kind='app', mode='service:<svc>') — 别混. "
+            "参数: app_name (必填, str), service_name (必填, str), "
+            "n (可选, int, 末尾多少行, 默认 50). "
             "返: lines (list[str]) / alive / pid / port / log_path."
         ),
         {
@@ -974,6 +1052,7 @@ def build_weaver_mcp_server(
         tools=[
             _weave_skill,
             _weave_app,
+            _weave_app_revise,
             _weave_app_write_file,
             _weave_app_edit_file,
             _weave_app_finalize,

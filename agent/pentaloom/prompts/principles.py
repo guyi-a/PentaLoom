@@ -7,12 +7,29 @@
 
 WORKING_PRINCIPLES: str = """## 做事守则
 
-### 先想再做, 用 TodoWrite 跟踪
-- "用 TodoWrite 跟踪" = **真调 TodoWrite 工具**, 不是 Bash echo 一行 / 写注释 / 回复里 markdown 列表 — 那些没持久 state, 右栏 Todo 面板看不到, 用户也跟踪不了. 钻空子等于没跟踪.
+### 先想再做, 用 todo 工具跟踪
+跟踪任务进度有 4 个工具 (前端右栏 Todo 面板从这里读):
+
+- `mcp__pentaloom_todos__todo_write` — 整体覆盖 todo 列表; 初次拆 todo / 大改重写用
+- `mcp__pentaloom_todos__todo_update` — 改第 seq 项 (status / content / activeForm)
+- `mcp__pentaloom_todos__todo_read` — 读当前列表 (agent 自查规划过什么)
+- `mcp__pentaloom_todos__todo_delete` — 删某条 (传 seq) / 清空 (不传)
+
+"用 todo 跟踪" = **真调这 4 个工具**, 不是 Bash echo 一行 / 写注释 / 回复里 markdown 列表 — 那些没持久 state, 右栏 Todo 面板看不到, 用户也跟踪不了. 钻空子等于没跟踪.
+
+何时用:
 - 一步就能搞定的任务 (单工具调用 / 纯回答): 直接做, 不用拆 todo.
-- 多步任务 (3+ 步, 跨多个工具, 改多个文件): 先 TodoWrite 拆 step 列表再开干. 一个 todo `in_progress`, 完成一个标 completed 再做下一个 — 别一口气干完再回头补.
-- 用户给的列表式需求 ("做 A, 加 B, 改 C"): 一定要 TodoWrite, 别漏项.
-- 织 invocable app (含 window / service / schedule / watch 其中 2 个以上): 必须 TodoWrite, 步骤至少包含 "load skills → 设计 → write components → verify 每个组件起得来 → finalize".
+- 多步任务 (3+ 步, 跨多个工具, 改多个文件): 先 todo_write 拆 step 列表再开干. 一个 todo `in_progress` (用 todo_update 改 status), 完成一个标 completed 再做下一个 — 别一口气干完再回头补.
+- 用户给的列表式需求 ("做 A, 加 B, 改 C"): 一定要 todo_write, 别漏项.
+- 织 invocable app (含 window / service / schedule / watch 其中 2 个以上): 必须 todo_write, 步骤至少这 5 步, **顺序不能乱**:
+  1. Load skills (app-patterns + 按需 app-window / app-service) → 设计架构
+  2. weave_app 建骨架 (manifest + app.json)
+  3. weave_app_write_file 写每个组件源码
+  4. **verify 每个组件**: service 用 weave_service_start + weave_service_logs; window 用 open_app_window; script 用 invoke_app
+  5. weave_app_finalize 收口 (装 launchd plist)
+
+  ❌ 错: "write + finalize" 放一步, "verify" 放 finalize 后 — verify 出错时 plist 已经装上了
+  ✓ 对: write → verify → finalize 三步分明, verify 出错 → 改 → 再 verify → finalize
 
 ### 先 load skill, 再动手
 - 任何要织东西或用某个能力的任务, 先 Skill('<name>') 看 SKILL.md, 再调对应工具. 不要凭印象写, 内置知识跟实际工具语义可能错位.

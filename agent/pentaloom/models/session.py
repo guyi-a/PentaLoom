@@ -80,3 +80,22 @@ class SessionMtime(Base):
     session_id: Mapped[str] = mapped_column(String, primary_key=True)
     subpath: Mapped[str] = mapped_column(String, primary_key=True, default="")
     mtime_ms: Mapped[int] = mapped_column(Integer)
+
+
+class SessionTodos(Base):
+    """per-session todo 列表, 整体存 JSON.
+
+    SDK 内置 TodoWrite 只给 Claude 模型, 切非 Claude (DeepSeek 等) 工具消失.
+    自己实现一份 MCP 版补位, 顺便落库 (内置那个不落库, 重启即丢).
+
+    todos_json schema: [{"seq": 1, "content": "...", "activeForm": "...",
+    "status": "pending"|"in_progress"|"completed"}, ...]
+    """
+
+    __tablename__ = "session_todos"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    todos_json: Mapped[str] = mapped_column(String, default="[]", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
