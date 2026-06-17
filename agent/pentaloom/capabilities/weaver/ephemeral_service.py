@@ -471,11 +471,11 @@ def _diagnose_python_service_exit(spec, cwd: Path, log_tail: str) -> str:
       1. 文件只有 app=FastAPI() — 跑 python file.py 立刻 exit=0 (没 uvicorn.run)
       2. ModuleNotFoundError — python_deps 漏了
     """
-    cmd = list(spec.command)
-    if not cmd or cmd[0] not in {"python", "python3"} or len(cmd) < 2:
+    from pentaloom.capabilities.weaver.app import python_entry_arg
+
+    entry_rel = python_entry_arg(list(spec.command))
+    if entry_rel is None:
         return ""
-    if cmd[1].startswith("-"):
-        return ""  # python -m / -c 跳
 
     # log tail 优先 — ModuleNotFoundError 比静态扫更可信
     if "ModuleNotFoundError" in log_tail or "ImportError" in log_tail:
@@ -484,7 +484,7 @@ def _diagnose_python_service_exit(spec, cwd: Path, log_tail: str) -> str:
             "用 weave_app_revise 把缺的模块加进 app.json components.services[].python_deps."
         )
 
-    entry_path = (cwd / cmd[1]).resolve()
+    entry_path = (cwd / entry_rel).resolve()
     try:
         entry_path.relative_to(cwd.resolve())
     except ValueError:
@@ -499,7 +499,7 @@ def _diagnose_python_service_exit(spec, cwd: Path, log_tail: str) -> str:
         return ""  # 入口看起来对, 别瞎猜 — 让 log tail 自己说话
 
     return (
-        f"诊断: {cmd[1]} 没找到 uvicorn.run( / app.run( / web.run_app( — "
+        f"诊断: {entry_rel} 没找到 uvicorn.run( / app.run( / web.run_app( — "
         f"FastAPI service 通常少了启动段. 加:\n"
         f'  if __name__ == "__main__":\n'
         f"      import os, uvicorn\n"

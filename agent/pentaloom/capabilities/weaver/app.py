@@ -386,7 +386,9 @@ def revise_app(
         raise index.WeaverError(
             f"revise_app 拒: app {name!r} status={meta.status!r}. "
             f"只允许 draft / dirty 时改 manifest/app.json. "
-            f"ready 的 app 想改先 invoke_app 测出问题用 unfinalize, 或 delete 重写."
+            f"ready 的 app 想改: 用 weave_app_write_file / weave_app_edit_file 改 "
+            f"files/ 下源码 (status 自动打回 dirty), 然后再 revise_app + finalize; "
+            f"或 delete 重写."
         )
     if description is None and manifest_json is None and app_json is None:
         raise index.WeaverError(
@@ -738,6 +740,25 @@ _FETCH_MARKERS = ("fetch(", "axios.", "XMLHttpRequest")
 _PYTHON_SERVE_CALLS = ("uvicorn.run(", "app.run(", "web.run_app(")
 
 
+def python_entry_arg(command: list[str]) -> str | None:
+    """python / python3 命令里抽脚本入口 (跳 -u / -O 等无值 flag).
+
+    支持: ["python", "x.py"] / ["python", "-u", "x.py"] / ["python", "-O", "-u", "x.py"]
+    返 None: -m / -c 模式 (module / inline-code, 没文件入口); 找不到 .py 结尾的非 option 参数.
+
+    `-X foo` 这种带值 flag 不识别 (会错把 foo 当候选; 用户 app 不写这种, 接受漏识别).
+    """
+    if len(command) < 2 or command[0] not in {"python", "python3"}:
+        return None
+    for arg in command[1:]:
+        if arg in {"-m", "-c"}:
+            return None  # module / inline-code, 没 .py 文件可校
+        if arg.startswith("-"):
+            continue  # -u / -O / -OO / -S / -B / -q 等无值 flag
+        return arg if arg.endswith(".py") else None
+    return None
+
+
 def _iter_window_sources(files_root: Path) -> list[Path]:
     """files/windows/ 下所有 .ts/.tsx/.js/.jsx. files_root 不存在返空."""
     win_root = files_root / "windows"
@@ -821,16 +842,15 @@ def _validate_python_service_entry(
 ) -> list[str]:
     """Python service 入口必须含 uvicorn.run( / app.run( / web.run_app( 之一.
 
-    裸 if __name__ == "__main__": 不算 — 空块同样 exit=0. 只校 command[0] in
-    {python, python3} 且 command[1] 是相对 .py 路径; -m / -c / 非 Python 跳.
+    裸 if __name__ == "__main__": 不算 — 空块同样 exit=0. 走 python_entry_arg 抽
+    脚本入口 (支持 -u / -O 等无值 flag); -m / -c / 非 Python 跳.
     """
     out: list[str] = []
     for svc in app_def.components.services:
         cmd = list(svc.command)
-        if not cmd or cmd[0] not in {"python", "python3"} or len(cmd) < 2:
+        entry_rel = python_entry_arg(cmd)
+        if entry_rel is None:
             continue
-        if cmd[1].startswith("-"):
-            continue  # python -m / -c
         # 解析入口 (复用 workdir + relative_to 防穿越)
         wd = files_root
         if svc.workdir:
@@ -841,24 +861,24 @@ def _validate_python_service_entry(
             except index.WeaverError as e:
                 out.append(f"service.{svc.name}.workdir: {e}")
                 continue
-        entry = (wd / cmd[1]).resolve()
+        entry = (wd / entry_rel).resolve()
         try:
             entry.relative_to(files_root.resolve())
         except ValueError:
             out.append(
-                f"service.{svc.name}.command 入口 {cmd[1]!r} 越出 files/ 根"
+                f"service.{svc.name}.command 入口 {entry_rel!r} 越出 files/ 根"
             )
             continue
         if not entry.is_file():
             # 入口缺失走另一条路径报错; 这里也加一条防漏
             out.append(
-                f"service.{svc.name}.command 入口文件不存在: {cmd[1]}"
+                f"service.{svc.name}.command 入口文件不存在: {entry_rel}"
             )
             continue
         try:
             text = entry.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            out.append(f"service.{svc.name} 入口读不了 {cmd[1]}: {e}")
+            out.append(f"service.{svc.name} 入口读不了 {entry_rel}: {e}")
             continue
         if any(call in text for call in _PYTHON_SERVE_CALLS):
             continue
@@ -866,7 +886,7 @@ def _validate_python_service_entry(
         out.append(
             f"service.{svc.name} 入口 {rel} 没找到 server 启动调用 "
             f"(uvicorn.run( / app.run( / web.run_app(). 只有 app=FastAPI() 会让 "
-            f"`python {cmd[1]}` 立刻 exit=0. FastAPI 加:\n"
+            f"`python {entry_rel}` 立刻 exit=0. FastAPI 加:\n"
             f'  if __name__ == "__main__":\n'
             f"      import os, uvicorn\n"
             f'      uvicorn.run(app, host="127.0.0.1", '

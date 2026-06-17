@@ -831,8 +831,10 @@ def build_weaver_mcp_server(
             "工具, 长寿命用 weave_app_finalize. "
             "参数: app_name (必填, str, app 名字), "
             "service_name (必填, str, app.json components.services[].name 里的名字). "
-            "返: pid / port / log_path / uptime. ready probe (5s 内 TCP 能连 port) "
-            "失败但进程没死 → warning 不抛错, agent 用 weave_service_logs 自查."
+            "返: pid / port / log_path / uptime. ready probe 在 spec.startup_timeout_ms "
+            "内 TCP 没连上 port → 视为 verify 失败, 进程被 stop + port file 清掉 + 抛错; "
+            "agent 用 weave_service_logs 看日志诊断 (慢启动调大 startup_timeout_ms). "
+            "Python 入口少 uvicorn.run( / ModuleNotFoundError 错误文案会带针对性 hint."
         ),
         {
             "type": "object",
