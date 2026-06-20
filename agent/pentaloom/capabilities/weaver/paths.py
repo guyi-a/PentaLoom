@@ -115,6 +115,13 @@ def app_logs_dir(settings: Settings, name: str) -> Path:
     return app_dir(settings, name) / "logs"
 
 
+def app_screenshots_dir(settings: Settings, name: str) -> Path:
+    """agent 调 screenshot_app_window 截图后落盘的位置.
+    weaver/apps/<name>/.screenshots/<window>-<ts>.png. 跟 app 绑定不跟 session,
+    多 session 共看一个 app 的历史截图."""
+    return app_dir(settings, name) / ".screenshots"
+
+
 def app_runs_dir(settings: Settings, name: str) -> Path:
     """每次 invocation 输出落盘到 runs/<run_id>/. 大对象用 artifact_path 引,
     不塞 base64 进 agent context."""

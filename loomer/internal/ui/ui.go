@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/guyi-a/PentaLoom/loomer/internal/logbuf"
 	webview "github.com/webview/webview_go"
 )
 
@@ -124,6 +125,16 @@ type Options struct {
 	// OnHandlerResult: JS handler async 完了调 __pentaloom_handler_result(reqID, output, error)
 	// 时触发. main 把它打包成 result NDJSON 写 stdout 给 loom.
 	OnHandlerResult func(requestID string, output json.RawMessage, errStr string)
+
+	// LogRing: window 内 console.{log,warn,error,info,debug} hook 后的累积处.
+	// nil 表示不接 (console 调用走默认 webview 行为, 不留底). main 通常创建一个
+	// 给 ui + control HTTP server 共用.
+	LogRing *logbuf.Ring
+
+	// ScreenshotProvider: control HTTP /screenshot 用. main 起 control server
+	// 时拿到这个 provider 注册回调, ui.Run 起 webview 后调 setWindow 注入
+	// NSWindow*. nil 表示不支持截图 (跨平台 / 测试场景).
+	ScreenshotProvider *ScreenshotProvider
 }
 
 // Run 起一个窗口 + 阻塞 UI loop. 关窗后函数返回.
@@ -156,6 +167,56 @@ func Run(opts Options) error {
 		return nil
 	})
 
+	// window.ipc.postMessage(JSON) 路由器 — window→host 单向命令 channel
+	// (跟 window.pentaloom.registerInvocation 双向 RPC 并存, 各管各的).
+	// payload 必须是 JSON 字符串 (跟 krow 同款), 含 type 字段决定动作.
+	w.Bind("__loom_ipc", func(payloadJSON string) any {
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(payloadJSON), &msg); err != nil {
+			return map[string]any{"ok": false, "error": "invalid JSON: " + err.Error()}
+		}
+		switch msg.Type {
+		case "close":
+			// 主线程 Terminate webview run loop, Run() 返回, loomer 进程退出.
+			// Dispatch 让动作在主线程跑 (从 JS Bind callback 这条 thread 跳过去).
+			w.Dispatch(func() { w.Terminate() })
+			return map[string]any{"ok": true}
+		case "minimize":
+			// cgo NSWindow miniaturize: 收到 macOS dock 的 mini 动画.
+			// non-darwin 是 no-op (stub).
+			miniaturize(w.Window())
+			return map[string]any{"ok": true}
+		case "maximize":
+			// cgo NSWindow zoom: 切 max useful size <-> 原 size, 跟绿圆点一致.
+			zoom(w.Window())
+			return map[string]any{"ok": true}
+		case "open-path":
+			// 打开外部 URL / 本地文件 / 文件夹, 走系统默认 app (open 命令).
+			// path 不做白名单 — TSX 是 agent 自己织的, 信任. 非 darwin 平台
+			// 走 platform 别的命令 (xdg-open / start), 这里 macOS-first.
+			var pmsg struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal([]byte(payloadJSON), &pmsg); err != nil {
+				return map[string]any{"ok": false, "error": "invalid open-path payload: " + err.Error()}
+			}
+			if pmsg.Path == "" {
+				return map[string]any{"ok": false, "error": "open-path requires non-empty path"}
+			}
+			if err := openPath(pmsg.Path); err != nil {
+				return map[string]any{"ok": false, "error": err.Error()}
+			}
+			return map[string]any{"ok": true}
+		default:
+			return map[string]any{
+				"ok":    false,
+				"error": "unknown ipc type: " + msg.Type + " (supported: close, minimize, maximize, open-path)",
+			}
+		}
+	})
+
 	// JS handler async 完了通过这个回调把 result / error 投到 Go.
 	// args: requestID, output (可 null), error (字符串 / 空)
 	w.Bind("__pentaloom_handler_result", func(requestID string, output json.RawMessage, errStr string) any {
@@ -170,7 +231,23 @@ func Run(opts Options) error {
 		return map[string]any{"echo": string(payload), "note": "legacy echo path"}, nil
 	})
 
+	// console hook: JS 端 override 原生 console.{log,warn,error,info,debug} →
+	// __loom_console(level, args[]) 把 entry 写进 LogRing. control HTTP server
+	// 的 /logs endpoint 读 ring 给 agent. ring 没设置 (nil) 就丢弃.
+	w.Bind("__loom_console", func(level string, args []string) any {
+		if opts.LogRing != nil {
+			opts.LogRing.Append(level, args)
+		}
+		return nil
+	})
+
 	w.SetHtml(buildHTML(cfg, opts.BundleJS))
+
+	// 把 NSWindow* 注入 ScreenshotProvider — control HTTP /screenshot 之前
+	// 拿到的 closure 现在能解析到 webview 句柄. SetHtml 之后 w.Window() 已 valid.
+	if opts.ScreenshotProvider != nil {
+		opts.ScreenshotProvider.setWindow(w.Window())
+	}
 
 	// dispatcher: main 用它把 invoke 投到主线程 + Eval 调 JS.
 	// 必须在 webview.Run 之前注册回 OnReady — Run 一阻塞就拿不到了.
@@ -284,6 +361,69 @@ func buildHTML(cfg Config, bundleJS string) string {
       window.__pentaloom_handler_result(requestID, null, String(msg));
     }
   };
+})();
+</script>
+<script>
+// window.ipc.postMessage(JSON) — window→host 单向命令 channel.
+// 跟 krow 同款 idiom: window 内 TSX 调 window.ipc.postMessage(JSON.stringify({type:'close'}))
+// 让 host 关闭窗口 / 最小化 / 打开外链 等. 跟 window.pentaloom 双向 RPC 是不同概念,
+// 不要混: pentaloom 是 agent↔window 业务 RPC, ipc 是 window→host 命令.
+(function () {
+  window.ipc = {
+    postMessage: function (payload) {
+      if (typeof payload !== 'string') {
+        throw new Error('window.ipc.postMessage expects JSON string, got ' + typeof payload);
+      }
+      // __loom_ipc 是 Go 端 webview.Bind 注册的, 同步返 {ok, error?}.
+      // 不抛异常给调用方 (尽量), 由 host 路由器处理 unknown type.
+      return window.__loom_ipc(payload);
+    }
+  };
+
+  // 外链自动拦截: 用户在 window 里点 <a href="https://...">, 默认浏览器会
+  // 试图在 webview 内 navigate, white-screen 风险 + 用户期望是去系统浏览器.
+  // 这里 capture 阶段拦所有 click, 命中外部 URL 就 preventDefault + 走 open-path.
+  // target=_blank 也走这条 (本来就不该让 webview 开新窗).
+  document.addEventListener('click', function (e) {
+    var a = e.target && (e.target.closest ? e.target.closest('a') : null);
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    // 只拦 http/https 跟 file:// / mailto:; webview 内 # / / 锚点 SPA 路由不动.
+    if (/^(https?:|mailto:|file:)/i.test(href)) {
+      e.preventDefault();
+      try {
+        window.ipc.postMessage(JSON.stringify({ type: 'open-path', path: href }));
+      } catch (err) {
+        // 这里不 console.error 防止日志环回 (console 已 hook, 错信息会被吃掉);
+        // 真要 debug 看 webview devtools 或者改 console.warn 走原 native 路径.
+      }
+    }
+  }, true);
+
+  // console hook: 重写原生 console.{log,warn,error,info,debug} 让 host 累积日志,
+  // agent 调 app_window_logs 时能拿到. 同时仍走原 native console (devtools 看得到).
+  // args 序列化用 JSON.stringify, 失败 (循环引用 / DOM 节点) fallback String().
+  var nativeConsole = {};
+  ['log', 'warn', 'error', 'info', 'debug'].forEach(function (level) {
+    nativeConsole[level] = console[level] && console[level].bind(console);
+    console[level] = function () {
+      var args = [];
+      for (var i = 0; i < arguments.length; i++) {
+        var a = arguments[i];
+        try {
+          args.push(typeof a === 'string' ? a : JSON.stringify(a));
+        } catch (e) {
+          args.push(String(a));
+        }
+      }
+      try {
+        window.__loom_console(level, args);
+      } catch (e) { /* host 不 ready 也不 break */ }
+      if (nativeConsole[level]) {
+        nativeConsole[level].apply(console, arguments);
+      }
+    };
+  });
 })();
 </script>
 </head>

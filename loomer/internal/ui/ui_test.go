@@ -69,6 +69,52 @@ func TestBuildHTML_TailwindAndErrorOverlay(t *testing.T) {
 	}
 }
 
+// TestBuildHTML_WindowIpcBootstrap: window.ipc.postMessage(JSON) channel 必须注入.
+// 验证 bootstrap 含必要符号, 让 TSX 写 window.ipc.postMessage(...) 时能命中 host.
+func TestBuildHTML_WindowIpcBootstrap(t *testing.T) {
+	html := buildHTML(Config{Title: "test"}, "// fake bundle")
+
+	mustContain := []string{
+		`window.ipc = {`,
+		`postMessage: function (payload)`,
+		`window.__loom_ipc(payload)`, // 走 webview.Bind 路径
+		// 错误防御: 必须验 payload 是 string (krow 同款契约)
+		`expects JSON string`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML window.ipc bootstrap missing %q", want)
+		}
+	}
+
+	// window.ipc 不应跟 window.pentaloom 在同一 IIFE 里 (概念分离: ipc=单向命令,
+	// pentaloom=双向 RPC). 简单验: window.ipc 出现位置在 window.pentaloom 之后.
+	idxPenta := strings.Index(html, "window.pentaloom = window.pentaloom")
+	idxIpc := strings.Index(html, "window.ipc = {")
+	if idxPenta < 0 || idxIpc < 0 || idxIpc < idxPenta {
+		t.Errorf("expected window.ipc bootstrap after window.pentaloom; pentaloom at %d, ipc at %d", idxPenta, idxIpc)
+	}
+}
+
+// TestBuildHTML_ExternalLinkInterceptor: <a href=https?> 自动转 open-path
+// (避免 webview 内 navigate 白屏 + 跟用户预期一致 — 外链去系统浏览器).
+func TestBuildHTML_ExternalLinkInterceptor(t *testing.T) {
+	html := buildHTML(Config{Title: "test"}, "// fake bundle")
+
+	mustContain := []string{
+		`document.addEventListener('click'`,         // 拦 click 阶段
+		`closest ? e.target.closest('a')`,           // 找 <a> 祖先
+		`(https?:|mailto:|file:)`,                   // protocol 白名单
+		`type: 'open-path'`,                         // 路由到 ipc
+		`{ type: 'open-path', path: href }`,         // payload shape
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML external link interceptor missing %q", want)
+		}
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

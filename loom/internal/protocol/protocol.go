@@ -74,6 +74,10 @@ type WindowInfo struct {
 	App        string `json:"app,omitempty"`
 	WindowName string `json:"window_name,omitempty"`
 	StartedAt  int64  `json:"started_at"` // unix seconds
+	// ControlPort: loomer 进程内 control HTTP server 的 listen 端口 (loopback).
+	// agent 拿到后 httpx GET 127.0.0.1:port/{logs,screenshot} 反向拉日志/截图.
+	// 0 表示 loomer 还没发 ready msg (启动早期), agent 应该重试.
+	ControlPort int `json:"control_port,omitempty"`
 }
 
 // WindowListReq: 可选过滤. App="" 时返全部.
@@ -123,4 +127,7 @@ type LoomerMsg struct {
 	Args         json.RawMessage `json:"args,omitempty"`
 	Output       json.RawMessage `json:"output,omitempty"`
 	Error        string          `json:"error,omitempty"`
+	// ControlPort: 仅 type=ready 时填. loomer 内 control HTTP server 的 port,
+	// daemon 存进 WindowProc 让 window.list 能透传给 agent.
+	ControlPort int `json:"control_port,omitempty"`
 }

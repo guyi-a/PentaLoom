@@ -57,6 +57,9 @@ WEAVE_SERVICE_LOGS_TOOL_NAME = "weave_service_logs"
 # window 开关 — agent 主动开窗 / 关窗 (跟 invoke_app 同档免审, 用户主动让 agent 干就默认信任)
 OPEN_APP_WINDOW_TOOL_NAME = "open_app_window"
 CLOSE_APP_WINDOW_TOOL_NAME = "close_app_window"
+APP_WINDOW_LOGS_TOOL_NAME = "app_window_logs"
+SCREENSHOT_APP_WINDOW_TOOL_NAME = "screenshot_app_window"
+LIST_APP_WINDOWS_TOOL_NAME = "list_app_windows"
 
 WEAVE_SKILL_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_SKILL_TOOL_NAME}"
 WEAVE_APP_FULL_NAME = f"mcp__{WEAVER_MCP_SERVER_NAME}__{WEAVE_APP_TOOL_NAME}"
@@ -1052,6 +1055,236 @@ def build_weaver_mcp_server(
             )
         return _ok_json(result)
 
+    @tool(
+        APP_WINDOW_LOGS_TOOL_NAME,
+        (
+            "拉已开 window 的 console.{log,warn,error,info,debug} 历史 — agent "
+            "调试 React 组件状态 / fetch 失败 / 看 user TSX 抛了啥. "
+            "走 loomer 进程内的 control HTTP /logs (loopback only). 返末 N 条 "
+            "entries: {time, level, args[]}. window 没开 / 没 ready (control_port=0) "
+            "返清晰错让 agent 先 open_app_window. 参数: app_name (必填), "
+            "window_name (可选, 不传走 components.windows[0]), lines (可选, 默认 50, 最大 500)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "window_name": {"type": "string", "description": "可选, 不传走 components.windows[0]"},
+                "lines": {
+                    "type": "integer",
+                    "description": "返末 N 条; 默认 50, 上限 500 (loomer ring 容量)",
+                    "minimum": 1,
+                    "maximum": 500,
+                },
+            },
+            "required": ["app_name"],
+        },
+    )
+    async def _app_window_logs(args: dict[str, Any]) -> dict[str, Any]:
+        import httpx
+        from pentaloom.infra import loom_client
+
+        app_name = str(args.get("app_name", "")).strip()
+        window_name_raw = args.get("window_name")
+        window_name = (
+            str(window_name_raw).strip() if window_name_raw else None
+        ) or None
+        lines = int(args.get("lines") or 50)
+
+        if not app_name:
+            return _err("app_window_logs: app_name 必填")
+        # window_name 不传走第一个 window — 跟 open/close 一致
+        if window_name is None:
+            try:
+                app_def = app_biz.read_app_definition(settings, app_name)
+            except WeaverError as e:
+                return _err(f"app_window_logs 读 app.json 失败: {e}")
+            if app_def is None:
+                return _err(f"app {app_name!r} 没找到 (app.json 缺失 / 未 weave)")
+            if not app_def.components.windows:
+                return _err(f"app {app_name!r} 没 window component")
+            window_name = app_def.components.windows[0].name
+
+        try:
+            port = await loom_client.find_control_port(app_name, window_name)
+        except loom_client.LoomUnavailable as e:
+            return _err(f"app_window_logs: loom daemon 不可用 — {e}")
+        except Exception as e:
+            return _err(f"app_window_logs find_control_port 错: {e}")
+
+        if port is None:
+            return _err(
+                f"window {app_name}/{window_name} 没开或 loomer 还没 ready. "
+                f"先调 open_app_window 再试 (or 等 1-2s 再 retry)."
+            )
+
+        url = f"http://127.0.0.1:{port}/logs?lines={lines}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                payload = resp.json()
+        except httpx.HTTPError as e:
+            return _err(f"app_window_logs GET {url}: {e}")
+        except Exception as e:
+            return _err(f"app_window_logs 未预期错: {e}")
+
+        entries = payload.get("entries") or []
+        return _ok_json({
+            "app_name": app_name,
+            "window_name": window_name,
+            "control_port": port,
+            "count": len(entries),
+            "entries": entries,
+        })
+
+    @tool(
+        LIST_APP_WINDOWS_TOOL_NAME,
+        (
+            "列当前 loom daemon 管的所有 weaver app window. 返 [{app_name, "
+            "window_name, window_id, pid, started_at, control_port}, ...]. "
+            "用法: agent 想知道哪些 window 现在开着 / 找特定 app 的 window 还活不活. "
+            "参数: app_name (可选, 不传列全部; 传只列该 app 的)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string", "description": "可选, 不传列全部"},
+            },
+            "required": [],
+        },
+    )
+    async def _list_app_windows(args: dict[str, Any]) -> dict[str, Any]:
+        from pentaloom.infra import loom_client
+
+        app_filter = str(args.get("app_name") or "").strip() or None
+        try:
+            windows = await loom_client.list_windows()
+        except loom_client.LoomUnavailable as e:
+            return _err(f"list_app_windows: loom daemon 不可用 — {e}")
+        except Exception as e:
+            return _err(f"list_app_windows 未预期错: {e}")
+
+        # 重命名 app 字段为 app_name 跟其他 tool 风格对齐 + 只挑用得上的字段.
+        out = []
+        for w in windows:
+            if app_filter and w.get("app") != app_filter:
+                continue
+            out.append({
+                "app_name": w.get("app") or "",
+                "window_name": w.get("window_name") or "",
+                "window_id": w.get("window_id") or "",
+                "pid": w.get("pid") or 0,
+                "started_at": w.get("started_at") or 0,
+                "control_port": w.get("control_port") or 0,
+                "title": w.get("title") or "",
+            })
+        return _ok_json({"count": len(out), "windows": out})
+
+    @tool(
+        SCREENSHOT_APP_WINDOW_TOOL_NAME,
+        (
+            "截已开 window 的 webview 内容为 PNG. agent 拿到截图直接看到 (MCP "
+            "image content 渲到对话里) + 同步落盘 weaver/apps/<app>/.screenshots/ "
+            "用户也能开. 走 WKWebView takeSnapshot, 不要 Screen Recording 权限. "
+            "用法: 用户问'现在窗子什么样' / agent 自己 debug 织出来的 UI 跟预期对不对 / "
+            "回答用户'你现在做的这个 app 长这样'. "
+            "参数: app_name (必填), window_name (可选, 不传走 components.windows[0]). "
+            "返 image content + saved_path 字符串. window 没开 / 没 ready 返清晰错."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string"},
+                "window_name": {"type": "string", "description": "可选, 不传走 components.windows[0]"},
+            },
+            "required": ["app_name"],
+        },
+    )
+    async def _screenshot_app_window(args: dict[str, Any]) -> dict[str, Any]:
+        import base64
+        import time
+        import httpx
+        from pentaloom.infra import loom_client
+        from pentaloom.capabilities.weaver import paths
+
+        app_name = str(args.get("app_name", "")).strip()
+        window_name_raw = args.get("window_name")
+        window_name = (
+            str(window_name_raw).strip() if window_name_raw else None
+        ) or None
+        if not app_name:
+            return _err("screenshot_app_window: app_name 必填")
+
+        if window_name is None:
+            try:
+                app_def = app_biz.read_app_definition(settings, app_name)
+            except WeaverError as e:
+                return _err(f"screenshot_app_window 读 app.json 失败: {e}")
+            if app_def is None:
+                return _err(f"app {app_name!r} 没找到")
+            if not app_def.components.windows:
+                return _err(f"app {app_name!r} 没 window component")
+            window_name = app_def.components.windows[0].name
+
+        try:
+            port = await loom_client.find_control_port(app_name, window_name)
+        except loom_client.LoomUnavailable as e:
+            return _err(f"screenshot_app_window: loom daemon 不可用 — {e}")
+        except Exception as e:
+            return _err(f"screenshot_app_window find_control_port 错: {e}")
+
+        if port is None:
+            return _err(
+                f"window {app_name}/{window_name} 没开或 loomer 还没 ready. "
+                f"先调 open_app_window 再试."
+            )
+
+        url = f"http://127.0.0.1:{port}/screenshot"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                if resp.status_code == 501:
+                    return _err("screenshot_app_window: 当前平台不支持截图 (loomer 没注入 screenshot 实现)")
+                resp.raise_for_status()
+                png_bytes = resp.content
+        except httpx.HTTPError as e:
+            return _err(f"screenshot_app_window GET {url}: {e}")
+        except Exception as e:
+            return _err(f"screenshot_app_window 未预期错: {e}")
+
+        if not png_bytes:
+            return _err("screenshot_app_window: 拿到空 PNG")
+
+        # 双写: 落盘 + 返 image content. 落盘用本地时间戳, 防同 window 多次截图覆盖.
+        ts = int(time.time())
+        screenshots_dir = paths.app_screenshots_dir(settings, app_name)
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        png_path = screenshots_dir / f"{window_name}-{ts}.png"
+        try:
+            png_path.write_bytes(png_bytes)
+        except OSError as e:
+            return _err(f"screenshot_app_window write {png_path}: {e}")
+
+        # MCP image content: agent 直接看到截图. 加一段 text 说明文件路径.
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        return {
+            "content": [
+                {
+                    "type": "image",
+                    "data": b64,
+                    "mimeType": "image/png",
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"window {app_name}/{window_name} 截图 ({len(png_bytes)} bytes), "
+                        f"已存 {png_path}"
+                    ),
+                },
+            ]
+        }
+
     return create_sdk_mcp_server(
         name=WEAVER_MCP_SERVER_NAME,
         tools=[
@@ -1078,5 +1311,8 @@ def build_weaver_mcp_server(
             _weave_service_logs,
             _open_app_window,
             _close_app_window,
+            _list_app_windows,
+            _app_window_logs,
+            _screenshot_app_window,
         ],
     )

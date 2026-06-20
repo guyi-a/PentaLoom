@@ -25,6 +25,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/guyi-a/PentaLoom/loomer/internal/control"
+	"github.com/guyi-a/PentaLoom/loomer/internal/logbuf"
 	"github.com/guyi-a/PentaLoom/loomer/internal/transform"
 	"github.com/guyi-a/PentaLoom/loomer/internal/ui"
 )
@@ -38,6 +40,10 @@ type loomerMsg struct {
 	Args         json.RawMessage `json:"args,omitempty"`
 	Output       json.RawMessage `json:"output,omitempty"`
 	Error        string          `json:"error,omitempty"`
+	// ControlPort: 仅在 type=ready 时填, 告诉 loom daemon 本进程的 control HTTP
+	// server listen 在哪个 localhost 端口. agent 通过 loom registry 拿到这个 port
+	// 后 httpx GET /logs / /screenshot 反向拉日志跟截图.
+	ControlPort int `json:"control_port,omitempty"`
 }
 
 func main() {
@@ -80,16 +86,35 @@ func main() {
 	// stdout 写 NDJSON 给 loom (协议出口) — 必须串行化, JS handler 可能并发回报.
 	stdoutEnc := newStdoutWriter()
 
-	// "ready" 握手: 提前告诉 loom "我活着, 协议齐了" — 当前 loom 不强制等,
-	// 但留出做 health probe 的口子.
-	stdoutEnc.send(loomerMsg{Type: "ready"})
+	// console log ring + control HTTP server (loopback only, 给 agent 反向
+	// 拉 /logs /screenshot). 起在 ready 之前, 这样 ready msg 能带 controlPort.
+	// screenshotFn 在 ui.Run 起 webview 后才能 resolve (要 NSWindow 句柄), 所以
+	// 用一个 hook closure 注入进去 — 起 server 时 closure 还没填好, 真有请求时
+	// ui.Run 已经 set 过.
+	logRing := logbuf.New(500)
+	screenshotFn := ui.NewScreenshotProvider()
+	controlSrv, err := control.New(logRing, screenshotFn.HTTPHandler)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loomer: control server init failed: %v\n", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := controlSrv.Serve(); err != nil {
+			fmt.Fprintf(os.Stderr, "loomer: control server: %v\n", err)
+		}
+	}()
+
+	// "ready" 握手: 告诉 loom "我活着, 协议齐了" + control HTTP 在哪个 port.
+	stdoutEnc.send(loomerMsg{Type: "ready", ControlPort: controlSrv.Port()})
 
 	// 给 ui.Run 喂一个 hook: webview 起来后 ui 这边返一个 dispatcher 函数,
 	// loomer main 通过它把 stdin 上来的 invoke msg 推到 JS handler.
 	// dispatchInvoke 实际签名: func(invocationID string, args json.RawMessage, requestID string)
 	uiOpts := ui.Options{
-		Config:   cfg,
-		BundleJS: bundleJS,
+		Config:           cfg,
+		BundleJS:         bundleJS,
+		LogRing:          logRing,
+		ScreenshotProvider: screenshotFn,
 		// __pentaloom_handler_result: JS handler 调来回报 Go.
 		OnHandlerResult: func(requestID string, output json.RawMessage, errStr string) {
 			msg := loomerMsg{Type: "result", RequestID: requestID}

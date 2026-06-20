@@ -156,9 +156,26 @@ async def close_window(window_id: str) -> None:
 
 
 async def list_windows() -> list[dict[str, Any]]:
-    """列已开 windows. 返 [{"window_id", "pid", "entry_path", "title", "started_at"}, ...]."""
+    """列已开 windows. 返 [{"window_id", "pid", "entry_path", "title",
+    "started_at", "control_port"}, ...]. control_port 是 loomer 进程内
+    control HTTP server 的 loopback 端口, 给 agent 反向拉 /logs /screenshot.
+    0 表示 loomer 还没发 ready msg (启动早期)."""
     data = await call("window.list", {})
     return data.get("windows") or []
+
+
+async def find_control_port(app: str, window_name: str) -> int | None:
+    """找已开 window 的 control HTTP port. 没找到 / port=0 (启动早期) 返 None.
+
+    用法: agent 端 tool 调它后再 httpx.get(f"http://127.0.0.1:{port}/logs")
+    或 /screenshot. 没找到时调用方返"window not open"或类似清晰错给 agent.
+    """
+    windows = await list_windows()
+    for w in windows:
+        if w.get("app") == app and w.get("window_name") == window_name:
+            port = w.get("control_port") or 0
+            return port if port > 0 else None
+    return None
 
 
 async def invoke_window(
