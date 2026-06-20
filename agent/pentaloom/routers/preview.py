@@ -489,11 +489,14 @@ async def preview_sqlite(
     # 延迟 import — 跟 openpyxl 同模式 (sqlite3 是 stdlib 不慢, 但保持一致).
     import sqlite3
 
-    # mode=ro 只读防误改; immutable=1 告诉 sqlite "文件不会被并发改", 跳过 wal /
-    # 锁检查, 启动快. 我们读 metadata + 几百行不需要 wal 语义.
-    uri = f"file:{target}?mode=ro&immutable=1"
+    # 整个文件通过 SQLite backup API 复制到内存再查询.
+    # 直接 URI 或 copy 文件打开有 WAL 的 DB 时, 未 checkpoint 的数据丢失 (count=0).
+    # backup() 是 SQLite 在线备份协议, 正确合并 WAL, 复制出完整快照.
     try:
-        conn = sqlite3.connect(uri, uri=True)
+        src_conn = sqlite3.connect(str(target), check_same_thread=False)
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        src_conn.backup(conn)
+        src_conn.close()
     except sqlite3.Error as e:
         raise HTTPException(422, f"corrupted sqlite: {e}") from e
 
