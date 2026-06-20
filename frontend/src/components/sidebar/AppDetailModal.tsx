@@ -32,7 +32,10 @@ import type {
   AppWatchTrigger,
 } from "@/lib/types";
 import { iconForExt } from "@/lib/tool-meta";
+import type { PreviewFile } from "@/lib/preview-store";
 import { cn } from "@/lib/utils";
+
+import { FilePreview } from "@/components/right-panel/file-preview/FilePreview";
 
 // Electron preload 在 window.__PENTALOOM__ 上挂的 API; web 模式下整个对象不存在.
 // 见 electron/src/preload/preload.ts.
@@ -77,6 +80,7 @@ function fmtTime(iso: string): string {
 }
 
 export function AppDetailModal({ appName, sessionId, onClose }: Props) {
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const { data, error, isLoading, mutate, isValidating } = useSWR<AppDetailResponse>(
     appName ? `app-detail:${appName}` : null,
     () => api.getAppDetail(appName),
@@ -92,16 +96,18 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  async function openSource(file: AppFileEntry) {
-    if (!sessionId) {
-      toast.error("Open file requires an active session");
-      return;
-    }
-    try {
-      await api.openFile({ sessionId, path: file.absolute_path });
-    } catch (e) {
-      toast.error(`Open failed: ${String(e)}`);
-    }
+  // 点击 Files 树的文件 → 切换内嵌预览 (复用右栏 FilePreview).
+  // 同一个文件再次点击 → 收起预览. file.path 是后端鉴权 key.
+  function previewSource(file: AppFileEntry) {
+    setPreviewFile((cur) => {
+      if (cur?.path === file.absolute_path) return null;
+      const parts = file.rel_path.split("/").filter(Boolean);
+      return {
+        path: file.absolute_path,
+        name: parts[parts.length - 1] ?? file.rel_path,
+        relativePath: file.rel_path,
+      };
+    });
   }
 
   // 能打开 window 的条件: status=ready + app.json 有 window component.
@@ -124,6 +130,11 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
   // 用 portal 挂到 document.body, 防 sidebar 任何祖先的 stacking context (transform /
   // overflow / contain) 把 fixed inset-0 限制在 sidebar 区域 — 之前直接渲染就遇到了
   // backdrop 只盖 sidebar 不盖主区的视觉 bug.
+  //
+  // 书页布局: previewFile 时 modal 展宽成左右两栏 — 左栏 app 详情, 右栏文件预览.
+  // transition width + opacity 让展开/收起有动感.
+  const hasPreview = previewFile !== null;
+
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -131,74 +142,90 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex h-[min(680px,85vh)] w-[min(720px,92vw)] flex-col overflow-hidden rounded-[10px] border border-[color:var(--color-line-strong)] bg-[color:var(--color-bg-card)] shadow-[0_20px_60px_-15px_rgba(20,30,50,0.18)]">
-        {/* Header */}
-        <div className="flex items-start gap-3 border-b border-[color:var(--color-line-soft)] px-5 pt-4 pb-3">
-          <AppWindow size={18} className="mt-0.5 shrink-0 text-[color:var(--color-thread-file)]" />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="font-display text-[16px] italic text-[color:var(--color-paper)]">
-                {appName}
-              </h2>
-              {data?.meta && (
-                <span
-                  className={cn(
-                    "tabular shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wider",
-                    statusBadge[data.meta.status].cls,
-                  )}
-                >
-                  {statusBadge[data.meta.status].label}
-                </span>
-              )}
-            </div>
-            {data?.meta && (
-              <p className="mt-0.5 truncate text-[11.5px] text-[color:var(--color-ink)]">
-                {data.meta.description}
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={openAppWindow}
-            disabled={!canOpenWindow}
-            title={
-              canOpenWindow
-                ? "Open app window"
-                : data?.meta?.status !== "ready"
-                  ? `Status is ${data?.meta?.status ?? "unknown"} — finalize first`
-                  : "App has no window component"
-            }
+      <div
+        className={cn(
+          "flex flex-col overflow-hidden rounded-[10px] border border-[color:var(--color-line-strong)] bg-[color:var(--color-bg-card)] shadow-[0_20px_60px_-15px_rgba(20,30,50,0.18)] transition-[width] duration-300 ease-in-out",
+          hasPreview
+            ? "h-[min(680px,90vh)] w-[min(1160px,95vw)]"
+            : "h-[min(680px,85vh)] w-[min(720px,92vw)]",
+        )}
+      >
+        {/* 书页双栏: 有预览时左右分栏, 否则单栏 */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* 左栏 — app 详情 (始终存在) */}
+          <div
             className={cn(
-              "flex shrink-0 items-center gap-1 rounded-[5px] border px-2 py-1 text-[11px] transition-colors",
-              canOpenWindow
-                ? "border-[color:var(--color-line)] text-[color:var(--color-paper-dim)] hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
-                : "cursor-not-allowed border-[color:var(--color-line-soft)] text-[color:var(--color-ink-dim)] opacity-60",
+              "flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out",
+              hasPreview ? "w-[340px] shrink-0" : "w-full",
             )}
           >
-            <ExternalLink size={11} />
-            Open
-          </button>
-          <button
-            type="button"
-            onClick={() => mutate()}
-            disabled={isValidating}
-            title="Refresh"
-            className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <RefreshCw size={13} className={isValidating ? "animate-spin" : ""} />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
-            title="Close (Esc)"
-          >
-            <X size={14} />
-          </button>
-        </div>
+            {/* Header */}
+            <div className="flex items-start gap-3 border-b border-[color:var(--color-line-soft)] px-5 pt-4 pb-3">
+              <AppWindow size={18} className="mt-0.5 shrink-0 text-[color:var(--color-thread-file)]" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-display text-[16px] italic text-[color:var(--color-paper)]">
+                    {appName}
+                  </h2>
+                  {data?.meta && (
+                    <span
+                      className={cn(
+                        "tabular shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wider",
+                        statusBadge[data.meta.status].cls,
+                      )}
+                    >
+                      {statusBadge[data.meta.status].label}
+                    </span>
+                  )}
+                </div>
+                {data?.meta && (
+                  <p className="mt-0.5 truncate text-[11.5px] text-[color:var(--color-ink)]">
+                    {data.meta.description}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={openAppWindow}
+                disabled={!canOpenWindow}
+                title={
+                  canOpenWindow
+                    ? "Open app window"
+                    : data?.meta?.status !== "ready"
+                      ? `Status is ${data?.meta?.status ?? "unknown"} — finalize first`
+                      : "App has no window component"
+                }
+                className={cn(
+                  "flex shrink-0 items-center gap-1 rounded-[5px] border px-2 py-1 text-[11px] transition-colors",
+                  canOpenWindow
+                    ? "border-[color:var(--color-line)] text-[color:var(--color-paper-dim)] hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+                    : "cursor-not-allowed border-[color:var(--color-line-soft)] text-[color:var(--color-ink-dim)] opacity-60",
+                )}
+              >
+                <ExternalLink size={11} />
+                Open
+              </button>
+              <button
+                type="button"
+                onClick={() => mutate()}
+                disabled={isValidating}
+                title="Refresh"
+                className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCw size={13} className={isValidating ? "animate-spin" : ""} />
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="shrink-0 rounded-[5px] p-1 text-[color:var(--color-ink)] transition-colors hover:bg-[color:var(--color-bg-raised)] hover:text-[color:var(--color-paper)]"
+                title="Close (Esc)"
+              >
+                <X size={14} />
+              </button>
+            </div>
 
-        {/* 主体 — 滚动 */}
-        <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-5 py-3">
+            {/* 主体 — 滚动 */}
+            <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-5 py-3" style={{ scrollbarWidth: 'none' }}>
           {isLoading && (
             <div className="flex items-center gap-2 px-1 py-8 text-[color:var(--color-ink)]">
               <Loader2 size={14} className="animate-spin" />
@@ -243,11 +270,15 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
                 {data.files.length === 0 ? (
                   <Placeholder>No source files (skeleton only).</Placeholder>
                 ) : (
-                  <FileTree files={data.files} onOpen={openSource} />
+                  <FileTree
+                    files={data.files}
+                    selectedPath={previewFile?.path ?? null}
+                    onPreview={previewSource}
+                  />
                 )}
                 {data.files.length > 0 && (
                   <p className="mt-1.5 px-1 text-[10.5px] italic text-[color:var(--color-ink)]">
-                    目录默认收起, 点击展开; 点击文件用系统默认编辑器打开. 用户改完需让 agent 重 finalize 才能 invoke 跑新代码.
+                    点文件在右侧预览, 预览头按钮用系统默认编辑器打开.
                   </p>
                 )}
               </Section>
@@ -364,7 +395,20 @@ export function AppDetailModal({ appName, sessionId, onClose }: Props) {
               )}
             </div>
           )}
-        </div>
+            </div>{/* 主体滚动区 end */}
+          </div>{/* 左栏 end */}
+
+          {/* 右栏 — 文件预览 (有 previewFile 时出现) */}
+          {hasPreview && previewFile && (
+            <div className="flex min-w-0 flex-1 flex-col border-l border-[color:var(--color-line-soft)]">
+              <FilePreview
+                file={previewFile}
+                sessionId={sessionId}
+                onClose={() => setPreviewFile(null)}
+              />
+            </div>
+          )}
+        </div>{/* 书页双栏 end */}
       </div>
     </div>,
     document.body,
@@ -482,16 +526,24 @@ function sortFileNodes(nodes: Iterable<FileTreeNode>): FileTreeNode[] {
 
 function FileTree({
   files,
-  onOpen,
+  selectedPath,
+  onPreview,
 }: {
   files: AppFileEntry[];
-  onOpen: (file: AppFileEntry) => void;
+  selectedPath: string | null;
+  onPreview: (file: AppFileEntry) => void;
 }) {
   const root = useMemo(() => buildFileTree(files), [files]);
   return (
     <ul className="space-y-0.5">
       {sortFileNodes(root.children.values()).map((node) => (
-        <FileTreeRow key={node.path} node={node} depth={0} onOpen={onOpen} />
+        <FileTreeRow
+          key={node.path}
+          node={node}
+          depth={0}
+          selectedPath={selectedPath}
+          onPreview={onPreview}
+        />
       ))}
     </ul>
   );
@@ -500,17 +552,27 @@ function FileTree({
 function FileTreeRow({
   node,
   depth,
-  onOpen,
+  selectedPath,
+  onPreview,
 }: {
   node: FileTreeNode;
   depth: number;
-  onOpen: (file: AppFileEntry) => void;
+  selectedPath: string | null;
+  onPreview: (file: AppFileEntry) => void;
 }) {
   const isDir = node.children.size > 0;
   const [open, setOpen] = useState(depth === 0 && !node.name.startsWith("."));
 
   if (!isDir && node.file) {
-    return <FileRow file={node.file} label={node.name} depth={depth} onOpen={onOpen} />;
+    return (
+      <FileRow
+        file={node.file}
+        label={node.name}
+        depth={depth}
+        selected={selectedPath === node.file.absolute_path}
+        onPreview={onPreview}
+      />
+    );
   }
 
   const children = sortFileNodes(node.children.values());
@@ -539,7 +601,13 @@ function FileTreeRow({
       {open && (
         <ul className="space-y-0.5">
           {children.map((child) => (
-            <FileTreeRow key={child.path} node={child} depth={depth + 1} onOpen={onOpen} />
+            <FileTreeRow
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              selectedPath={selectedPath}
+              onPreview={onPreview}
+            />
           ))}
         </ul>
       )}
@@ -551,21 +619,26 @@ function FileRow({
   file,
   label = file.rel_path,
   depth = 0,
-  onOpen,
+  selected = false,
+  onPreview,
 }: {
   file: AppFileEntry;
   label?: string;
   depth?: number;
-  onOpen: (file: AppFileEntry) => void;
+  selected?: boolean;
+  onPreview: (file: AppFileEntry) => void;
 }) {
   const Icon = iconForExt(file.ext);
   return (
     <li>
       <button
         type="button"
-        onClick={() => onOpen(file)}
-        title={`Open ${file.absolute_path}`}
-        className="group flex w-full items-center gap-2 rounded-[4px] py-1 pr-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]"
+        onClick={() => onPreview(file)}
+        title={`Preview ${file.absolute_path}`}
+        className={cn(
+          "group flex w-full items-center gap-2 rounded-[4px] py-1 pr-1.5 text-left transition-colors hover:bg-[color:var(--color-bg-raised)]",
+          selected && "bg-[color:var(--color-bg-raised)]",
+        )}
         style={{ paddingLeft: `${depth * 14 + 6}px` }}
       >
         <Icon size={12} className="shrink-0 text-[color:var(--color-thread-file)]" />

@@ -188,12 +188,23 @@ function SessionRow({
       await api.deleteSession(session.session_id);
       toast.success("Deleted");
       setDeleteOpen(false);
-      if (active) navigate("/");
       onChanged();
+      if (active) {
+        // Radix AlertDialog 卸时给 body 加的 pointer-events:none 在
+        // 紧跟着 navigate 让 ChatPage 同时 unmount 时偶尔不还原,
+        // 表现为删完会话后整页点不动. 等一帧让 Radix cleanup 跑完再切.
+        requestAnimationFrame(() => navigate("/"));
+      }
     } catch (err) {
       toast.error(`Delete failed: ${String(err)}`);
     } finally {
       setBusy(null);
+      // 兜底: Radix 偶尔漏还原 body pointer-events. 下一帧检查一次.
+      requestAnimationFrame(() => {
+        if (document.body.style.pointerEvents === "none") {
+          document.body.style.pointerEvents = "";
+        }
+      });
     }
   }
 

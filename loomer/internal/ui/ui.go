@@ -16,12 +16,86 @@
 package ui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	webview "github.com/webview/webview_go"
 )
+
+// cnHelperSource — @/lib/utils 内联导出的 cn() helper, shadcn 风组件抄起来直接用.
+// 通过 data: URL ESM module 暴露 (transform OnResolve 把 user bundle 里的
+// `import { cn } from '@/lib/utils'` 改写到这个 data URL).
+//
+// 关键: data URL module 不走 esbuild OnResolve, 它的 import 解析在 webview
+// 端原样跑 — 所以这里的 import 也必须是完整 URL, 不能写成 bare `"clsx"`.
+const cnHelperSource = `import { clsx } from "https://esm.sh/clsx";
+import { twMerge } from "https://esm.sh/tailwind-merge";
+export function cn(...inputs) {
+  return twMerge(clsx(inputs));
+}
+`
+
+// cnHelperDataURL: 把 cnHelperSource 编成 data:application/javascript;base64,...
+// transform OnResolve 把 user bundle 里 `@/lib/utils` 改写到这个 URL.
+func cnHelperDataURL() string {
+	return "data:application/javascript;base64," + base64.StdEncoding.EncodeToString([]byte(cnHelperSource))
+}
+
+// specifierURLs — bare specifier → 实际 URL 的映射. esbuild OnResolve 用它把
+// bundle 里的 `import { Cog } from "lucide-react"` 改写成完整 URL, 浏览器直接
+// fetch, 不走 importmap (WKWebView 的 importmap 对 data: URL entry 跟多 entry
+// 混用有 bug, 改成绝对 URL 绕过).
+//
+// 关键: 所有 React 依赖型包必须加 ?deps=react@18.3.1,react-dom@18.3.1 锁版本.
+// 否则 esm.sh 输出的 transitive import 是 `react@^16.8 || ^17.0 || ^18.0 || ...`
+// (含空格跟 `||` 字符), WKWebView 的 URL parser 把这种 specifier 当 invalid URL
+// 拒绝, 整个 module 加载失败 → 白屏 (radix-ui 实测确认). 锁版本后输出形如
+// /react@18.3.1/es2022/react.mjs, 干净.
+//
+// react family pin 18.3.1: SharedInternals 对齐 (跨包混版本会 hooks 报错).
+// lucide-react pin 0.300.0: npm latest 是 1.21.0 老废包 (2018 年, 没现代 icon);
+// 0.300.0 是兼容 react@^18 的较晚版本 (0.350+ 起改要 react@19).
+// radix-ui ?bundle: 默认聚合包 side-effect import 30+ sub-package 任一失败整体
+// 白屏 (WKWebView 实测), ?bundle 让 esm.sh 把所有 primitives 打成单 mjs.
+const reactDeps = "?deps=react@18.3.1,react-dom@18.3.1"
+
+var specifierURLs = map[string]string{
+	"react":                    "https://esm.sh/react@18.3.1",
+	"react/jsx-runtime":        "https://esm.sh/react@18.3.1/jsx-runtime",
+	"react-dom":                "https://esm.sh/react-dom@18.3.1",
+	"react-dom/client":         "https://esm.sh/react-dom@18.3.1/client",
+	"radix-ui":                 "https://esm.sh/radix-ui?bundle&deps=react@18.3.1,react-dom@18.3.1",
+	"lucide-react":             "https://esm.sh/lucide-react@0.300.0" + reactDeps,
+	"react-markdown":           "https://esm.sh/react-markdown" + reactDeps,
+	"remark-gfm":               "https://esm.sh/remark-gfm", // 不依赖 react
+	"class-variance-authority": "https://esm.sh/class-variance-authority",
+	"clsx":                     "https://esm.sh/clsx",
+	"tailwind-merge":           "https://esm.sh/tailwind-merge",
+	// "@/lib/utils" 在 ResolveSpecifier 里特殊处理: 走 data URL 内联 cn helper.
+}
+
+// AllowedBareSpecifiers — esbuild external 白名单 + 错误信息引用. 任何 bundle
+// 里的 bare import 必须在这里, 否则 transform 阶段报清晰错.
+var AllowedBareSpecifiers = func() []string {
+	out := make([]string, 0, len(specifierURLs)+1)
+	for k := range specifierURLs {
+		out = append(out, k)
+	}
+	out = append(out, "@/lib/utils")
+	return out
+}()
+
+// ResolveSpecifier: bare specifier → 完整 URL. 不在白名单返空串.
+// `@/lib/utils` 走 cnHelperDataURL() (动态生成 base64 data URL).
+func ResolveSpecifier(spec string) string {
+	if spec == "@/lib/utils" {
+		return cnHelperDataURL()
+	}
+	return specifierURLs[spec]
+}
 
 // Config 描述一个 window 的初始视觉配置.
 type Config struct {
@@ -128,7 +202,12 @@ func Run(opts Options) error {
 }
 
 func buildHTML(cfg Config, bundleJS string) string {
-	// 内联 bundle 到 <script type="module">, importmap 把 bare react 引到 esm.sh.
+	// 内联 bundle 到 <script type="module">. bundle 里的 bare specifier 已经在
+	// esbuild OnResolve 阶段被改写成完整 https:// URL 或 data:URL, 所以这里
+	// 不需要 importmap (WKWebView 的 importmap 实现对多 entry / data URL entry
+	// 有 bug, 改写成绝对 URL 绕过).
+	// Tailwind v3 CDN 实时编译 design-* 里的 arbitrary value (bg-[#0071e3] 等),
+	// 必须在 user bundle 加载前先 ready.
 	const tpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -140,15 +219,29 @@ func buildHTML(cfg Config, bundleJS string) string {
   body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; }
   #root { min-height: 100%%; }
 </style>
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@18.3.1",
-    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
-    "react-dom": "https://esm.sh/react-dom@18.3.1",
-    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+<script src="https://cdn.tailwindcss.com/"></script>
+<script>
+// 全局错误兜底: module load failure / promise reject / runtime throw 都
+// 显示到 #root, 否则 webview 没 devtools 时就是静默白屏.
+(function () {
+  function showError(prefix, e) {
+    const root = document.getElementById('root');
+    if (!root) return;
+    const msg = (e && (e.stack || e.message)) || String(e);
+    const safe = msg.replace(/[<>&]/g, function (c) {
+      return c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;';
+    });
+    root.innerHTML =
+      '<pre style="padding:24px;color:#b22222;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;">' +
+      'loomer ' + prefix + ':\n\n' + safe + '</pre>';
   }
-}
+  window.addEventListener('error', function (ev) {
+    showError(ev.filename ? 'script error (' + ev.filename + ')' : 'script error', ev.error || ev.message);
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    showError('unhandled promise rejection', ev.reason);
+  });
+})();
 </script>
 <script>
 // pentaloom IPC bootstrap (Go → JS → Go) — 必须在 user bundle 加载前就位,
@@ -197,30 +290,14 @@ func buildHTML(cfg Config, bundleJS string) string {
 <body>
 <div id="root"></div>
 <script type="module">
-import { createRoot } from "react-dom/client";
-import { createElement } from "react";
-
-// 把用户 bundle 当一个 module 动态 import. bundle 里 export default Component.
-const bundleSource = %s;
-const blob = new Blob([bundleSource], { type: "application/javascript" });
-const url = URL.createObjectURL(blob);
-try {
-  const mod = await import(url);
-  const App = mod.default;
-  if (typeof App !== "function") {
-    throw new Error("entry must export default React component (got " + typeof App + ")");
-  }
-  createRoot(document.getElementById("root")).render(createElement(App));
-} catch (e) {
-  document.getElementById("root").innerHTML =
-    '<pre style="padding:24px;color:#b22222;white-space:pre-wrap;">' +
-    'loomer load error:\n\n' + (e && e.stack || String(e)) + '</pre>';
-  console.error("[loomer]", e);
-}
+%s
 </script>
 </body>
 </html>`
-	return fmt.Sprintf(tpl, escapeHTML(cfg.Title), jsStringLiteral(bundleJS))
+	// `</script>` 在 HTML 里会提早终止 script tag — 反斜杠化 / 让 HTML parser
+	// 看不到 close tag, JS 端 `<\/script>` 跟 `</script>` 等价 (反斜杠在 / 前 noop).
+	safeBundle := strings.ReplaceAll(bundleJS, "</script>", "<\\/script>")
+	return fmt.Sprintf(tpl, escapeHTML(cfg.Title), safeBundle)
 }
 
 // escapeHTML 转义 title 里的 HTML 特殊字符.
@@ -241,12 +318,3 @@ func escapeHTML(s string) string {
 	return string(out)
 }
 
-// jsStringLiteral 把任意 string 序列化成合法 JS 字符串字面量.
-// 用 json.Marshal — JSON 字符串语法是 JS 字符串子集.
-func jsStringLiteral(s string) string {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return `""`
-	}
-	return string(b)
-}
