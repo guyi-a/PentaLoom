@@ -14,6 +14,13 @@ import (
 func miniaturize(nsWindow unsafe.Pointer) {} // no-op on non-darwin
 func zoom(nsWindow unsafe.Pointer)         {} // no-op on non-darwin
 
+// floating widget setter — non-darwin no-op (Linux / Windows 暂不支持).
+func setTitlebarHidden(nsWindow unsafe.Pointer)      {}
+func setTransparent(nsWindow unsafe.Pointer)         {}
+func setAlwaysOnTop(nsWindow unsafe.Pointer)         {}
+func setMovableByBackground(nsWindow unsafe.Pointer) {}
+func performWindowDrag(nsWindow unsafe.Pointer)      {}
+
 func screenshot(nsWindow unsafe.Pointer) ([]byte, error) {
 	return nil, fmt.Errorf("screenshot: not supported on non-darwin platform")
 }

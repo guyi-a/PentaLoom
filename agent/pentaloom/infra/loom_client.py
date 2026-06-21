@@ -133,21 +133,35 @@ async def open_window(
     height: int = 0,
     app: str = "",
     window_name: str = "",
+    titlebar: str = "normal",
+    transparent: bool = False,
+    always_on_top: bool = False,
+    movable: bool | None = None,
 ) -> dict[str, Any]:
     """开一个 window. 返 {"window_id": str, "pid": int}.
 
     app + window_name 给 loom registry 做二级索引, 后续 close-by-name / invoke
     都靠它找回这个窗. 不传的话 window 还是开得了, 但反向调通路全废 (registry
     findByName 找不到), 所以走 invocable app 路径的调用方必填这俩.
+
+    floating widget 4 字段 (titlebar/transparent/always_on_top/movable) 透传给
+    loomer CLI flag — 织挂件 (krow 那种悬浮卡片) 用. 默认值跟普通 macOS app 一致.
+    movable=None 让 daemon 端跟 titlebar 联动 (hidden→true, normal→false).
     """
-    return await call("window.open", {
+    payload: dict[str, Any] = {
         "entry_path": entry_path,
         "title": title,
         "width": width,
         "height": height,
         "app": app,
         "window_name": window_name,
-    })
+        "titlebar": titlebar,
+        "transparent": transparent,
+        "always_on_top": always_on_top,
+    }
+    if movable is not None:
+        payload["movable"] = movable
+    return await call("window.open", payload)
 
 
 async def close_window(window_id: str) -> None:

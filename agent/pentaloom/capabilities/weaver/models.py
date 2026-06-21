@@ -123,13 +123,29 @@ class AppServiceSpec(BaseModel):
 
 
 class AppWindowSpec(BaseModel):
-    """Desktop window component. entry is relative to files/."""
+    """Desktop window component. entry is relative to files/.
+
+    floating widget 4 字段 (titlebar / transparent / always_on_top / movable)
+    用于织挂件 (krow 那种 815.15 元/今日 浮动小卡片). 默认值兼容老 app — 普通
+    window 跟 macOS 应用外观一致 (titlebar=normal + 系统圆点在).
+    """
 
     name: str
     entry: str
     title: str | None = None
     width: int | None = None
     height: int | None = None
+    titlebar: Literal["normal", "hidden"] = "normal"
+    """ 'normal' 默认: 标准 macOS 窗带 titlebar + 系统圆点; 'hidden' 挂件: 整个
+    titlebar 没了 (含圆点), 内容延伸到顶部. agent 自画 close 按钮调 window.ipc."""
+    transparent: bool = False
+    """窗 + WKWebView 都不画背景. body { background: transparent } 才能透出去.
+    实际形状由 TSX 卡片 div 的圆角 / 阴影决定. 一般跟 titlebar=hidden 一起用."""
+    always_on_top: bool = False
+    """NSFloatingWindowLevel — 普通 app 切前台不会压住挂件. 监控 / 提醒类专用."""
+    movable: bool | None = None
+    """任意背景区域可拖. None = 跟 titlebar 联动 (hidden→true, normal→false —
+    normal 已经 titlebar 区域可拖, 不需要全屏可拖)."""
 
 
 class AppScheduleSpec(BaseModel):

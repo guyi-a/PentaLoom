@@ -25,6 +25,82 @@ void loomer_zoom(uintptr_t nsWindowPtr) {
     });
 }
 
+// floating widget 4 件套 — windowConfig 字段对应的 NSWindow 属性 setter.
+// 调用方在 SetHtml 之后调 (NSWindow 已 valid). 都走 dispatch_async(main) 保险.
+
+// 整个 titlebar 没了 (含圆点 + 标题栏区域), 内容延伸到顶部. 用户靠 TSX
+// 自画 close 按钮调 window.ipc 关窗.
+void loomer_set_titlebar_hidden(uintptr_t nsWindowPtr) {
+    NSWindow *w = (__bridge NSWindow *)(void *)nsWindowPtr;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [w setStyleMask:NSWindowStyleMaskBorderless];
+    });
+}
+
+// 窗口本身透明 — NSWindow 不画背景, WKWebView 也不画背景, body { background:
+// transparent } 才能透出去. 实际形状 (圆角 / 阴影) 由 TSX 端 CSS 画 div 决定.
+void loomer_set_transparent(uintptr_t nsWindowPtr) {
+    NSWindow *w = (__bridge NSWindow *)(void *)nsWindowPtr;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [w setOpaque:NO];
+        [w setBackgroundColor:[NSColor clearColor]];
+        // 让 WKWebView 也不画白底. webview_go 的 contentView 直接是 WKWebView.
+        NSView *root = [w contentView];
+        WKWebView *webview = nil;
+        if ([root isKindOfClass:[WKWebView class]]) {
+            webview = (WKWebView *)root;
+        } else {
+            for (NSView *sub in [root subviews]) {
+                if ([sub isKindOfClass:[WKWebView class]]) {
+                    webview = (WKWebView *)sub;
+                    break;
+                }
+            }
+        }
+        if (webview != nil) {
+            // 老 WKWebView API, 仍可用; macOS 12+ 推荐 underPageBackgroundColor 但
+            // drawsBackground=NO 是事实标准 + 跟 webview_go 兼容.
+            @try {
+                [webview setValue:@NO forKey:@"drawsBackground"];
+            } @catch (NSException *e) {
+                // 某些 macOS 版本 undocumented 路径报错就跳过, 至少 NSWindow 透.
+            }
+        }
+    });
+}
+
+// 浮动层级 — 普通 app 在它下面, 用户切别的 app 这个仍在最前 (Reminders 浮动
+// 提醒同款行为).
+void loomer_set_always_on_top(uintptr_t nsWindowPtr) {
+    NSWindow *w = (__bridge NSWindow *)(void *)nsWindowPtr;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [w setLevel:NSFloatingWindowLevel];
+    });
+}
+
+// 任意背景区域可拖. NSWindow.movableByWindowBackground=YES 在 WKWebView 里
+// 部分失效 (WKWebView 拦鼠标事件不让 NSWindow 看到), 所以单靠这个不够.
+// 真正生效靠 JS 端 mousedown 监听 + window.ipc 调 loomer_perform_window_drag.
+// 这个属性留着无害 (borderless 没 webview 拦截的边缘像素处仍生效).
+void loomer_set_movable_by_background(uintptr_t nsWindowPtr) {
+    NSWindow *w = (__bridge NSWindow *)(void *)nsWindowPtr;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [w setMovableByWindowBackground:YES];
+    });
+}
+
+// performWindowDragWithEvent — JS 端 mousedown 监听器调 ipc begin-drag 时,
+// native 同步调这个让 macOS 接管拖动. webview Bind callback 已经在主线程,
+// 直接调 NSWindow API (不要 dispatch_sync(main) — 主线程上 dispatch_sync 到主
+// 线程死锁). currentEvent 必须还是触发这次 ipc 的 mouseDown event.
+void loomer_perform_window_drag(uintptr_t nsWindowPtr) {
+    NSWindow *w = (__bridge NSWindow *)(void *)nsWindowPtr;
+    NSEvent *event = [NSApp currentEvent];
+    if (event != nil && [event type] == NSEventTypeLeftMouseDown) {
+        [w performWindowDragWithEvent:event];
+    }
+}
+
 // 把 errMsg 拷进 errBuf (长度 < cap 含 \0). errBuf 为空指针不写.
 static void loomer_set_err(char *errBuf, size_t cap, const char *errMsg) {
     if (errBuf == NULL || cap == 0) return;

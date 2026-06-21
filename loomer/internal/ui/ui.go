@@ -106,6 +106,13 @@ type Config struct {
 	// EntryURL 实际不用 — bundle 已经内联进 HTML, 这里留一个 entry path 仅用于
 	// debug log (window 标题 fallback / launchctl ps 看进程能识别)
 	EntryPath string
+
+	// floating widget 4 件套 — 跟 manifest windows[] / TSX windowConfig 字段对位.
+	// 默认值 (false / "") 行为跟之前一致 = 普通 macOS app 窗.
+	TitlebarHidden  bool // 整个 titlebar 没了 (含圆点), 内容延伸到顶部
+	Transparent     bool // 窗 + WKWebView 都不画背景, body bg 透明
+	AlwaysOnTop     bool // NSFloatingWindowLevel, 普通 app 不压住
+	MovableByBackground bool // 任意背景区域可拖窗 (borderless 必备)
 }
 
 // InvokeDispatcher: main 拿到这个回调来"给已加载的 JS 推一个 invoke".
@@ -192,6 +199,12 @@ func Run(opts Options) error {
 			// cgo NSWindow zoom: 切 max useful size <-> 原 size, 跟绿圆点一致.
 			zoom(w.Window())
 			return map[string]any{"ok": true}
+		case "begin-drag":
+			// JS mousedown 监听器调这个让 NSWindow 接管拖动. 必须同步在
+			// webview Bind callback 主线程上调 (NSApp.currentEvent 还是触发
+			// 这次 ipc 的 mousedown event), 不要 Dispatch 到下一帧.
+			performWindowDrag(w.Window())
+			return map[string]any{"ok": true}
 		case "open-path":
 			// 打开外部 URL / 本地文件 / 文件夹, 走系统默认 app (open 命令).
 			// path 不做白名单 — TSX 是 agent 自己织的, 信任. 非 darwin 平台
@@ -212,7 +225,7 @@ func Run(opts Options) error {
 		default:
 			return map[string]any{
 				"ok":    false,
-				"error": "unknown ipc type: " + msg.Type + " (supported: close, minimize, maximize, open-path)",
+				"error": "unknown ipc type: " + msg.Type + " (supported: close, minimize, maximize, open-path, begin-drag)",
 			}
 		}
 	})
@@ -247,6 +260,23 @@ func Run(opts Options) error {
 	// 拿到的 closure 现在能解析到 webview 句柄. SetHtml 之后 w.Window() 已 valid.
 	if opts.ScreenshotProvider != nil {
 		opts.ScreenshotProvider.setWindow(w.Window())
+	}
+
+	// floating widget 4 件套 — windowConfig 字段对应的 NSWindow 属性. 顺序:
+	// titlebar 先 (改 styleMask 影响 contentView 布局), transparent 再 (找
+	// WKWebView 改 drawsBackground), level / movable 最后 (独立属性).
+	nsWin := w.Window()
+	if opts.Config.TitlebarHidden {
+		setTitlebarHidden(nsWin)
+	}
+	if opts.Config.Transparent {
+		setTransparent(nsWin)
+	}
+	if opts.Config.AlwaysOnTop {
+		setAlwaysOnTop(nsWin)
+	}
+	if opts.Config.MovableByBackground {
+		setMovableByBackground(nsWin)
 	}
 
 	// dispatcher: main 用它把 invoke 投到主线程 + Eval 调 JS.
@@ -297,6 +327,12 @@ func buildHTML(cfg Config, bundleJS string) string {
   #root { min-height: 100%%; }
 </style>
 <script src="https://cdn.tailwindcss.com/"></script>
+<script>
+// 给 IPC bootstrap 用的 window flag — 控制 mousedown 监听器是否启用
+// 拖动. 普通 app movable=false 时 mousedown 监听根本不注册, 完全不干扰
+// 用户选文本 / 点 element. 只挂件 (movable=true) 时启用.
+window.__loomer_movable = %t;
+</script>
 <script>
 // 全局错误兜底: module load failure / promise reject / runtime throw 都
 // 显示到 #root, 否则 webview 没 devtools 时就是静默白屏.
@@ -400,6 +436,23 @@ func buildHTML(cfg Config, bundleJS string) string {
     }
   }, true);
 
+  // 拖动: WKWebView 拦鼠标事件让 NSWindow.movableByWindowBackground 失效, 必须
+  // JS 端 mousedown 监听 + ipc begin-drag → native 调 performWindowDragWithEvent.
+  // 仅 movable=true 时启用 (普通 app 不该任意区域可拖, 干扰用户选文本).
+  // 跳过 button / input / a 这些响应鼠标的 element. [data-no-drag] 让 TSX 标
+  // 元素 / 区域不可拖.
+  if (window.__loomer_movable === true) {
+    document.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return; // 只左键
+      var t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest('button, input, textarea, select, a[href], [contenteditable], [data-no-drag]')) return;
+      try {
+        window.ipc.postMessage(JSON.stringify({ type: 'begin-drag' }));
+      } catch (err) { /* 不阻塞 */ }
+    }, true);
+  }
+
   // console hook: 重写原生 console.{log,warn,error,info,debug} 让 host 累积日志,
   // agent 调 app_window_logs 时能拿到. 同时仍走原 native console (devtools 看得到).
   // args 序列化用 JSON.stringify, 失败 (循环引用 / DOM 节点) fallback String().
@@ -437,7 +490,7 @@ func buildHTML(cfg Config, bundleJS string) string {
 	// `</script>` 在 HTML 里会提早终止 script tag — 反斜杠化 / 让 HTML parser
 	// 看不到 close tag, JS 端 `<\/script>` 跟 `</script>` 等价 (反斜杠在 / 前 noop).
 	safeBundle := strings.ReplaceAll(bundleJS, "</script>", "<\\/script>")
-	return fmt.Sprintf(tpl, escapeHTML(cfg.Title), safeBundle)
+	return fmt.Sprintf(tpl, escapeHTML(cfg.Title), cfg.MovableByBackground, safeBundle)
 }
 
 // escapeHTML 转义 title 里的 HTML 特殊字符.

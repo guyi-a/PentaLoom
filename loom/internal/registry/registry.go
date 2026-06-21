@@ -91,6 +91,26 @@ func (r *Registry) Open(req *protocol.WindowOpenReq) (*WindowProc, error) {
 		args = append(args, "--height", fmt.Sprintf("%d", req.Height))
 	}
 
+	// floating widget 4 件套 — 透给 loomer flag. Movable nil 时跟 titlebar 联动:
+	// hidden 默认 movable=true (borderless 必备), normal 默认 false (titlebar
+	// 区域已经能拖, 全屏可拖反而干扰用户选文本).
+	if req.Titlebar == "hidden" {
+		args = append(args, "--titlebar=hidden")
+	}
+	if req.Transparent {
+		args = append(args, "--transparent")
+	}
+	if req.AlwaysOnTop {
+		args = append(args, "--always-on-top")
+	}
+	movable := req.Titlebar == "hidden" // 默认联动
+	if req.Movable != nil {
+		movable = *req.Movable
+	}
+	if movable {
+		args = append(args, "--movable")
+	}
+
 	cmd := exec.Command(r.loomerBin, args...)
 
 	stdin, err := cmd.StdinPipe()

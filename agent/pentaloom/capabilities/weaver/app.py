@@ -1130,6 +1130,10 @@ async def open_window_for_app(
             height=spec.height or 0,
             app=app_name,
             window_name=spec.name,
+            titlebar=spec.titlebar,
+            transparent=spec.transparent,
+            always_on_top=spec.always_on_top,
+            movable=spec.movable,
         )
     except loom_client.LoomUnavailable as e:
         raise index.WeaverError(

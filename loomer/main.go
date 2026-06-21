@@ -52,6 +52,11 @@ func main() {
 		width  = flag.Int("width", 800, "window width in pixels")
 		height = flag.Int("height", 600, "window height in pixels")
 		title  = flag.String("title", "", "window title (default: entry filename)")
+		// floating widget 4 件套 — 跟 manifest windows[] / windowConfig 字段对位.
+		titlebar    = flag.String("titlebar", "normal", "titlebar mode: 'normal' or 'hidden' (hidden = borderless widget)")
+		transparent = flag.Bool("transparent", false, "transparent NSWindow + WKWebView (TSX body must be transparent)")
+		alwaysOnTop = flag.Bool("always-on-top", false, "NSFloatingWindowLevel — widget stays above normal apps")
+		movable     = flag.Bool("movable", false, "drag window from any background area (auto-on for titlebar=hidden)")
 	)
 	flag.Parse()
 
@@ -76,11 +81,18 @@ func main() {
 	}
 
 	// 2. 启 webview, 加载 bundle.
+	// movable 默认跟 titlebar 联动: hidden 时强制 true (borderless 必备), 显式
+	// --movable 覆盖. flag.Lookup 看用户有没显式传 --movable.
+	movableEffective := *movable || *titlebar == "hidden"
 	cfg := ui.Config{
-		Title:     displayTitle,
-		Width:     *width,
-		Height:    *height,
-		EntryPath: *entry,
+		Title:               displayTitle,
+		Width:               *width,
+		Height:              *height,
+		EntryPath:           *entry,
+		TitlebarHidden:      *titlebar == "hidden",
+		Transparent:         *transparent,
+		AlwaysOnTop:         *alwaysOnTop,
+		MovableByBackground: movableEffective,
 	}
 
 	// stdout 写 NDJSON 给 loom (协议出口) — 必须串行化, JS handler 可能并发回报.
