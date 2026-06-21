@@ -18,6 +18,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/guyi-a/PentaLoom/loom/internal/protocol"
@@ -49,6 +50,10 @@ type WindowProc struct {
 	cmd        *exec.Cmd     // 内部句柄, 给 Kill / Wait 用; 不暴露给外部
 	stdin      io.WriteCloser // 写 NDJSON 给 loomer (invoke msg)
 	stdinMu    sync.Mutex     // 串行化 stdin 写 — 多 goroutine 并发 invoke 同窗时
+
+	// ControlPort: loomer ready msg 上来后填; 写一次 (readLoop) 读多次 (ToInfo).
+	// 用 atomic 避锁, 0 表示 loomer 还没发 ready (启动早期).
+	controlPort atomic.Int32
 }
 
 // Registry: 进程内 thread-safe 注册表.
@@ -84,6 +89,26 @@ func (r *Registry) Open(req *protocol.WindowOpenReq) (*WindowProc, error) {
 	}
 	if req.Height > 0 {
 		args = append(args, "--height", fmt.Sprintf("%d", req.Height))
+	}
+
+	// floating widget 4 件套 — 透给 loomer flag. Movable nil 时跟 titlebar 联动:
+	// hidden 默认 movable=true (borderless 必备), normal 默认 false (titlebar
+	// 区域已经能拖, 全屏可拖反而干扰用户选文本).
+	if req.Titlebar == "hidden" {
+		args = append(args, "--titlebar=hidden")
+	}
+	if req.Transparent {
+		args = append(args, "--transparent")
+	}
+	if req.AlwaysOnTop {
+		args = append(args, "--always-on-top")
+	}
+	movable := req.Titlebar == "hidden" // 默认联动
+	if req.Movable != nil {
+		movable = *req.Movable
+	}
+	if movable {
+		args = append(args, "--movable")
 	}
 
 	cmd := exec.Command(r.loomerBin, args...)
@@ -156,10 +181,19 @@ func (r *Registry) readLoop(wp *WindowProc, stdout io.ReadCloser) {
 			// loomer 输出脏数据 (e.g. stderr 漏到 stdout) — 静默丢, 防雪崩
 			continue
 		}
-		if msg.Type != "result" || msg.RequestID == "" {
-			continue
+		switch msg.Type {
+		case "ready":
+			// 启动握手, 携带 control HTTP port (loopback). 存进 wp 让 list 透传给
+			// agent. 0 表示 loomer 没起 control server (旧版不带), 兼容.
+			if msg.ControlPort > 0 {
+				wp.controlPort.Store(int32(msg.ControlPort))
+			}
+		case "result":
+			if msg.RequestID == "" {
+				continue
+			}
+			r.deliverResult(msg.RequestID, msg.Output, msg.Error)
 		}
-		r.deliverResult(msg.RequestID, msg.Output, msg.Error)
 	}
 }
 
@@ -300,13 +334,14 @@ func (r *Registry) List(appFilter string) []protocol.WindowInfo {
 			continue
 		}
 		out = append(out, protocol.WindowInfo{
-			WindowID:   wp.ID,
-			PID:        wp.PID,
-			EntryPath:  wp.EntryPath,
-			Title:      wp.Title,
-			App:        wp.App,
-			WindowName: wp.WindowName,
-			StartedAt:  wp.StartedAt.Unix(),
+			WindowID:    wp.ID,
+			PID:         wp.PID,
+			EntryPath:   wp.EntryPath,
+			Title:       wp.Title,
+			App:         wp.App,
+			WindowName:  wp.WindowName,
+			StartedAt:   wp.StartedAt.Unix(),
+			ControlPort: int(wp.controlPort.Load()),
 		})
 	}
 	return out

@@ -133,21 +133,35 @@ async def open_window(
     height: int = 0,
     app: str = "",
     window_name: str = "",
+    titlebar: str = "normal",
+    transparent: bool = False,
+    always_on_top: bool = False,
+    movable: bool | None = None,
 ) -> dict[str, Any]:
     """开一个 window. 返 {"window_id": str, "pid": int}.
 
     app + window_name 给 loom registry 做二级索引, 后续 close-by-name / invoke
     都靠它找回这个窗. 不传的话 window 还是开得了, 但反向调通路全废 (registry
     findByName 找不到), 所以走 invocable app 路径的调用方必填这俩.
+
+    floating widget 4 字段 (titlebar/transparent/always_on_top/movable) 透传给
+    loomer CLI flag — 织挂件 (krow 那种悬浮卡片) 用. 默认值跟普通 macOS app 一致.
+    movable=None 让 daemon 端跟 titlebar 联动 (hidden→true, normal→false).
     """
-    return await call("window.open", {
+    payload: dict[str, Any] = {
         "entry_path": entry_path,
         "title": title,
         "width": width,
         "height": height,
         "app": app,
         "window_name": window_name,
-    })
+        "titlebar": titlebar,
+        "transparent": transparent,
+        "always_on_top": always_on_top,
+    }
+    if movable is not None:
+        payload["movable"] = movable
+    return await call("window.open", payload)
 
 
 async def close_window(window_id: str) -> None:
@@ -156,9 +170,26 @@ async def close_window(window_id: str) -> None:
 
 
 async def list_windows() -> list[dict[str, Any]]:
-    """列已开 windows. 返 [{"window_id", "pid", "entry_path", "title", "started_at"}, ...]."""
+    """列已开 windows. 返 [{"window_id", "pid", "entry_path", "title",
+    "started_at", "control_port"}, ...]. control_port 是 loomer 进程内
+    control HTTP server 的 loopback 端口, 给 agent 反向拉 /logs /screenshot.
+    0 表示 loomer 还没发 ready msg (启动早期)."""
     data = await call("window.list", {})
     return data.get("windows") or []
+
+
+async def find_control_port(app: str, window_name: str) -> int | None:
+    """找已开 window 的 control HTTP port. 没找到 / port=0 (启动早期) 返 None.
+
+    用法: agent 端 tool 调它后再 httpx.get(f"http://127.0.0.1:{port}/logs")
+    或 /screenshot. 没找到时调用方返"window not open"或类似清晰错给 agent.
+    """
+    windows = await list_windows()
+    for w in windows:
+        if w.get("app") == app and w.get("window_name") == window_name:
+            port = w.get("control_port") or 0
+            return port if port > 0 else None
+    return None
 
 
 async def invoke_window(
